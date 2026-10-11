@@ -24,7 +24,7 @@ export class S3BlobStore implements BlobStore {
   private readonly client: S3Client;
 
   constructor(private readonly opts: S3Options) {
-    this.client = new S3Client({ region: opts.region, endpoint: opts.endpoint, forcePathStyle: opts.forcePathStyle, credentials: opts.credentials });
+    this.client = new S3Client({ region: opts.region, endpoint: opts.endpoint, forcePathStyle: opts.forcePathStyle, credentials: opts.credentials, requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED' });
   }
 
   async put(bytes: Buffer, meta: { mime: string }): Promise<{ sha256: string; size: number }> {

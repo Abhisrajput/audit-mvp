@@ -33,7 +33,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@testcontainers/minio": "^12.2.0",
     "@testcontainers/postgresql": "^12.2.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",

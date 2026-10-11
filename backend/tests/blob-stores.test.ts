@@ -5,8 +5,7 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import { BlobServiceClient } from '@azure/storage-blob';
-import { MinioContainer, type StartedMinioContainer } from '@testcontainers/minio';
-import { GenericContainer, type StartedTestContainer } from 'testcontainers';
+import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AzureBlobStore } from '../src/storage/azure-blob-store';
 import { blobKey, BlobNotFound, sha256Of, type BlobStore } from '../src/storage/blob-store';
@@ -81,19 +80,36 @@ describe('local store layout', () => {
   });
 });
 
-let minio: StartedMinioContainer;
+let seaweed: StartedTestContainer;
 let s3Store: S3BlobStore;
 beforeAll(async () => {
-  const user = `u${crypto.randomBytes(6).toString('hex')}`;
-  const password = crypto.randomBytes(18).toString('base64url');
-  minio = await new MinioContainer('minio/minio:RELEASE.2024-11-07T00-52-20Z').withUsername(user).withPassword(password).start();
-  const endpoint = `http://${minio.getHost()}:${minio.getPort()}`;
-  const credentials = { accessKeyId: user, secretAccessKey: password };
-  await new S3Client({ region: 'us-east-1', endpoint, forcePathStyle: true, credentials }).send(new CreateBucketCommand({ Bucket: 'evidence' }));
+  // SeaweedFS S3 gateway with an identity whose keys are generated at runtime.
+  const accessKeyId = `u${crypto.randomBytes(6).toString('hex')}`;
+  const secretAccessKey = crypto.randomBytes(18).toString('base64url');
+  const identities = { identities: [{ name: 'test', credentials: [{ accessKey: accessKeyId, secretKey: secretAccessKey }], actions: ['Admin', 'Read', 'Write', 'List', 'Tagging'] }] };
+  seaweed = await new GenericContainer('chrislusf/seaweedfs:3.80')
+    .withCommand(['server', '-s3', '-s3.config=/etc/seaweedfs/s3.json', '-dir=/data'])
+    .withCopyContentToContainer([{ content: JSON.stringify(identities), target: '/etc/seaweedfs/s3.json' }])
+    .withExposedPorts(8333)
+    .withWaitStrategy(Wait.forListeningPorts())
+    .start();
+  const endpoint = `http://${seaweed.getHost()}:${seaweed.getMappedPort(8333)}`;
+  const credentials = { accessKeyId, secretAccessKey };
+  const client = new S3Client({ region: 'us-east-1', endpoint, forcePathStyle: true, credentials });
+  // The gateway listens before the filer is ready, so retry bucket creation briefly.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await client.send(new CreateBucketCommand({ Bucket: 'evidence' }));
+      break;
+    } catch (err) {
+      if (attempt >= 30) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
   s3Store = new S3BlobStore({ bucket: 'evidence', region: 'us-east-1', endpoint, forcePathStyle: true, credentials });
-});
-afterAll(() => minio?.stop());
-blobStoreContract('s3 (MinIO)', () => s3Store, true);
+}, 120_000);
+afterAll(() => seaweed?.stop());
+blobStoreContract('s3 (SeaweedFS)', () => s3Store, true);
 
 let azurite: StartedTestContainer;
 let azureStore: AzureBlobStore;
