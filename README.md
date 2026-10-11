@@ -33,7 +33,7 @@ Screenshots: [scope](docs/screenshots/scope.png) · [findings & sign-off](docs/s
 | Common pack (RCM, TOD/TOE, gap writer) | `backend/packs/common` | COSO-based P2P, ITGC, **treasury & commodity hedging**, governance |
 | Food pack | `backend/packs/food` | HACCP verification, supplier/co-man, traceability & recall, allergens, PRPs |
 | Pharma pack | `backend/packs/pharma` | GMP self-inspection: QU, training, deviations/CAPA, batch release, data integrity, lab, change control, suppliers |
-| Human-in-the-loop sign-off | `service.ts#signOff` | Auditor → Reviewer → Approver, separate people, signature manifestation |
+| Human-in-the-loop sign-off | `service.ts#signOff` | Auditor → Reviewer → Approver, separate people; Part 11 e-signatures with re-authentication, content binding and manifestation in report and CSV |
 | Evaluation harness | `backend/src/eval` | 25 expert-labelled cases across packs, used as release gate |
 | Validation package skeleton | `backend/validation` | URS, risk ratings, generated traceability matrix, change-control procedure |
 | Integration posture | `GET /api/engagements/:id/findings.csv` | Flat export for write-back; no system-of-record ambitions |
@@ -118,14 +118,19 @@ Sign in as `asha`, `ravi`, `priya` or `arun` with the password `demo`. `nina` ha
 
 Signing a finding as **Reviewed**, **Approved** or **Rejected** is an electronic signature:
 
-- **Confirm it's you, again, at the moment of signing.** A window opens:
-  - With your organisation's sign-in, the identity provider asks for your password again. The signature only counts if you authenticated there within the last **2 minutes**.
+- **Confirm it's you, again, at the moment of signing.** A window opens, so **allow pop-ups for this site**. While it is open the finding shows "Waiting for you to confirm your identity in the sign-in window…" with a **Cancel** button.
+  - With your organisation's sign-in, the identity provider asks for your password again. The signature only counts if the identity provider reports (`auth_time`) that you entered it after you clicked sign and within the last **2 minutes**.
   - With demo sign-in, you type your user id.
 - **Bound to exactly what you saw.** The signature records the SHA-256 of the finding's content. If someone changes the finding while you are signing, the signature is refused ("the finding changed after you started signing").
-- **Shown with the finding and in the report:** full name, role, meaning, time, and how you re-authenticated. Signatures are kept in an append-only table. A signature whose content no longer matches is flagged **broken**.
-- **Single-use requests.** Each signing request lasts 5 minutes and works once. Failed attempts are recorded in the audit trail.
+- **Shown with the finding, in the report and in the findings CSV.** The finding card and the report show each signature as meaning, full name, role, time in UTC, how you re-authenticated and the signature id, e.g. `Approved by Priya QA Head (cae) at 2026-10-11 09:30 UTC, re-authenticated by demo confirmation [SIG-…]`. The CSV's `signatures` column lists every sign-off as `meaning|name|role|ISO time|method|signature id|status`, separated by `; `.
+- **Checked against an append-only record.** Every signature is also written to an append-only `signatures` table in the same transaction. The status of each signature comes from that table: **valid**, **broken** (no matching record, or the finding's content, signer or meaning no longer match what was signed — even if someone rewrote the recorded hash too), or **legacy** (a sign-off from before Part 11 signing, e.g. imported MVP data; never shown as re-authenticated).
+- **Single-use requests.** Each signing request lasts 5 minutes and works once. Failed, expired and cancelled attempts are recorded in the audit trail; reusing a finished request is simply refused.
 
-Seeded demo data is signed by the seed script without re-authentication and shows "not re-authenticated".
+Seeded demo data is signed by the seed script without re-authentication and shows "not re-authenticated". Signing in code without a signing request is refused.
+
+**Identity-provider settings for signing:**
+- The ID token must carry the `auth_time` claim. On **Entra ID**, add `auth_time` as an optional claim to the ID token (*Token configuration → Add optional claim*). Without it, signing is refused with "did not report when you signed in (auth_time)".
+- Signing asks for a fresh password with `prompt=login` and `max_age=0`. Identity providers that ignore these and reuse an existing session (e.g. Google) are refused at signing, because their `auth_time` is earlier than the signing request.
 
 ### Demo script (≈10 minutes)
 
@@ -142,8 +147,8 @@ Seeded demo data is signed by the seed script without re-authentication and show
    manager) and sign as reviewed. Then sign in as *Priya QA Head* (CAE) and approve.
    A finding with no evidence reference is **blocked** and cannot be signed.
    Whoever drafted or edited a finding is not offered the sign buttons.
-6. **Report**: only approved findings are included. Download the `.md` report or the
-   CSV for QMS/GRC write-back.
+6. **Report**: only approved findings are included, each with its signatures. Download
+   the `.md` report or the CSV (one `signatures` column) for QMS/GRC write-back.
 7. **Audit trail**: open any bundle to see exactly what the module saw and decided.
    *Verify hash chain* proves nothing was altered.
 8. **Content library**: browse packs and try the grounding search, e.g. "audit trail
@@ -210,9 +215,6 @@ npm run typecheck
 - **Real evidence ingestion:** evidence is recorded as references today. Next is
   reading SOPs, deviations and CAPAs from an eQMS (Veeva, MasterControl, TrackWise)
   and attaching documents.
-- **E-signatures:** sign-in is real (OIDC), but signing a finding does not yet
-  re-authenticate. Part 11 signing (re-authentication bound to the signed
-  content) is plan 1C.
 - **Deployment:** deploy into the client's tenant (e.g. Azure App Service +
   Azure AI Search).
 - **Further modules:** pharma deviation/CAPA effectiveness review, ALCOA+
