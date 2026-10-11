@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { PackRegistry } from '../src/engine/packs';
 import { verifyChain } from '../src/engine/trail';
-import type { ContentPack } from '../src/engine/types';
-import { auditor, approver, engagementWithFailedControl, FakeProvider, newService, registry, reviewer } from './helpers';
+import type { ContentPack, User } from '../src/engine/types';
+import { auditor, admin, approver, engagementWithFailedControl, FakeProvider, newService, registry, reviewer, viewer } from './helpers';
 
 const META = { name: 'x', entity: 'x', site: 'x', periodFrom: 'a', periodTo: 'b', auditType: 'x', packIds: ['common'] };
 
@@ -135,8 +135,8 @@ describe('sign-off and release', () => {
     const done = await svc.signOff(e.id, f.id, 'approve', 'agreed', approver);
     expect(done.status).toBe('approved');
     expect(done.signOffs.map((s) => [s.userId, s.role, s.meaning])).toEqual([
-      ['reviewer', 'reviewer', 'Reviewed'],
-      ['approver', 'approver', 'Approved'],
+      ['reviewer', 'audit_manager', 'Reviewed'],
+      ['approver', 'cae', 'Approved'],
     ]);
     expect(done.signOffs.every((s) => !Number.isNaN(Date.parse(s.at)))).toBe(true);
   });
@@ -251,5 +251,50 @@ describe('transactions and concurrency', () => {
     const last = trail.at(-1)!.inputs as { observation: string };
     expect(after.testInputs['FD-HACCP-03'].observation).toBe(last.observation);
     expect((await svc.verifyTrail()).valid).toBe(true);
+  });
+});
+
+describe('segregation of duties', () => {
+  const manager2: User = { id: 'manager2', name: 'Maya Manager', role: 'audit_manager' };
+
+  it('stops whoever ran Gap Writer from reviewing the findings it drafted [REQ-17]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    await svc.runModule(e.id, 'gaps', reviewer); // the audit manager redrafts, so now prepares the finding
+    const f = (await svc.engagement(e.id)).findings[0];
+    expect(f.preparedBy).toEqual(['reviewer']);
+    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+    await expect(svc.signOff(e.id, f.id, 'review', '', manager2)).resolves.toMatchObject({ status: 'reviewed' });
+  });
+
+  it('treats editing a finding as preparing it [REQ-17]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    expect(f.preparedBy).toEqual(['auditor']);
+    const edited = await svc.editFinding(e.id, f.id, { title: 'Roaster CCP logs unsigned' }, reviewer);
+    expect(edited.preparedBy).toEqual(['auditor', 'reviewer']);
+    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer)).rejects.toMatchObject({ code: 'SOD_VIOLATION' });
+  });
+
+  it('keeps the reviewer from also approving, judged by person rather than role [REQ-17]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    await svc.signOff(e.id, f.id, 'review', '', reviewer);
+    const promoted: User = { ...reviewer, role: 'cae' }; // same person, given the CAE role between steps
+    await expect(svc.signOff(e.id, f.id, 'approve', '', promoted)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+  });
+
+  it('gives admins and viewers no way to change audit work [REQ-15]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    for (const u of [admin, viewer]) {
+      await expect(svc.runModule(e.id, 'report', u)).rejects.toMatchObject({ status: 403 });
+      await expect(
+        svc.recordTest(e.id, 'FD-HACCP-03', { designAdequate: true, observation: 'x', evidenceRefs: ['X'], sampleTested: 1, exceptions: 0 }, u),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', u)).rejects.toMatchObject({ status: 403 });
+    }
   });
 });

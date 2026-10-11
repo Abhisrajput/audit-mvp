@@ -161,6 +161,8 @@ export interface Finding {
   blockedReasons: string[];
   signOffs: SignOff[];
   bundleId: string;
+  /** Users who drafted or edited this finding since it was last reset; none of them may sign it. */
+  preparedBy?: string[];
 }
 
 export interface AuditReport {
@@ -221,7 +223,8 @@ export interface LogEntry {
 export interface TrailBundle {
   id: string;
   seq: number;
-  engagementId: string;
+  /** null for identity events (login, role changes, …) that belong to no engagement. */
+  engagementId: string | null;
   moduleId: string;
   moduleVersion: string;
   engineVersion: string;
@@ -240,8 +243,10 @@ export interface TrailBundle {
   hash: string;
 }
 
+export type Role = 'auditor' | 'audit_manager' | 'cae' | 'admin' | 'viewer';
+
 export interface User {
   id: string;
   name: string;
-  role: 'auditor' | 'reviewer' | 'approver';
+  role: Role;
 }

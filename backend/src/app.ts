@@ -2,7 +2,8 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { evalMarkdown, runEval } from './eval/harness';
-import { AppError, AuditService, USERS, type MutationOptions } from './service';
+import { AppError, AuditService, type MutationOptions } from './service';
+import { DEV_USERS, devUser } from './auth/dev-users';
 import { buildTraceability } from './validation/traceability';
 
 const NewEngagementSchema = z.object({
@@ -42,7 +43,12 @@ export function createApp(svc: AuditService) {
   app.use(cors());
   app.use(express.json({ limit: '1mb' }));
 
-  const actor = (req: Request) => svc.user(req.header('x-user-id'));
+  // Temporary until Task 3: the demo header identifies a demo user.
+  const actor = (req: Request) => {
+    const u = devUser(req.header('x-user-id'));
+    if (!u) throw new AppError(401, 'Unknown user; send x-user-id header', 'UNAUTHENTICATED');
+    return u;
+  };
   const param = (req: Request, name: string) => String(req.params[name]);
   const wrap = (fn: (req: Request, res: Response) => unknown) => (req: Request, res: Response, next: NextFunction) =>
     Promise.resolve(fn(req, res)).catch(next);
@@ -57,7 +63,7 @@ export function createApp(svc: AuditService) {
   };
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, provider: svc.providerInfo }));
-  app.get('/api/users', (_req, res) => res.json(USERS));
+  app.get('/api/users', (_req, res) => res.json(DEV_USERS));
   app.get('/api/modules', (_req, res) => res.json(svc.modules()));
 
   // ----- Content library -----

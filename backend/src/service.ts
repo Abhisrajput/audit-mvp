@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
@@ -13,19 +14,13 @@ import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { verifyChain } from './engine/trail';
-import type { Engagement, Finding, QaAction, SignOff, TestInput, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EvalReport } from './eval/harness';
 
 export { AppError } from './errors';
 
 export const ENGINE_VERSION = '0.1.0';
-
-export const USERS: User[] = [
-  { id: 'auditor', name: 'Asha Auditor', role: 'auditor' },
-  { id: 'reviewer', name: 'Ravi Reviewer', role: 'reviewer' },
-  { id: 'approver', name: 'Priya QA Head', role: 'approver' },
-];
 
 export interface NewEngagement {
   name: string;
@@ -45,8 +40,6 @@ export interface MutationOptions {
 
 type Emit = (bundle: UnsealedBundle) => void;
 
-const PREPARERS = ['auditor', 'reviewer'];
-
 export class AuditService {
   readonly grounding: Grounding;
 
@@ -61,13 +54,7 @@ export class AuditService {
     return this.llm ? { id: this.llm.id, model: this.llm.model } : { ...OFFLINE };
   }
 
-  user(id: string | undefined): User {
-    const u = USERS.find((x) => x.id === id);
-    if (!u) throw new AppError(401, 'Unknown user; send x-user-id header');
-    return u;
-  }
-
-  private require(user: User, roles: string[], what: string) {
+  private require(user: User, roles: readonly Role[], what: string) {
     if (!roles.includes(user.role)) throw new AppError(403, `${user.role} may not ${what}`);
   }
 
@@ -111,7 +98,7 @@ export class AuditService {
   }
 
   async createEngagement(input: NewEngagement, actor: User): Promise<Engagement> {
-    this.require(actor, PREPARERS, 'create engagements');
+    this.require(actor, PREPARER_ROLES, 'create engagements');
     if (!input.packIds.length) throw new AppError(400, 'Select at least one content pack');
     input.packIds.forEach((id) => {
       if (!this.registry.packs.has(id)) throw new AppError(400, `Unknown pack ${id}`);
@@ -139,7 +126,7 @@ export class AuditService {
   // ---------- Module orchestration ----------
 
   async runModule(engagementId: string, moduleId: string, actor: User, input: Record<string, unknown> = {}, opts: MutationOptions = {}) {
-    this.require(actor, PREPARERS, 'run modules');
+    this.require(actor, PREPARER_ROLES, 'run modules');
     const mod = (() => {
       try {
         return getModule(moduleId);
@@ -178,6 +165,8 @@ export class AuditService {
       };
       emit(structuredClone(bundle));
       mod.apply(e, output, bundle.id);
+      // Whoever runs Gap Writer prepared the findings it drafted, so they may not sign them.
+      for (const f of e.findings) if (f.bundleId === bundle.id) f.preparedBy = [actor.id];
       return e;
     });
     return { bundle: sealed[0], engagement };
@@ -186,7 +175,7 @@ export class AuditService {
   // ---------- Human steps (also written to the trail) ----------
 
   async setScope(engagementId: string, items: { controlId: string; included: boolean }[], actor: User, opts: MutationOptions = {}) {
-    this.require(actor, PREPARERS, 'change scope');
+    this.require(actor, PREPARER_ROLES, 'change scope');
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
       for (const it of items) {
         const s = e.scope.find((x) => x.controlId === it.controlId);
@@ -200,7 +189,7 @@ export class AuditService {
   }
 
   async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'>, actor: User, opts: MutationOptions = {}) {
-    this.require(actor, PREPARERS, 'record test work');
+    this.require(actor, PREPARER_ROLES, 'record test work');
     if (input.exceptions > input.sampleTested) throw new AppError(400, 'Exceptions cannot exceed the sample tested');
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
       if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
@@ -220,14 +209,16 @@ export class AuditService {
     actor: User,
     opts: MutationOptions = {},
   ) {
-    this.require(actor, PREPARERS, 'edit findings');
+    this.require(actor, PREPARER_ROLES, 'edit findings');
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
       const idx = e.findings.findIndex((f) => f.id === findingId);
       if (idx < 0) throw new AppError(404, `Finding ${findingId} not found`);
       if (e.findings[idx].status === 'approved') throw new AppError(409, 'Approved findings are locked', 'FINDING_LOCKED');
 
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
-      const edited: Finding = { ...e.findings[idx], ...patch, status: 'draft', signOffs: [] };
+      const previous = e.findings[idx];
+      const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
+      const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed);
       e.findings[idx] = finding;
       emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));
@@ -242,16 +233,19 @@ export class AuditService {
       if (!f) throw new AppError(404, `Finding ${findingId} not found`);
       if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
 
+      const preparedBy = f.preparedBy ?? [];
       let meaning: SignOff['meaning'];
       if (action === 'review') {
-        this.require(actor, ['reviewer'], 'review findings');
+        this.require(actor, REVIEWER_ROLES, 'review findings');
         if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
+        if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
         f.status = 'reviewed';
         meaning = 'Reviewed';
       } else {
-        this.require(actor, ['approver'], `${action} findings`);
+        this.require(actor, APPROVER_ROLES, `${action} findings`);
         if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
-        if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(409, 'Approver must differ from reviewer');
+        if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
+        if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
         f.status = action === 'approve' ? 'approved' : 'rejected';
         meaning = action === 'approve' ? 'Approved' : 'Rejected';
       }

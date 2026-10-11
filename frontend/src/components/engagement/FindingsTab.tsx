@@ -112,20 +112,20 @@ function FindingCard({ f, engagementId, reload }: { f: Finding; engagementId: st
         )}
         <Divider sx={{ my: 1.5 }} />
         <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-          {(role === 'auditor' || role === 'reviewer') && f.status !== 'approved' && (
+          {(role === 'auditor' || role === 'audit_manager') && f.status !== 'approved' && (
             <Button size="small" onClick={() => setEditing(true)}>
               Edit
             </Button>
           )}
-          {((role === 'reviewer' && f.status === 'draft') || (role === 'approver' && f.status === 'reviewed')) && (
+          {((role === 'audit_manager' && f.status === 'draft') || (role === 'cae' && f.status === 'reviewed')) && (
             <>
               <TextField size="small" placeholder="Sign-off comment" value={comment} onChange={(e) => setComment(e.target.value)} sx={{ minWidth: 280 }} />
-              {role === 'reviewer' && (
+              {role === 'audit_manager' && (
                 <ActionButton size="small" action={sign('review')}>
                   Sign as reviewed
                 </ActionButton>
               )}
-              {role === 'approver' && (
+              {role === 'cae' && (
                 <>
                   <ActionButton size="small" color="success" action={sign('approve')}>
                     Approve
@@ -137,8 +137,8 @@ function FindingCard({ f, engagementId, reload }: { f: Finding; engagementId: st
               )}
             </>
           )}
-          {f.status === 'draft' && role !== 'reviewer' && <Typography variant="caption" color="text.secondary">Awaiting reviewer sign-off (switch user to Reviewer).</Typography>}
-          {f.status === 'reviewed' && role !== 'approver' && <Typography variant="caption" color="text.secondary">Awaiting approver sign-off (switch user to QA Head).</Typography>}
+          {f.status === 'draft' && role !== 'audit_manager' && <Typography variant="caption" color="text.secondary">Awaiting review by an audit manager.</Typography>}
+          {f.status === 'reviewed' && role !== 'cae' && <Typography variant="caption" color="text.secondary">Awaiting approval by the Chief Audit Executive.</Typography>}
         </Stack>
       </CardContent>
       {editing && <EditDialog finding={f} engagementId={engagementId} onClose={() => setEditing(false)} onSaved={reload} />}

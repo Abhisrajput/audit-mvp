@@ -3,7 +3,8 @@ import { connectPg } from './db';
 import { listEngagements } from './db/engagement-repo';
 import { createProvider } from './engine/llm/router';
 import { PackRegistry } from './engine/packs';
-import { AuditService, USERS } from './service';
+import { DEV_USERS } from './auth/dev-users';
+import { AuditService } from './service';
 
 // Seeds two fictitious demo engagements (food ingredients + pharma) that walk
 // the whole chain, so the UI has something to show. Only seeds an empty
@@ -19,7 +20,7 @@ async function main() {
       throw new Error('Database already has engagements. Seed only an empty database (locally: docker compose down -v, then migrate).');
     }
     const svc = new AuditService(db, PackRegistry.loadFromDir(), createProvider());
-    const [auditor, reviewer, approver] = USERS;
+    const [auditor, reviewer, approver] = DEV_USERS;
 
     async function build(meta: Parameters<AuditService['createEngagement']>[0], fields: Field[], approveFirst: number) {
       const e = await svc.createEngagement(meta, auditor);
