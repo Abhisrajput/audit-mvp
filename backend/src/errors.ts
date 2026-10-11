@@ -10,6 +10,11 @@ export type ErrorCode =
   | 'SOD_VIOLATION'
   | 'CSRF_FAILED'
   | 'PENDING_ACCESS'
+  | 'REAUTH_REQUIRED'
+  | 'REAUTH_STALE'
+  | 'REAUTH_USER_MISMATCH'
+  | 'INTENT_EXPIRED'
+  | 'CONTENT_CHANGED'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

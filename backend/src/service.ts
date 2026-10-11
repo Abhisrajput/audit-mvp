@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
+import type { Transaction } from 'kysely';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
+import type { DB } from './db/schema';
+import { insertSignature } from './db/signature-repo';
+import { findingContentHash } from './signing/content-hash';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
 } from './db/engagement-repo';
@@ -36,6 +40,18 @@ export interface NewEngagement {
 /** Optional optimistic-concurrency check: the engagement version the caller last saw. */
 export interface MutationOptions {
   expectedVersion?: number;
+}
+
+export type SignAction = 'review' | 'approve' | 'reject';
+
+/** Proof that the signer re-authenticated for this exact content (plan 1C). */
+export interface SignatureContext {
+  /** Content hash captured when the signing request was made; the signature is refused if the finding changed since. */
+  contentHash: string;
+  reauthMethod: 'oidc' | 'dev';
+  /** When the signer re-authenticated (ISO). */
+  reauthAt: string;
+  intentId: string;
 }
 
 type Emit = (bundle: UnsealedBundle) => void;
@@ -76,7 +92,7 @@ export class AuditService {
   private async mutate<T>(
     engagementId: string,
     opts: MutationOptions,
-    fn: (e: Engagement, emit: Emit) => Promise<T> | T,
+    fn: (e: Engagement, emit: Emit, trx: Transaction<DB>) => Promise<T> | T,
   ): Promise<{ result: T; sealed: TrailBundle[] }> {
     return this.db.kysely.transaction().execute(async (trx) => {
       const loaded = await loadEngagement(trx, engagementId, { forUpdate: true });
@@ -89,7 +105,7 @@ export class AuditService {
         );
       }
       const pending: UnsealedBundle[] = [];
-      const result = await fn(loaded.engagement, (b) => pending.push(b));
+      const result = await fn(loaded.engagement, (b) => pending.push(b), trx);
       await saveEngagement(trx, loaded);
       const sealed: TrailBundle[] = [];
       for (const b of pending) sealed.push(await appendTrail(trx, b));
@@ -227,37 +243,64 @@ export class AuditService {
     return result;
   }
 
-  async signOff(engagementId: string, findingId: string, action: 'review' | 'approve' | 'reject', comment: string, actor: User, opts: MutationOptions = {}) {
-    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+  /** Who may sign what, and what signing does. The same checks guard the signing request and the signature itself. */
+  private signOffGuard(f: Finding, action: SignAction, actor: User): { meaning: SignOff['meaning']; status: Finding['status'] } {
+    if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
+    const preparedBy = f.preparedBy ?? [];
+    if (action === 'review') {
+      this.require(actor, REVIEWER_ROLES, 'review findings');
+      if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
+      if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
+      return { meaning: 'Reviewed', status: 'reviewed' };
+    }
+    this.require(actor, APPROVER_ROLES, `${action} findings`);
+    if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
+    if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
+    if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
+    return action === 'approve' ? { meaning: 'Approved', status: 'approved' } : { meaning: 'Rejected', status: 'rejected' };
+  }
+
+  /** Checks a signature would be allowed, before the signer is asked to re-authenticate; returns the content to bind. */
+  async checkSignOff(engagementId: string, findingId: string, action: SignAction, actor: User): Promise<{ contentHash: string }> {
+    const e = await this.engagement(engagementId);
+    const f = e.findings.find((x) => x.id === findingId);
+    if (!f) throw new AppError(404, `Finding ${findingId} not found`);
+    this.signOffGuard(f, action, actor);
+    return { contentHash: findingContentHash(f) };
+  }
+
+  async signOff(
+    engagementId: string, findingId: string, action: SignAction, comment: string, actor: User,
+    opts: MutationOptions = {}, signature?: SignatureContext,
+  ) {
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const f = e.findings.find((x) => x.id === findingId);
       if (!f) throw new AppError(404, `Finding ${findingId} not found`);
-      if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
-
-      const preparedBy = f.preparedBy ?? [];
-      let meaning: SignOff['meaning'];
-      if (action === 'review') {
-        this.require(actor, REVIEWER_ROLES, 'review findings');
-        if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
-        if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
-        f.status = 'reviewed';
-        meaning = 'Reviewed';
-      } else {
-        this.require(actor, APPROVER_ROLES, `${action} findings`);
-        if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
-        if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
-        if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
-        f.status = action === 'approve' ? 'approved' : 'rejected';
-        meaning = action === 'approve' ? 'Approved' : 'Rejected';
+      const contentHash = findingContentHash(f);
+      if (signature && signature.contentHash !== contentHash) {
+        throw new AppError(409, 'The finding changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
       }
-      // Signature manifestation: who, in what role, what it means, and when.
-      const sig: SignOff = { userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at: new Date().toISOString() };
+      const { meaning, status } = this.signOffGuard(f, action, actor);
+      f.status = status;
+
+      // Signature manifestation (§11.50) bound to the signed content (§11.70).
+      const at = new Date().toISOString();
+      const reauth: NonNullable<SignOff['reauth']> = signature ? { method: signature.reauthMethod, at: signature.reauthAt } : { method: 'none', at: null };
+      const sig: SignOff = {
+        userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at,
+        signatureId: `SIG-${crypto.randomBytes(6).toString('hex')}`, contentHash, reauth,
+      };
       f.signOffs.push(sig);
-      emit(this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment }, sig));
+      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: signature?.intentId ?? null }, sig);
+      emit(bundle);
+      await insertSignature(trx, {
+        id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
+        contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: signature?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
+      });
       return f;
     });
     return result;
   }
-
   // ---------- Trail ----------
 
   private humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
