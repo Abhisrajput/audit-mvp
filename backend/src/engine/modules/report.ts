@@ -32,6 +32,7 @@ function findingMd(f: Finding, n: number): string {
     ``,
     `**Rating:** ${f.rating} &nbsp; **Control:** ${f.controlId} &nbsp; **Sign-off:** ${signedBy || 'none'}`,
     ``,
+    ...(f.signatureIssues?.length ? [`**Signature issues:** ${f.signatureIssues.join('; ')}`, ``] : []),
     `- **Condition:** ${f.condition}`,
     `- **Criteria:** ${f.criteria}`,
     `- **Cause:** ${f.cause}`,

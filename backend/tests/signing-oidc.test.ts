@@ -7,6 +7,8 @@ import { createOidcClient, type OidcClient } from '../src/auth/oidc';
 import { sql } from 'kysely';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
+import { findingContentHash } from '../src/signing/content-hash';
+import { claimIntent, getIntent } from '../src/signing/intent-repo';
 import type { AuditService } from '../src/service';
 import { newService } from './helpers';
 import { devAuthConfig, signIn } from './http';
@@ -31,6 +33,7 @@ describe('signing with identity-provider re-authentication', () => {
   beforeEach(() => {
     mock.setAuthTimeOffset(0);
     mock.setOmitAuthTime(false);
+    mock.setOnToken(null);
   });
 
   /**
@@ -186,5 +189,36 @@ describe('signing with identity-provider re-authentication', () => {
     const row = await svc.db.kysely.selectFrom('sign_intents').select('state').where('id', '=', intent.body.intentId).executeTakeFirstOrThrow();
     await request(app).get(`/auth/callback?error=access_denied&state=${row.state}`);
     expect((await priya.agent.get(`/api/sign-intents/${intent.body.intentId}`).expect(200)).body).toMatchObject({ status: 'failed', code: 'REAUTH_REQUIRED' });
+  });
+
+  it('leaves a request another attempt claimed while a failing callback waited on the identity provider', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    const db = svc.db.kysely;
+    const priya = await priyaSession(app);
+    const intent = await priya.agent.post(`/api/engagements/${id}/findings/${fid}/sign-intents`).set('x-csrf-token', priya.csrf).send({ action: 'approve' }).expect(201);
+    const intentId = intent.body.intentId as string;
+    const popup = await priya.agent.get(intent.body.reauthUrl).expect(302);
+    const back = new URL((await fetch(popup.headers.location, { redirect: 'manual' })).headers.get('location')!);
+    back.searchParams.set('code', 'forged');
+    // While this callback is at the token endpoint, the genuine attempt claims the request.
+    mock.setOnToken(async () => {
+      expect(await claimIntent(db, intentId)).toBe(true);
+    });
+    const before = (await readTrail(db)).filter((b) => b.moduleId === 'identity:sign-failed').length;
+    const result = await request(app).get(back.pathname + back.search);
+    expect(result.text).not.toMatch(/signature was recorded/);
+    expect((await getIntent(db, intentId))!.status).toBe('claimed');
+    const entries = (await readTrail(db)).filter((b) => b.moduleId === 'identity:sign-failed').slice(before);
+    expect(entries.every((b) => (b.output as any).replay === true)).toBe(true);
+
+    // The genuine attempt completes: the signature commits and the request ends signed.
+    const e = await svc.engagement(id);
+    const user = (await db.selectFrom('users').selectAll().where('subject', '=', PRIYA.sub).executeTakeFirstOrThrow());
+    const f = e.findings.find((x) => x.id === fid)!;
+    await svc.signOff(id, fid, 'approve', '', { id: user.id, name: user.name, role: user.role! } as any, {}, {
+      contentHash: findingContentHash(f), reauthMethod: 'oidc', reauthAt: new Date().toISOString(), intentId,
+    });
+    expect((await getIntent(db, intentId))!.status).toBe('signed');
+    expect((await listSignatures(db, id)).filter((s) => s.meaning === 'Approved')).toHaveLength(1);
   });
 });

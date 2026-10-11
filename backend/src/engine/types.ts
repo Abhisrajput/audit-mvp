@@ -173,6 +173,11 @@ export interface Finding {
   bundleId: string;
   /** Users who drafted or edited this finding since it was last reset; none of them may sign it. */
   preparedBy?: string[];
+  /**
+   * Set only in API responses and exports, never stored: problems found by checking the finding against the
+   * append-only signature records, e.g. a recorded signature that is missing from the finding.
+   */
+  signatureIssues?: string[];
 }
 
 export interface AuditReport {

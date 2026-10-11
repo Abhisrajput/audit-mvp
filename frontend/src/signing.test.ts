@@ -9,17 +9,19 @@ type Status = { status: string; code?: string | null; message?: string | null };
  */
 function fakeDeps(statuses: (Status | Error)[], opts: { intentError?: Error } = {}) {
   const calls: string[] = [];
+  const bodies: [string, unknown][] = [];
   const navigated: string[] = [];
   const closed: SigningWindow[] = [];
   let t = 0;
   const deps: SigningDeps = {
-    api: (async (path: string, init?: { method?: string }) => {
+    api: (async (path: string, init?: { method?: string; body?: unknown }) => {
       calls.push(`${init?.method ?? 'GET'} ${path}`);
+      if (init?.body !== undefined) bodies.push([path, init.body]);
       if (path.endsWith('/sign-intents')) {
         if (opts.intentError) throw opts.intentError;
         return { intentId: 'INT-1', reauthUrl: '/auth/sign/INT-1', method: 'dev', expiresAt: new Date(10 * 60_000).toISOString() };
       }
-      if (path.endsWith('/cancel')) return { status: 'failed', code: 'REAUTH_REQUIRED', message: 'Cancelled before re-authentication finished' };
+      if (path.endsWith('/cancel')) return { status: 'failed', code: 'CANCELLED', message: 'Cancelled before re-authentication finished' };
       const next = statuses.shift() ?? { status: 'pending' };
       if (next instanceof Error) throw next;
       return { code: null, message: null, ...next };
@@ -36,7 +38,7 @@ function fakeDeps(statuses: (Status | Error)[], opts: { intentError?: Error } = 
     },
     now: () => t,
   };
-  return { deps, calls, navigated, closed, setNow: (ms: number) => (t = ms) };
+  return { deps, calls, bodies, navigated, closed, setNow: (ms: number) => (t = ms) };
 }
 
 const polls = (calls: string[]) => calls.filter((c) => c === 'GET /sign-intents/INT-1').length;
@@ -103,7 +105,8 @@ describe('signWithReauth', () => {
 
   it('cancels the request when the signer cancels, and says nothing was signed once the server confirms', async () => {
     const controller = new AbortController();
-    const { deps, calls } = fakeDeps([{ status: 'pending' }, { status: 'failed', code: 'REAUTH_REQUIRED', message: 'Cancelled before re-authentication finished' }]);
+    // The server's message wording is irrelevant: the cancellation is recognised by its code.
+    const { deps, calls, bodies } = fakeDeps([{ status: 'pending' }, { status: 'failed', code: 'CANCELLED', message: 'any wording' }]);
     const sleeping = deps.sleep;
     deps.sleep = async (ms) => {
       await sleeping(ms);
@@ -113,6 +116,7 @@ describe('signWithReauth', () => {
       code: 'CANCELLED', message: expect.stringMatching(/Nothing was signed/),
     });
     expect(calls).toContain('POST /sign-intents/INT-1/cancel');
+    expect(bodies.filter(([p]) => p.endsWith('/cancel'))).toEqual([['/sign-intents/INT-1/cancel', {}]]);
     expect(calls.at(-1)).toBe('GET /sign-intents/INT-1');
   });
 
@@ -131,10 +135,22 @@ describe('signWithReauth', () => {
   });
 
   it('gives up when the signing request expires, saying nothing was signed once the server confirms', async () => {
-    const { deps, setNow } = fakeDeps([{ status: 'failed', code: 'REAUTH_REQUIRED', message: 'Cancelled before re-authentication finished' }]);
+    const { deps, setNow, bodies } = fakeDeps([{ status: 'failed', code: 'INTENT_EXPIRED', message: 'The signing request expired before re-authentication finished' }]);
     setNow(11 * 60_000);
     await expect(signWithReauth('ENG-1', 'F-1', 'review', '', { closed: false }, { deps })).rejects.toMatchObject({
       code: 'INTENT_EXPIRED', message: expect.stringMatching(/expired.*Nothing was signed/),
+    });
+    expect(bodies.filter(([p]) => p.endsWith('/cancel'))).toEqual([['/sign-intents/INT-1/cancel', { reason: 'expired' }]]);
+  });
+
+  it("shows the server's reason when re-authentication did not complete", async () => {
+    const { deps } = fakeDeps([{ status: 'failed', code: 'REAUTH_REQUIRED', message: 'This account can no longer sign.' }]);
+    await expect(signWithReauth('ENG-1', 'F-1', 'approve', '', { closed: false }, { deps })).rejects.toMatchObject({
+      code: 'REAUTH_REQUIRED', message: 'This account can no longer sign.',
+    });
+    const silent = fakeDeps([{ status: 'failed', code: 'REAUTH_REQUIRED', message: null }]);
+    await expect(signWithReauth('ENG-1', 'F-1', 'approve', '', { closed: false }, { deps: silent.deps })).rejects.toMatchObject({
+      code: 'REAUTH_REQUIRED', message: expect.stringMatching(/did not complete/),
     });
   });
 });

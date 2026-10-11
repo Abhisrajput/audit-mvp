@@ -146,10 +146,15 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
                 {howSigned(s)}
                 {s.signatureId && ` · ${s.signatureId}`}
                 {s.comment && ` — "${s.comment}"`}
-                {s.broken && <Chip size="small" color="error" label="Signature broken: content changed after signing" sx={{ ml: 1 }} />}
+                {s.broken && <Chip size="small" color="error" label="Signature broken: does not match its signature record" sx={{ ml: 1 }} />}
               </Typography>
             ))}
           </Stack>
+        )}
+        {!!f.signatureIssues?.length && (
+          <Alert severity="error" sx={{ mt: 1.5 }}>
+            Signature records disagree with this finding: {f.signatureIssues.join('; ')}
+          </Alert>
         )}
         <Divider sx={{ my: 1.5 }} />
         {waiting && (

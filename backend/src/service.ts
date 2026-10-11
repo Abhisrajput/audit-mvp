@@ -323,7 +323,10 @@ export class AuditService {
         contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
       });
       // The signing request is marked signed in this same transaction, so it is never left 'claimed' after a signature commits.
-      if (reauthed) await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']);
+      // A request this attempt does not hold (pending, failed, signed or unknown) rolls back the whole signature.
+      if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
+        throw new AppError(409, 'This signing request is no longer valid', 'INTENT_EXPIRED');
+      }
       return f;
     });
     return result;
@@ -382,7 +385,7 @@ export class AuditService {
   /** Flat export for write-back into the client's QMS / GRC system of record. */
   async findingsCsv(engagementId: string): Promise<string> {
     const e = await this.engagementWithSignatureStatus(engagementId);
-    const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'signatures', 'bundleId'];
+    const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'signatures', 'signature_issues', 'bundleId'];
     // Every sign-off: meaning|name|role|time|re-authentication method|signature id|valid, broken or legacy.
     // A legacy sign-off (no signature record) is never shown as re-authenticated.
     const signature = (s: SignOff) => {
@@ -396,6 +399,7 @@ export class AuditService {
         f.citations.map((c) => `${c.regulation} ${c.ref}`).join('; '),
         f.evidenceRefs.join('; '),
         f.signOffs.map(signature).join('; '),
+        (f.signatureIssues ?? []).join('; '),
         f.bundleId,
       ].map((v) => esc(String(v))).join(','),
     );

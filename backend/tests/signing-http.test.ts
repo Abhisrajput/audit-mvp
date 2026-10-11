@@ -183,13 +183,70 @@ describe('signing over HTTP', () => {
     const { id, fid } = await draftFinding(app);
     const reviewer = await signIn(app, 'reviewer');
     await devSign(reviewer, 'reviewer', id, fid, 'review');
-    // An MVP-era / imported sign-off: claims OIDC re-authentication but has no signature id.
-    await sql`UPDATE findings SET data = jsonb_set(data #- '{signOffs,0,signatureId}', '{signOffs,0,reauth}', '{"method":"oidc","at":"2026-01-01T00:00:00.000Z"}'::jsonb) WHERE id = ${fid}`.execute(svc.db.kysely);
-    const s = (await reviewer.get(`/api/engagements/${id}`)).body.findings[0].signOffs[0];
-    expect(s).toMatchObject({ legacy: true, broken: false });
+    // An MVP-era / imported sign-off by someone with no signature record at all; it claims OIDC re-authentication.
+    const imported = { userId: 'viewer', userName: 'Imported Signer', role: 'cae', meaning: 'Approved', comment: '', at: '2026-01-01T00:00:00.000Z', reauth: { method: 'oidc', at: '2026-01-01T00:00:00.000Z' } };
+    await sql`UPDATE findings SET data = jsonb_insert(data, '{signOffs,-1}', ${JSON.stringify(imported)}::jsonb, true) WHERE id = ${fid}`.execute(svc.db.kysely);
+    const signOffs = (await reviewer.get(`/api/engagements/${id}`)).body.findings[0].signOffs;
+    expect(signOffs[1]).toMatchObject({ userName: 'Imported Signer', legacy: true, broken: false });
+    expect(signOffs[0]).toMatchObject({ legacy: false, broken: false });
     const csv = (await reviewer.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
-    expect(csv).toMatch(/Reviewed\|Ravi Reviewer\|audit_manager\|[^|]+\|none\|\|legacy/);
+    expect(csv).toMatch(/Approved\|Imported Signer\|cae\|[^|]+\|none\|\|legacy/);
     expect(csv).not.toMatch(/\|oidc\|/);
+  });
+
+  it('shows a sign-off whose signature id was stripped as broken, not legacy [REQ-19]', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    await devSign(reviewer, 'reviewer', id, fid, 'review');
+    const approver = await signIn(app, 'approver');
+    await devSign(approver, 'approver', id, fid, 'approve');
+    const [, approval] = await listSignatures(svc.db.kysely, id);
+    await sql`ALTER TABLE findings DISABLE TRIGGER findings_lock_approved`.execute(svc.db.kysely);
+    await sql`UPDATE findings SET data = data #- '{signOffs,1,signatureId}' WHERE id = ${fid}`.execute(svc.db.kysely);
+    const s = (await reviewer.get(`/api/engagements/${id}`)).body.findings[0].signOffs[1];
+    expect(s).toMatchObject({ broken: true, legacy: false, signatureId: approval.id, userName: 'Priya QA Head' });
+    const csv = (await approver.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
+    expect(csv).toContain(`|dev|${approval.id}|broken`);
+  });
+
+  it('reports a signature that was deleted from the finding [REQ-19]', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { auditor, id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    await devSign(reviewer, 'reviewer', id, fid, 'review');
+    const approver = await signIn(app, 'approver');
+    await devSign(approver, 'approver', id, fid, 'approve');
+    const [review] = await listSignatures(svc.db.kysely, id);
+    await sql`ALTER TABLE findings DISABLE TRIGGER findings_lock_approved`.execute(svc.db.kysely);
+    await sql`UPDATE findings SET data = data #- '{signOffs,0}' WHERE id = ${fid}`.execute(svc.db.kysely);
+
+    const f = (await reviewer.get(`/api/engagements/${id}`)).body.findings[0];
+    expect(f.signOffs.map((x: any) => x.meaning)).toEqual(['Approved']);
+    expect(f.signatureIssues).toEqual([`Signature ${review.id} (Reviewed by Ravi Reviewer) is recorded but missing from the finding`]);
+    const csv = (await reviewer.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
+    const [header, row] = csv.split('\n');
+    expect(header).toContain(',signatures,signature_issues,');
+    expect(row).toContain(`"Signature ${review.id} (Reviewed by Ravi Reviewer) is recorded but missing from the finding"`);
+    await auditor.post(`/api/engagements/${id}/modules/report/run`).expect(200);
+    const md = (await auditor.get(`/api/engagements/${id}/report.md`).expect(200)).text;
+    expect(md).toContain(`**Signature issues:** Signature ${review.id} (Reviewed by Ravi Reviewer) is recorded but missing from the finding`);
+    // The issue is shown, never stored.
+    expect((await svc.engagement(id)).findings[0].signatureIssues).toBeUndefined();
+  });
+
+  it('reports nothing for signatures on content that was edited since (history, not tampering)', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { auditor, id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    await devSign(reviewer, 'reviewer', id, fid, 'review');
+    await auditor.put(`/api/engagements/${id}/findings/${fid}`, { condition: 'Six of twenty sequences lacked audit trail review.' }).expect(200);
+    const f = (await reviewer.get(`/api/engagements/${id}`)).body.findings[0];
+    expect(f.signOffs).toEqual([]);
+    expect(f.signatureIssues).toBeUndefined();
+    expect(await listSignatures(svc.db.kysely, id)).toHaveLength(1);
+    const csv = (await reviewer.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
+    expect(csv.split('\n')[1]).toMatch(/,"","","RUN-[0-9a-f]+"$/); // no signatures, no signature issues, then the bundle id
   });
 
   it('marks the request failed, never stuck claimed, when the signature cannot be written', async () => {
@@ -245,7 +302,8 @@ describe('signing over HTTP', () => {
     expect((await viewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`)).status).toBe(404);
     expect((await reviewer.agent.post(`/api/sign-intents/${intent.body.intentId}/cancel`)).status).toBe(403); // CSRF gate
     const cancelled = await reviewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`).expect(200);
-    expect(cancelled.body).toEqual({ status: 'failed', code: 'REAUTH_REQUIRED', message: 'Cancelled before re-authentication finished' });
+    expect(cancelled.body).toEqual({ status: 'failed', code: 'CANCELLED', message: 'Cancelled before re-authentication finished' });
+    expect((await readTrail(svc.db.kysely)).find((b) => b.moduleId === 'identity:sign-failed')!.output).toMatchObject({ code: 'CANCELLED' });
     expect((await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed')).toHaveLength(1);
     await reviewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`).expect(200);
     expect((await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed')).toHaveLength(1);
@@ -254,6 +312,16 @@ describe('signing over HTTP', () => {
     const after = await reviewer.post(`/api/sign-intents/${r.intent.body.intentId}/cancel`).expect(200);
     expect(after.body.status).toBe('signed');
     expect((await reviewer.get(`/api/sign-intents/${r.intent.body.intentId}`)).body.status).toBe('signed');
+  });
+
+  it('records a request the app gave up on at its deadline as expired, not cancelled', async () => {
+    const { app } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
+    const res = await reviewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`, { reason: 'expired' }).expect(200);
+    expect(res.body).toMatchObject({ status: 'failed', code: 'INTENT_EXPIRED' });
+    await reviewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`, { reason: 'nonsense' }).expect(400);
   });
 
   it('serves the signing window uncached and refuses to be framed', async () => {

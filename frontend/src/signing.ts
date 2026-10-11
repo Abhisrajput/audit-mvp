@@ -41,9 +41,10 @@ const MESSAGES: Record<string, string> = {
   INTENT_EXPIRED: 'The signing request expired. Start signing again.',
   CONTENT_CHANGED: 'The finding changed after you started signing. Review it again, then sign.',
   REAUTH_REQUIRED: 'Re-authentication did not complete. Try again.',
+  CANCELLED: 'Signing was cancelled. Nothing was signed.',
 };
-/** The server's wording for a request cancelled by the app (POST /sign-intents/:id/cancel). */
-const CANCELLED = 'Cancelled before re-authentication finished';
+/** Codes whose server message names the specific cause, so it is shown when present. */
+const SERVER_EXPLAINS = new Set(['REAUTH_STALE', 'REAUTH_REQUIRED']);
 const LOST_CONTACT = 'Lost contact while signing. Reload to see whether your signature was recorded.';
 const POLL_MS = 1000;
 const MAX_RETRIES = 3;
@@ -64,9 +65,9 @@ export function openSigningWindow(deps: SigningDeps = browserSigning): SigningWi
   return deps.openPopup('about:blank', `audit-sign-${Date.now()}`);
 }
 
-/** REAUTH_STALE has several causes, and the server names the one that happened. */
+/** REAUTH_STALE and REAUTH_REQUIRED have several causes, and the server names the one that happened. */
 function explain(s: IntentStatus): SigningError {
-  const text = s.code === 'REAUTH_STALE' ? s.message || MESSAGES.REAUTH_STALE : (s.code && MESSAGES[s.code]) || s.message || 'Signing failed.';
+  const text = s.code && SERVER_EXPLAINS.has(s.code) ? s.message || MESSAGES[s.code] : (s.code && MESSAGES[s.code]) || s.message || 'Signing failed.';
   return new SigningError(text, s.code);
 }
 
@@ -118,8 +119,9 @@ export async function signWithReauth(
   }
 
   // Cancelled or out of time: cancel on the server, then believe only what it says.
+  const cancelled = !!signal?.aborted;
   try {
-    await deps.api(`/sign-intents/${intent.intentId}/cancel`, { method: 'POST' });
+    await deps.api(`/sign-intents/${intent.intentId}/cancel`, { method: 'POST', body: cancelled ? {} : { reason: 'expired' } });
   } catch {
     // The status read below decides.
   }
@@ -132,11 +134,8 @@ export async function signWithReauth(
   if (final.status === 'signed') return;
   if (!popup.closed) deps.closePopup(popup);
   if (final.status === 'failed') {
-    if (final.message === CANCELLED) {
-      throw signal?.aborted
-        ? new SigningError('Signing cancelled. Nothing was signed.', 'CANCELLED')
-        : new SigningError('The signing request expired. Nothing was signed. Start signing again.', 'INTENT_EXPIRED');
-    }
+    if (final.code === 'CANCELLED') throw new SigningError('Signing cancelled. Nothing was signed.', 'CANCELLED');
+    if (final.code === 'INTENT_EXPIRED') throw new SigningError('The signing request expired. Nothing was signed. Start signing again.', 'INTENT_EXPIRED');
     throw explain(final);
   }
   // Still being completed on the server: we cannot say either way.

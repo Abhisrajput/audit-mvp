@@ -15,6 +15,7 @@ export type ErrorCode =
   | 'REAUTH_USER_MISMATCH'
   | 'INTENT_EXPIRED'
   | 'CONTENT_CHANGED'
+  | 'CANCELLED'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

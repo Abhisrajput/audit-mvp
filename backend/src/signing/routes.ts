@@ -54,11 +54,18 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     res.json(statusOf(await ownIntent(req)));
   }));
 
-  // The app gave up waiting (the signer cancelled, or the request ran out). Only a request nobody has started completing is cancelled.
+  // The app gave up waiting: the signer cancelled (CANCELLED), or the request ran out (`reason: 'expired'`, INTENT_EXPIRED).
+  // Only a request nobody has started completing is cancelled.
   r.post('/api/sign-intents/:intentId/cancel', wrap(async (req, res) => {
+    const { reason } = z.object({ reason: z.enum(['expired']).optional() }).parse(req.body ?? {});
     const intent = await ownIntent(req);
     const { id, name, role } = req.auth!.user;
-    if (intent.status === 'pending') await failIntent(svc, intent, { id, name, role }, 'REAUTH_REQUIRED', 'Cancelled before re-authentication finished', ['pending']);
+    if (intent.status === 'pending') {
+      const [code, message] = reason === 'expired'
+        ? ['INTENT_EXPIRED', 'The signing request expired before re-authentication finished'] as const
+        : ['CANCELLED', 'Cancelled before re-authentication finished'] as const;
+      await failIntent(svc, intent, { id, name, role }, code, message, ['pending']);
+    }
     res.json(statusOf((await getIntent(db, intent.id))!));
   }));
 

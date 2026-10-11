@@ -29,6 +29,7 @@ export async function startMockOidc() {
   let lastAuthorize: Record<string, string> = {};
   let authTimeOffset = 0;
   let omitAuthTime = false;
+  let onToken: (() => Promise<void>) | null = null;
 
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -63,6 +64,7 @@ export async function startMockOidc() {
   });
 
   app.post('/token', async (req, res) => {
+    if (onToken) await onToken();
     const pending = codes.get(req.body.code);
     codes.delete(req.body.code);
     if (!pending) return res.status(400).json({ error: 'invalid_grant' });
@@ -97,6 +99,10 @@ export async function startMockOidc() {
     /** Leave auth_time out of ID tokens, as an IdP without the optional claim configured does. */
     setOmitAuthTime(omit: boolean) {
       omitAuthTime = omit;
+    },
+    /** Runs before the token endpoint answers: lets a test act while the relying party waits on the identity provider. */
+    setOnToken(hook: (() => Promise<void>) | null) {
+      onToken = hook;
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
