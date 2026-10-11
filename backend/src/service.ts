@@ -1,4 +1,10 @@
 import crypto from 'node:crypto';
+import type { Db } from './db';
+import {
+  insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
+} from './db/engagement-repo';
+import { getEvalRun, latestEvalRun, listEvalRuns, saveEvalRun } from './db/eval-repo';
+import { appendTrail, readTrail, type UnsealedBundle } from './db/trail-repo';
 import { Bm25Index, clauseText, controlText } from './engine/grounding';
 import type { LlmProvider } from './engine/llm/provider';
 import { OFFLINE } from './engine/llm/router';
@@ -6,10 +12,10 @@ import { ModuleContext, type Grounding } from './engine/module';
 import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
-import { seal, verifyChain } from './engine/trail';
+import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, SignOff, TestInput, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
-import type { Store } from './store';
+import type { EvalReport } from './eval/harness';
 
 export { AppError } from './errors';
 
@@ -32,12 +38,19 @@ export interface NewEngagement {
   packIds: string[];
 }
 
+/** Optional optimistic-concurrency check: the engagement version the caller last saw. */
+export interface MutationOptions {
+  expectedVersion?: number;
+}
+
+type Emit = (bundle: UnsealedBundle) => void;
+
 const PREPARERS = ['auditor', 'reviewer'];
 
 export class AuditService {
   readonly grounding: Grounding;
 
-  constructor(readonly store: Store, readonly registry: PackRegistry, readonly llm: LlmProvider | null) {
+  constructor(readonly db: Db, readonly registry: PackRegistry, readonly llm: LlmProvider | null) {
     this.grounding = {
       clauses: new Bm25Index([...registry.clauses.values()].map((c) => ({ id: c.id, text: clauseText(c) }))),
       controls: new Bm25Index([...registry.controls.values()].map((c) => ({ id: c.id, text: controlText(c) }))),
@@ -58,13 +71,46 @@ export class AuditService {
     if (!roles.includes(user.role)) throw new AppError(403, `${user.role} may not ${what}`);
   }
 
-  engagement(id: string): Engagement {
-    const e = this.store.findEngagement(id);
-    if (!e) throw new AppError(404, `Engagement ${id} not found`);
-    return e;
+  async engagement(id: string): Promise<Engagement> {
+    const loaded = await loadEngagement(this.db.kysely, id);
+    if (!loaded) throw new AppError(404, `Engagement ${id} not found`);
+    return loaded.engagement;
   }
 
-  createEngagement(input: NewEngagement, actor: User): Engagement {
+  listEngagements(): Promise<EngagementSummary[]> {
+    return listEngagements(this.db.kysely);
+  }
+
+  /**
+   * One transaction per change: lock the engagement row, load it, apply `fn`,
+   * save it with a version bump, then seal the trail bundles `fn` emitted.
+   * Any failure rolls back the state and the trail together.
+   */
+  private async mutate<T>(
+    engagementId: string,
+    opts: MutationOptions,
+    fn: (e: Engagement, emit: Emit) => Promise<T> | T,
+  ): Promise<{ result: T; sealed: TrailBundle[] }> {
+    return this.db.kysely.transaction().execute(async (trx) => {
+      const loaded = await loadEngagement(trx, engagementId, { forUpdate: true });
+      if (!loaded) throw new AppError(404, `Engagement ${engagementId} not found`);
+      if (opts.expectedVersion !== undefined && opts.expectedVersion !== loaded.version) {
+        throw new AppError(
+          409,
+          `Engagement ${engagementId} is at version ${loaded.version}, not ${opts.expectedVersion}; reload and try again`,
+          'VERSION_CONFLICT',
+        );
+      }
+      const pending: UnsealedBundle[] = [];
+      const result = await fn(loaded.engagement, (b) => pending.push(b));
+      await saveEngagement(trx, loaded);
+      const sealed: TrailBundle[] = [];
+      for (const b of pending) sealed.push(await appendTrail(trx, b));
+      return { result, sealed };
+    });
+  }
+
+  async createEngagement(input: NewEngagement, actor: User): Promise<Engagement> {
     this.require(actor, PREPARERS, 'create engagements');
     if (!input.packIds.length) throw new AppError(400, 'Select at least one content pack');
     input.packIds.forEach((id) => {
@@ -83,16 +129,17 @@ export class AuditService {
       findings: [],
       report: null,
     };
-    this.store.engagements.push(e);
-    this.recordHuman(e, 'human:create-engagement', actor, input, { id: e.id });
+    await this.db.kysely.transaction().execute(async (trx) => {
+      await insertEngagement(trx, e);
+      await appendTrail(trx, this.humanBundle(e, 'human:create-engagement', actor, input, { id: e.id }));
+    });
     return e;
   }
 
   // ---------- Module orchestration ----------
 
-  async runModule(engagementId: string, moduleId: string, actor: User, input: Record<string, unknown> = {}) {
+  async runModule(engagementId: string, moduleId: string, actor: User, input: Record<string, unknown> = {}, opts: MutationOptions = {}) {
     this.require(actor, PREPARERS, 'run modules');
-    const e = this.engagement(engagementId);
     const mod = (() => {
       try {
         return getModule(moduleId);
@@ -100,117 +147,128 @@ export class AuditService {
         throw new AppError(404, `Unknown module ${moduleId}`);
       }
     })();
-    const blocker = mod.precondition(e);
-    if (blocker) throw new AppError(409, blocker);
 
-    const startedAt = new Date().toISOString();
-    const ctx = new ModuleContext(e, this.registry, this.grounding, this.llm, actor, input);
-    ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
-    const output = await mod.run(ctx);
-    ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
+    const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit) => {
+      const blocker = mod.precondition(e);
+      if (blocker) throw new AppError(409, blocker);
 
-    const bundle = this.append({
-      id: `RUN-${crypto.randomBytes(4).toString('hex')}`,
-      engagementId: e.id,
-      moduleId: mod.id,
-      moduleVersion: mod.version,
-      engineVersion: ENGINE_VERSION,
-      packVersions: this.registry.versions(e.packIds),
-      provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
-      promptHash: ctx.promptHash,
-      actor: actor.id,
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      inputs: { moduleInput: input, stage: e.stage },
-      retrievalSet: ctx.retrievalSet,
-      executionLog: ctx.log,
-      qaActions: ctx.qa,
-      output,
+      const startedAt = new Date().toISOString();
+      const ctx = new ModuleContext(e, this.registry, this.grounding, this.llm, actor, input);
+      ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
+      const output = await mod.run(ctx);
+      ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
+
+      const bundle: UnsealedBundle = {
+        id: `RUN-${crypto.randomBytes(4).toString('hex')}`,
+        engagementId: e.id,
+        moduleId: mod.id,
+        moduleVersion: mod.version,
+        engineVersion: ENGINE_VERSION,
+        packVersions: this.registry.versions(e.packIds),
+        provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
+        promptHash: ctx.promptHash,
+        actor: actor.id,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        inputs: { moduleInput: input, stage: e.stage },
+        retrievalSet: ctx.retrievalSet,
+        executionLog: ctx.log,
+        qaActions: ctx.qa,
+        output,
+      };
+      emit(bundle);
+      mod.apply(e, output, bundle.id);
+      return e;
     });
-    mod.apply(e, output, bundle.id);
-    this.store.save();
-    return { bundle, engagement: e };
+    return { bundle: sealed[0], engagement };
   }
 
   // ---------- Human steps (also written to the trail) ----------
 
-  setScope(engagementId: string, items: { controlId: string; included: boolean }[], actor: User) {
+  async setScope(engagementId: string, items: { controlId: string; included: boolean }[], actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARERS, 'change scope');
-    const e = this.engagement(engagementId);
-    for (const it of items) {
-      const s = e.scope.find((x) => x.controlId === it.controlId);
-      if (!s) throw new AppError(400, `Control ${it.controlId} is not a scope candidate`);
-      s.included = it.included;
-    }
-    this.recordHuman(e, 'human:scope-decision', actor, items, { included: e.scope.filter((s) => s.included).map((s) => s.controlId) });
-    return e;
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      for (const it of items) {
+        const s = e.scope.find((x) => x.controlId === it.controlId);
+        if (!s) throw new AppError(400, `Control ${it.controlId} is not a scope candidate`);
+        s.included = it.included;
+      }
+      emit(this.humanBundle(e, 'human:scope-decision', actor, items, { included: e.scope.filter((s) => s.included).map((s) => s.controlId) }));
+      return e;
+    });
+    return result;
   }
 
-  recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'>, actor: User) {
+  async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'>, actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARERS, 'record test work');
-    const e = this.engagement(engagementId);
-    if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
     if (input.exceptions > input.sampleTested) throw new AppError(400, 'Exceptions cannot exceed the sample tested');
-    const record: TestInput = { ...input, updatedBy: actor.id, updatedAt: new Date().toISOString() };
-    e.testInputs[rowId] = record;
-    delete e.testResults[rowId];
-    this.recordHuman(e, 'human:test-record', actor, { rowId, ...input }, record);
-    return e;
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
+      const record: TestInput = { ...input, updatedBy: actor.id, updatedAt: new Date().toISOString() };
+      e.testInputs[rowId] = record;
+      delete e.testResults[rowId];
+      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...input }, record));
+      return e;
+    });
+    return result;
   }
 
-  editFinding(engagementId: string, findingId: string, patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>, actor: User) {
+  async editFinding(
+    engagementId: string,
+    findingId: string,
+    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    actor: User,
+    opts: MutationOptions = {},
+  ) {
     this.require(actor, PREPARERS, 'edit findings');
-    const e = this.engagement(engagementId);
-    const idx = e.findings.findIndex((f) => f.id === findingId);
-    if (idx < 0) throw new AppError(404, `Finding ${findingId} not found`);
-    if (e.findings[idx].status === 'approved') throw new AppError(409, 'Approved findings are locked');
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      const idx = e.findings.findIndex((f) => f.id === findingId);
+      if (idx < 0) throw new AppError(404, `Finding ${findingId} not found`);
+      if (e.findings[idx].status === 'approved') throw new AppError(409, 'Approved findings are locked', 'FINDING_LOCKED');
 
-    const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
-    const edited: Finding = { ...e.findings[idx], ...patch, status: 'draft', signOffs: [] };
-    const { finding, actions } = findingCitationGate(this.registry, edited, allowed);
-    e.findings[idx] = finding;
-    this.recordHuman(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions);
-    return finding;
+      const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
+      const edited: Finding = { ...e.findings[idx], ...patch, status: 'draft', signOffs: [] };
+      const { finding, actions } = findingCitationGate(this.registry, edited, allowed);
+      e.findings[idx] = finding;
+      emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));
+      return finding;
+    });
+    return result;
   }
 
-  signOff(engagementId: string, findingId: string, action: 'review' | 'approve' | 'reject', comment: string, actor: User) {
-    const e = this.engagement(engagementId);
-    const f = e.findings.find((x) => x.id === findingId);
-    if (!f) throw new AppError(404, `Finding ${findingId} not found`);
-    if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`);
+  async signOff(engagementId: string, findingId: string, action: 'review' | 'approve' | 'reject', comment: string, actor: User, opts: MutationOptions = {}) {
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      const f = e.findings.find((x) => x.id === findingId);
+      if (!f) throw new AppError(404, `Finding ${findingId} not found`);
+      if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
 
-    let meaning: SignOff['meaning'];
-    if (action === 'review') {
-      this.require(actor, ['reviewer'], 'review findings');
-      if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
-      f.status = 'reviewed';
-      meaning = 'Reviewed';
-    } else {
-      this.require(actor, ['approver'], `${action} findings`);
-      if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
-      if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(409, 'Approver must differ from reviewer');
-      f.status = action === 'approve' ? 'approved' : 'rejected';
-      meaning = action === 'approve' ? 'Approved' : 'Rejected';
-    }
-    // Signature manifestation: who, in what role, what it means, and when.
-    const sig: SignOff = { userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at: new Date().toISOString() };
-    f.signOffs.push(sig);
-    this.recordHuman(e, 'human:sign-off', actor, { findingId, action, comment }, sig);
-    return f;
+      let meaning: SignOff['meaning'];
+      if (action === 'review') {
+        this.require(actor, ['reviewer'], 'review findings');
+        if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
+        f.status = 'reviewed';
+        meaning = 'Reviewed';
+      } else {
+        this.require(actor, ['approver'], `${action} findings`);
+        if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
+        if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(409, 'Approver must differ from reviewer');
+        f.status = action === 'approve' ? 'approved' : 'rejected';
+        meaning = action === 'approve' ? 'Approved' : 'Rejected';
+      }
+      // Signature manifestation: who, in what role, what it means, and when.
+      const sig: SignOff = { userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at: new Date().toISOString() };
+      f.signOffs.push(sig);
+      emit(this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment }, sig));
+      return f;
+    });
+    return result;
   }
 
   // ---------- Trail ----------
 
-  private append(bundle: Omit<TrailBundle, 'hash' | 'prevHash' | 'seq'>): TrailBundle {
-    const tip = this.store.trail.at(-1);
-    const sealed = seal(tip ? { seq: tip.seq, hash: tip.hash } : null, bundle);
-    this.store.trail.push(sealed);
-    return sealed;
-  }
-
-  private recordHuman(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []) {
+  private humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
     const now = new Date().toISOString();
-    this.append({
+    return {
       id: `HUM-${crypto.randomBytes(4).toString('hex')}`,
       engagementId: e.id,
       moduleId,
@@ -227,25 +285,39 @@ export class AuditService {
       executionLog: [{ at: now, step: moduleId, detail: `${actor.name} (${actor.role})` }],
       qaActions,
       output,
-    });
-    this.store.save();
+    };
   }
 
-  trailFor(engagementId: string) {
-    return this.store.trail.filter((b) => b.engagementId === engagementId);
+  trailFor(engagementId: string): Promise<TrailBundle[]> {
+    return readTrail(this.db.kysely, engagementId);
   }
 
-  verifyTrail() {
-    return verifyChain(this.store.trail);
+  async verifyTrail() {
+    return verifyChain(await readTrail(this.db.kysely));
   }
 
   modules() {
     return MODULES.map((m) => ({ id: m.id, name: m.name, version: m.version, description: m.description }));
   }
 
+  // ---------- Evaluation runs ----------
+
+  saveEvalRun(r: EvalReport) {
+    return saveEvalRun(this.db.kysely, r);
+  }
+  listEvalRuns() {
+    return listEvalRuns(this.db.kysely);
+  }
+  getEvalRun(id: string) {
+    return getEvalRun(this.db.kysely, id);
+  }
+  latestEvalRun() {
+    return latestEvalRun(this.db.kysely);
+  }
+
   /** Flat export for write-back into the client's QMS / GRC system of record. */
-  findingsCsv(engagementId: string): string {
-    const e = this.engagement(engagementId);
+  async findingsCsv(engagementId: string): Promise<string> {
+    const e = await this.engagement(engagementId);
     const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'approvedBy', 'bundleId'];
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const rows = e.findings.map((f) =>
