@@ -92,6 +92,53 @@ export interface SessionsTable {
   revoked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
+export interface FindingRevisionsTable {
+  engagement_id: string;
+  finding_id: string;
+  revision: number;
+  content_hash: string;
+  recorded_at: Generated<Date>;
+}
+
+type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+type NullableText = ColumnType<string | null, string | null | undefined, string | null>;
+
+export interface SignaturesTable {
+  id: string;
+  engagement_id: string;
+  finding_id: string;
+  user_id: string;
+  user_name: string;
+  role: string;
+  meaning: 'Reviewed' | 'Approved' | 'Rejected';
+  comment: string;
+  content_hash: string;
+  reauth_method: 'oidc' | 'dev' | 'none';
+  reauth_at: NullableTimestamp;
+  intent_id: NullableText;
+  trail_bundle_id: string;
+  signed_at: Timestamp;
+}
+
+export interface SignIntentsTable {
+  id: string;
+  user_id: string;
+  engagement_id: string;
+  finding_id: string;
+  action: 'review' | 'approve' | 'reject';
+  comment: string;
+  content_hash: string;
+  state: string;
+  nonce: string;
+  code_verifier: string;
+  created_at: Generated<Date>;
+  expires_at: Timestamp;
+  status: ColumnType<'pending' | 'claimed' | 'signed' | 'failed', 'pending' | undefined, 'claimed' | 'signed' | 'failed'>;
+  failure_code: NullableText;
+  failure_message: NullableText;
+  completed_at: NullableTimestamp;
+}
+
 export interface DB {
   engagements: EngagementsTable;
   engagement_work: EngagementWorkTable;
@@ -101,4 +148,7 @@ export interface DB {
   schema_migrations: SchemaMigrationsTable;
   users: UsersTable;
   sessions: SessionsTable;
+  finding_revisions: FindingRevisionsTable;
+  signatures: SignaturesTable;
+  sign_intents: SignIntentsTable;
 }

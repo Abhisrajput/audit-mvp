@@ -141,6 +141,14 @@ export interface SignOff {
   meaning: 'Reviewed' | 'Approved' | 'Rejected';
   comment: string;
   at: string;
+  /** Signatures captured since Part 11 signing (plan 1C) carry these. */
+  signatureId?: string;
+  /** SHA-256 of the finding content this signature vouches for. */
+  contentHash?: string;
+  /** How the signer proved who they were at the moment of signing; 'none' for server-side signing (seed, tests). */
+  reauth?: { method: 'oidc' | 'dev' | 'none'; at: string | null };
+  /** Set only in API responses: the finding's content no longer matches what was signed. */
+  broken?: boolean;
 }
 
 /** A finding with triple citation: regulation clause + control + evidence. */
