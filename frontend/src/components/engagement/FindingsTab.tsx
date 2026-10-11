@@ -1,11 +1,12 @@
 import { PlayArrow as PlayArrowIcon } from '@mui/icons-material';
 import {
-  Alert, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
+  Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
 } from '@mui/material';
 import { useState } from 'react';
 import { api } from '../../api';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
+import { signWithReauth } from '../../signing';
 import { useSession } from '../../session';
 import type { Engagement, Finding } from '../../types';
 import { ActionButton, Citations, RiskChip, StatusChip } from '../common';
@@ -66,8 +67,8 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
   const { user } = useSession();
   const [comment, setComment] = useState('');
   const [editing, setEditing] = useState(false);
-  const sign = (action: string) => async () => {
-    await api(`/engagements/${ctx.engagementId}/findings/${f.id}/signoff`, { method: 'POST', ifMatch: ctx.version, body: { action, comment } });
+  const sign = (action: 'review' | 'approve' | 'reject') => async () => {
+    await signWithReauth(ctx.engagementId, f.id, action, comment);
     setComment('');
     await ctx.reload();
   };
@@ -119,7 +120,11 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
             {f.signOffs.map((s, i) => (
               <Typography key={i} variant="body2" color="text.secondary">
                 ✍ {s.meaning} by {s.userName} ({s.role}) at {new Date(s.at).toLocaleString()}
+                {s.reauth && s.reauth.method !== 'none'
+                  ? ` · re-authenticated ${s.reauth.method === 'oidc' ? 'with the identity provider' : 'by demo confirmation'}`
+                  : ' · not re-authenticated'}
                 {s.comment && ` — "${s.comment}"`}
+                {s.broken && <Chip size="small" color="error" label="Signature broken: content changed after signing" sx={{ ml: 1 }} />}
               </Typography>
             ))}
           </Stack>
@@ -134,6 +139,9 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
           {(canReview || canApprove) && !blockedBySod && (
             <>
               <TextField size="small" placeholder="Sign-off comment" value={comment} onChange={(e) => setComment(e.target.value)} sx={{ minWidth: 280 }} />
+              <Typography variant="caption" color="text.secondary">
+                Signing opens a window where you confirm your identity again.
+              </Typography>
               {canReview && (
                 <ActionButton size="small" action={sign('review')}>
                   Sign as reviewed

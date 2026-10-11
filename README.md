@@ -114,6 +114,19 @@ cd backend && npm run dev                     # then cd frontend && npm run dev
 
 Sign in as `asha`, `ravi`, `priya` or `arun` with the password `demo`. `nina` has no group, so she shows the pending-access page.
 
+### Electronic signatures (21 CFR Part 11)
+
+Signing a finding as **Reviewed**, **Approved** or **Rejected** is an electronic signature:
+
+- **Confirm it's you, again, at the moment of signing.** A window opens:
+  - With your organisation's sign-in, the identity provider asks for your password again. The signature only counts if you authenticated there within the last **2 minutes**.
+  - With demo sign-in, you type your user id.
+- **Bound to exactly what you saw.** The signature records the SHA-256 of the finding's content. If someone changes the finding while you are signing, the signature is refused ("the finding changed after you started signing").
+- **Shown with the finding and in the report:** full name, role, meaning, time, and how you re-authenticated. Signatures are kept in an append-only table. A signature whose content no longer matches is flagged **broken**.
+- **Single-use requests.** Each signing request lasts 5 minutes and works once. Failed attempts are recorded in the audit trail.
+
+Seeded demo data is signed by the seed script without re-authentication and shows "not re-authenticated".
+
 ### Demo script (≈10 minutes)
 
 1. **Engagements**: open *H1 2026 Food Safety & Commodity Risk Audit*.
