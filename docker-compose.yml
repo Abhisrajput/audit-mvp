@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: audit
       POSTGRES_USER: audit
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audit-dev-only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
@@ -20,7 +20,7 @@ services:
     build: ./backend
     command: ['node', 'dist/db/cli.js', 'migrate']
     environment:
-      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:-audit-dev-only}@postgres:5432/audit
+      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: '3002'
-      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:-audit-dev-only}@postgres:5432/audit
+      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
       # Local demo defaults. A real deployment sets NODE_ENV=production, DEV_AUTH=false and the OIDC_* settings.
       NODE_ENV: ${NODE_ENV:-development}
       DEV_AUTH: ${DEV_AUTH:-true}
@@ -70,7 +70,8 @@ services:
     command: ['start-dev', '--import-realm', '--http-port=8081']
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-dev-only}
+      # Set KEYCLOAK_ADMIN_PASSWORD in .env before using the sso profile (compose evaluates this even when the profile is off)
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
     volumes:
       - ./deploy/keycloak/audit-realm.json:/opt/keycloak/data/import/audit-realm.json:ro
     ports:

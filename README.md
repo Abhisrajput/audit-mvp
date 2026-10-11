@@ -49,11 +49,12 @@ Requires Node 20+ (tested on 22) and Docker.
 
 ```bash
 # Database (Postgres 16 + pgvector) on localhost:5432
+cp .env.example .env   # then set POSTGRES_PASSWORD
 docker compose up -d postgres
 
 # API (port 3002)
 cd backend
-cp .env.example .env
+cp .env.example .env   # then set DATABASE_URL to use your POSTGRES_PASSWORD
 npm install
 npm run migrate     # apply SQL migrations; the API never migrates by itself
 npm run seed        # two demo engagements (empty database only): food+treasury, and pharma GMP
@@ -65,7 +66,7 @@ npm install
 npm run dev         # open http://localhost:5174
 ```
 
-Or run everything with Docker: `docker compose up --build` from the repo root.
+Or run everything with Docker: `cp .env.example .env` (then set `POSTGRES_PASSWORD`), then `docker compose up --build` from the repo root.
 Compose starts Postgres, runs migrations once, then starts the API and the UI on
 http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
 To reset the local database: `docker compose down -v`.
