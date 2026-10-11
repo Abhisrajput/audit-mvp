@@ -2,23 +2,43 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
-import { sha256Of } from '../src/storage/blob-store';
+import { blobKey, sha256Of, type BlobStore } from '../src/storage/blob-store';
+import { Readable } from 'node:stream';
+import { sql } from 'kysely';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { engagementWithFailedControl, newService } from './helpers';
 import { devAuthConfig, signIn } from './http';
 
-async function setup(opts: { blobs?: boolean; maxUploadBytes?: number } = {}) {
+async function setup(opts: { blobs?: boolean | ((local: LocalBlobStore) => BlobStore); maxUploadBytes?: number; presignDownloads?: boolean } = {}) {
   const svc = await newService();
   await ensureDevUsers(svc.db.kysely);
   const engagement = await engagementWithFailedControl(svc);
-  const blobs = opts.blobs === false ? null : new LocalBlobStore(fs.mkdtempSync(path.join(os.tmpdir(), 'docs-')));
-  const app = createApp(svc, { config: devAuthConfig(), oidc: null }, { blobs, maxUploadBytes: opts.maxUploadBytes ?? 1024 * 1024, presignDownloads: false });
-  return { svc, app, engagement };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-'));
+  const local = new LocalBlobStore(dir);
+  const blobs = opts.blobs === false ? null : typeof opts.blobs === 'function' ? opts.blobs(local) : local;
+  const app = createApp(svc, { config: devAuthConfig(), oidc: null }, { blobs, maxUploadBytes: opts.maxUploadBytes ?? 1024 * 1024, presignDownloads: opts.presignDownloads ?? false });
+  return { svc, app, engagement, dir };
 }
+
+/** A store that behaves like the local one except where overridden. */
+const fakeStore = (local: LocalBlobStore, over: Partial<BlobStore>): BlobStore => ({
+  driver: 's3',
+  put: (b, m) => local.put(b),
+  get: (sha) => local.get(sha),
+  head: (sha) => local.head(sha),
+  presignedGet: async () => null,
+  ...over,
+});
+
+const binary = (r: request.Response, cb: (err: Error | null, body: Buffer) => void) => {
+  const parts: Buffer[] = [];
+  r.on('data', (c: Buffer) => parts.push(c));
+  r.on('end', () => cb(null, Buffer.concat(parts)));
+};
 
 const SOP = Buffer.from('%PDF-1.4 fake pdf bytes for SOP-ALG-004');
 
@@ -47,6 +67,7 @@ describe('document API', () => {
     const trail = (await readTrail(svc.db.kysely, engagement.id)).at(-1)!;
     expect(trail).toMatchObject({ moduleId: 'document:register', actor: 'auditor', engagementId: engagement.id, inputs: { documentId: reg.body.id, sha256: up.body.sha256 }, output: { chunks: 1 } });
     expect(trail.inputs).not.toHaveProperty('filename');
+    expect(trail.id).toMatch(/^DOC-EVT-[0-9a-f]{16}$/);
   });
 
   it('serves the exact bytes back, as a download that cannot be sniffed', async () => {
@@ -66,7 +87,7 @@ describe('document API', () => {
     expect(res.headers['content-disposition']).not.toMatch(/[\r\n"]ALG/);
   });
 
-  it("answers 404 for a document the reader may not see, exactly as for one that doesn't exist", async () => {
+  it("answers 404 for a document the reader may not see, exactly as for one that doesn't exist [REQ-23]", async () => {
     const { app } = await setup();
     const manager = await signIn(app, 'reviewer');
     const up = await upload(manager, SOP).expect(201);
@@ -122,6 +143,149 @@ describe('document API', () => {
     const res = await upload(b, SOP);
     expect(res.status).toBe(503);
     expect(res.body.code).toBe('STORAGE_UNAVAILABLE');
+  });
+
+  it('stores JSON files byte for byte, valid or not, and accepts large registrations', async () => {
+    const { app } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    for (const raw of ['{"ledger": [1, 2, 3]}', '{"broken": ']) {
+      const bytes = Buffer.from(raw);
+      const res = await auditor.agent.put('/api/blobs').set('x-csrf-token', auditor.csrf).set('Content-Type', 'application/json').send(raw).expect(201);
+      expect(res.body).toEqual({ sha256: sha256Of(bytes), size: bytes.length });
+    }
+    // A registration with ~1.8 MB of text: beyond the global 1 MB JSON limit, within the route's own.
+    const up = await upload(auditor, SOP).expect(201);
+    const content = 'é'.repeat(899_000);
+    const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'big.txt', mime: 'text/plain', kind: 'other', classification: 'internal', text: { content } });
+    expect(reg.status).toBe(201);
+    // Other routes keep the 1 MB limit and say so generically.
+    const tooBig = await auditor.post('/api/engagements', { name: 'x'.repeat(1_100_000) });
+    expect(tooBig.status).toBe(413);
+    expect(tooBig.body).toEqual({ error: 'The request body is larger than the limit', code: 'VALIDATION' });
+  });
+
+  it('serves active content types as inert downloads with a sandboxing CSP and a UTF-8 filename', async () => {
+    const { app } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const html = Buffer.from('<script>alert(document.cookie)</script>');
+    const up = await upload(auditor, html).expect(201);
+    for (const mime of ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'text/xml', 'application/javascript', 'text/javascript']) {
+      const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'Prüfbericht (final).html', mime, kind: 'other', classification: 'internal' }).expect(201);
+      const res = await auditor.get(`/api/documents/${reg.body.id}/content`).buffer(true).parse(binary).expect(200);
+      expect(res.body).toEqual(html);
+      expect(res.headers['content-type']).toBe('application/octet-stream');
+      expect(res.headers['content-security-policy']).toBe("sandbox; default-src 'none'");
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['cache-control']).toMatch(/no-store/);
+      expect(res.headers['content-disposition']).toBe(`attachment; filename="Pr_fbericht _final_.html"; filename*=UTF-8''Pr%C3%BCfbericht%20%28final%29.html`);
+    }
+    for (const mime of ['text/html; charset=utf-8', '<script>', 'pdf', 'a/b/c', `${'a'.repeat(150)}/${'b'.repeat(60)}`]) {
+      expect((await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'x', mime, kind: 'other', classification: 'internal' })).status).toBe(400);
+    }
+  });
+
+  it('keeps expired documents listed but refuses their content with 410, after the read check [REQ-23]', async () => {
+    const { app, svc } = await setup();
+    const manager = await signIn(app, 'reviewer');
+    const up = await upload(manager, SOP).expect(201);
+    const open = await manager.post('/api/documents', { sha256: up.body.sha256, filename: 'old.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' }).expect(201);
+    const secret = await manager.post('/api/documents', { sha256: up.body.sha256, filename: 'old-secret.pdf', mime: 'application/pdf', kind: 'sop', classification: 'restricted' }).expect(201);
+    await sql`UPDATE documents SET retention_expired = true`.execute(svc.db.kysely);
+
+    expect((await manager.get('/api/documents').expect(200)).body.map((d: { id: string; retentionExpired: boolean }) => [d.id, d.retentionExpired])).toEqual([[open.body.id, true], [secret.body.id, true]]);
+    expect((await manager.get(`/api/documents/${open.body.id}`).expect(200)).body).toMatchObject({ retentionExpired: true });
+    const gone = await manager.get(`/api/documents/${open.body.id}/content`);
+    expect(gone.status).toBe(410);
+    expect(gone.body.code).toBe('RETENTION_EXPIRED');
+    const viewer = await signIn(app, 'viewer');
+    expect((await viewer.get(`/api/documents/${secret.body.id}/content`)).status).toBe(404);
+    expect((await viewer.get(`/api/documents/${open.body.id}/content`)).status).toBe(410);
+  });
+
+  it('reports lost bytes as an integrity failure and storage outages as unavailable', async () => {
+    const { app, dir } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const up = await upload(auditor, SOP).expect(201);
+    const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' }).expect(201);
+    fs.rmSync(path.join(dir, blobKey(up.body.sha256)));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const lost = await auditor.get(`/api/documents/${reg.body.id}/content`);
+      expect(lost.status).toBe(500);
+      expect(lost.body.code).toBe('STORAGE_INTEGRITY');
+      expect(lost.headers['content-disposition']).toBeUndefined();
+      expect(errors.mock.calls.flat().join(' ')).toContain(reg.body.id);
+      expect(errors.mock.calls.flat().join(' ')).toContain(up.body.sha256);
+
+      const outage = Object.assign(new Error('NoSuchBucket'), { name: 'NoSuchBucket' });
+      const down = await setup({ blobs: (local) => fakeStore(local, { get: async () => { throw outage; }, head: async () => { throw outage; }, put: async () => { throw outage; } }) });
+      const a = await signIn(down.app, 'auditor');
+      await down.svc.db.kysely.insertInto('blob_uploads').values({ sha256: sha256Of(SOP), uploaded_by: 'auditor' }).execute(); // as if uploaded before the outage
+      for (const res of [await upload(a, SOP), await a.post('/api/documents', { sha256: sha256Of(SOP), filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' })]) {
+        expect(res.status).toBe(503);
+        expect(res.body.code).toBe('STORAGE_UNAVAILABLE');
+      }
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('survives a storage stream that fails mid-download', async () => {
+    const { app } = await setup({
+      blobs: (local) => fakeStore(local, {
+        get: async () => new Readable({ read() { this.push(Buffer.from('partial')); this.destroy(new Error('connection reset')); } }),
+      }),
+    });
+    const auditor = await signIn(app, 'auditor');
+    const up = await upload(auditor, SOP).expect(201);
+    const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' }).expect(201);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(auditor.get(`/api/documents/${reg.body.id}/content`).buffer(true).parse(binary)).rejects.toThrow();
+    } finally {
+      errors.mockRestore();
+    }
+    await auditor.get(`/api/documents/${reg.body.id}`).expect(200);
+  });
+
+  it('redirects to a presigned link that forces a safe download and leaks nothing onward', async () => {
+    const calls: unknown[][] = [];
+    const { app } = await setup({
+      presignDownloads: true,
+      blobs: (local) => fakeStore(local, { presignedGet: async (...args) => { calls.push(args); return 'https://storage.example/obj?sig=1'; } }),
+    });
+    const auditor = await signIn(app, 'auditor');
+    const up = await upload(auditor, SOP).expect(201);
+    for (const [mime, served] of [['text/html', 'application/octet-stream'], ['application/pdf', 'application/pdf']]) {
+      const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'Bericht ü.html', mime, kind: 'other', classification: 'internal' }).expect(201);
+      const res = await auditor.get(`/api/documents/${reg.body.id}/content`).redirects(0);
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe('https://storage.example/obj?sig=1');
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+      expect(calls.at(-1)).toEqual([up.body.sha256, 60, { contentType: served, filename: 'Bericht ü.html' }]);
+    }
+  });
+
+  it('validates search and listing parameters', async () => {
+    const { app, engagement } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    for (const qs of ['', 'q=', 'q=%20%20', `q=${'a'.repeat(501)}`, 'q=x&limit=0', 'q=x&limit=51', 'q=x&limit=abc', 'q=x&limit=1.5', 'q=x&q=y', 'q=x&kinds=sop&kinds=policy', 'q=x&engagementId=a&engagementId=b', 'q=x&kinds=invoice']) {
+      const res = await auditor.get(`/api/knowledge/search?${qs}`);
+      expect([qs, res.status]).toEqual([qs, 400]);
+    }
+    for (const qs of ['q=x', `q=${'a'.repeat(500)}`, 'q=x&limit=50', 'q=x&engagementId=', 'q=x&kinds=', 'q=x&kinds=sop,,policy,', 'q=the%20and%20of', `q=x&engagementId=${engagement.id}`]) {
+      expect([qs, (await auditor.get(`/api/knowledge/search?${qs}`)).status]).toEqual([qs, 200]);
+    }
+    expect((await auditor.get('/api/documents?engagementId=a&engagementId=b')).status).toBe(400);
+    expect((await auditor.get('/api/documents?engagementId=')).status).toBe(200);
+
+    const up = await upload(auditor, SOP).expect(201);
+    const base = { sha256: up.body.sha256, filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' };
+    for (const retainUntil of ['2026-13-45', '2026-02-30', '2026-2-3', 'tomorrow']) {
+      expect([retainUntil, (await auditor.post('/api/documents', { ...base, retainUntil })).status]).toEqual([retainUntil, 400]);
+    }
+    expect((await auditor.post('/api/documents', { ...base, retainUntil: '2028-02-29' }).expect(201)).body.retainUntil).toBe('2028-02-29');
   });
 
   it('keeps admins away from documents', async () => {

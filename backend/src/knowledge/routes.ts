@@ -1,3 +1,5 @@
+import { pipeline } from 'node:stream/promises';
+import type { Readable } from 'node:stream';
 import express, { Router, type Response } from 'express';
 import { z } from 'zod';
 import { actorOf, requireRole } from '../auth/http';
@@ -5,10 +7,10 @@ import { PREPARER_ROLES, READ_ROLES } from '../auth/roles';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import type { AuditService } from '../service';
-import { assertSha256, BlobNotFound, type BlobStore } from '../storage/blob-store';
+import { assertSha256, attachmentDisposition, BlobNotFound, type BlobStore } from '../storage/blob-store';
 import { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, mayRead } from './access';
 import { getDocument, insertDocument, listDocuments, setDocumentText, type DocumentRecord } from './document-repo';
-import { PgFtsRetriever } from './retriever';
+import { MAX_HITS, PgFtsRetriever } from './retriever';
 import { recordDocumentEvent } from './trail';
 
 export interface StorageDeps {
@@ -17,22 +19,49 @@ export interface StorageDeps {
   presignDownloads: boolean;
 }
 
+export const UPLOAD_PATH = '/api/blobs';
+
 const MAX_TEXT_CHARS = 900_000;
+const MAX_QUERY_CHARS = 500;
+
+/** A real calendar date in YYYY-MM-DD form (2026-02-30 is not). */
+const CalendarDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s, 'Not a calendar date');
 
 const Register = z.object({
   sha256: z.string(),
   filename: z.string().min(1).max(255),
-  mime: z.string().min(1).max(200),
+  mime: z.string().max(200).regex(/^[\w.+-]+\/[\w.+-]+$/, 'A media type such as application/pdf'),
   kind: z.enum(DOCUMENT_KINDS),
   classification: z.enum(CLASSIFICATIONS),
   engagementId: z.string().min(1).nullable().optional(),
-  retainUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  retainUntil: CalendarDate.nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   text: z.object({ content: z.string().max(MAX_TEXT_CHARS), pageStarts: z.array(z.number().int().min(0)).optional() }).optional(),
 });
 
-/** A safe Content-Disposition filename: no quotes, line breaks or path separators. */
-const safeFilename = (name: string) => name.replace(/[^\w.\- ]+/g, '_').slice(0, 150) || 'document';
+/** A single optional query-string value; repeating the parameter (an array) is a 400. '' counts as absent. */
+const OneValue = z.string().optional().transform((v) => v || undefined);
+
+const ListQuery = z.object({ engagementId: OneValue });
+
+const SearchQuery = z.object({
+  q: z.string().trim().min(1).max(MAX_QUERY_CHARS),
+  engagementId: OneValue,
+  kinds: z
+    .string()
+    .optional()
+    .transform((v) => v?.split(',').map((k) => k.trim()).filter(Boolean))
+    .pipe(z.array(z.enum(DOCUMENT_KINDS)).optional())
+    .transform((v) => (v?.length ? v : undefined)),
+  limit: z.coerce.number().int().min(1).max(MAX_HITS).optional(),
+});
+
+/** Types a browser would render or run (HTML, SVG, XML, scripts) are served as opaque bytes. */
+const ACTIVE_CONTENT = /html|xml|javascript/i;
+const servedType = (mime: string) => (ACTIVE_CONTENT.test(mime) ? 'application/octet-stream' : mime);
 
 /** Document upload, registry, download and search. All under /api, so session, CSRF and role gates apply. */
 export function documentRoutes(svc: AuditService, storage: StorageDeps): Router {
@@ -45,6 +74,20 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     return storage.blobs;
   };
 
+  /**
+   * Runs a storage call. A missing object (BlobNotFound) and our own validation errors pass through;
+   * anything else (missing bucket, denied credentials, network) is logged and answered 503.
+   */
+  const storageCall = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof AppError || err instanceof BlobNotFound) throw err;
+      console.error(`File storage failed (${what}):`, err);
+      throw new AppError(503, 'File storage is unavailable', 'STORAGE_UNAVAILABLE');
+    }
+  };
+
   /** The document if this reader may see it; otherwise "not found", whether or not it exists. */
   const readable = async (id: string, role: Parameters<typeof mayRead>[0]): Promise<DocumentRecord> => {
     const doc = await getDocument(db, id);
@@ -52,16 +95,17 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     return doc;
   };
 
-  r.put('/api/blobs', preparers, express.raw({ type: () => true, limit: storage.maxUploadBytes }), wrap(async (req, res) => {
+  r.put(UPLOAD_PATH, preparers, express.raw({ type: () => true, limit: storage.maxUploadBytes }), wrap(async (req, res) => {
     const store = blobs();
     const body = req.body as Buffer;
     if (!Buffer.isBuffer(body) || !body.length) throw new AppError(400, 'Send the file as the request body');
-    const stored = await store.put(body, { mime: req.header('content-type') ?? 'application/octet-stream' });
+    // The uploader's Content-Type is never stored; the registry's validated mime decides how it is served.
+    const stored = await storageCall('put', () => store.put(body, { mime: 'application/octet-stream' }));
     await db.insertInto('blob_uploads').values({ sha256: stored.sha256, uploaded_by: actorOf(req).id }).onConflict((oc) => oc.doNothing()).execute();
     res.status(201).json(stored);
   }));
 
-  r.post('/api/documents', preparers, wrap(async (req, res) => {
+  r.post('/api/documents', preparers, express.json({ limit: '4mb' }), wrap(async (req, res) => {
     const store = blobs();
     const body = Register.parse(req.body);
     const sha256 = assertSha256(body.sha256);
@@ -71,7 +115,7 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     if (engagementId) await svc.engagement(engagementId); // 404 if it doesn't exist
     // Only the uploader may register these bytes; the answer is the same whether or not someone else stored them.
     const uploaded = await db.selectFrom('blob_uploads').select('sha256').where('sha256', '=', sha256).where('uploaded_by', '=', actor.id).executeTakeFirst();
-    const stored = uploaded ? await store.head(sha256) : null;
+    const stored = uploaded ? await storageCall('head', () => store.head(sha256)) : null;
     if (!stored) throw new AppError(400, 'Upload the file first: no stored object has that SHA-256');
 
     const result = await db.transaction().execute(async (trx) => {
@@ -86,10 +130,11 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     res.status(201).json(result);
   }));
 
+  // Expired documents stay listed (retentionExpired: true) so the registry remains auditable; only their content is refused.
   r.get('/api/documents', readers, wrap(async (req, res) => {
     const actor = actorOf(req);
-    const engagementId = typeof req.query.engagementId === 'string' && req.query.engagementId ? req.query.engagementId : null;
-    res.json(await listDocuments(db, { engagementId, classifications: CLASSIFICATIONS_BY_ROLE[actor.role] }));
+    const { engagementId } = ListQuery.parse(req.query);
+    res.json(await listDocuments(db, { engagementId: engagementId ?? null, classifications: CLASSIFICATIONS_BY_ROLE[actor.role] }));
   }));
 
   r.get('/api/documents/:id', readers, wrap(async (req, res) => {
@@ -98,33 +143,49 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
 
   r.get('/api/documents/:id/content', readers, wrap(async (req, res: Response) => {
     const doc = await readable(String(req.params.id), actorOf(req).role);
+    // Only after the read check, so a 410 never reveals a document the reader may not see.
+    if (doc.retentionExpired) throw new AppError(410, 'This document is past its retention date', 'RETENTION_EXPIRED');
     const store = blobs();
+    const download = { contentType: servedType(doc.mime), filename: doc.filename };
     if (storage.presignDownloads) {
-      const url = await store.presignedGet(doc.sha256, 60);
-      if (url) return res.redirect(url);
+      const url = await storageCall('presign', () => store.presignedGet(doc.sha256, 60, download));
+      if (url) {
+        res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+        return res.redirect(url);
+      }
     }
-    let stream;
-    try {
-      stream = await store.get(doc.sha256);
-    } catch (err) {
-      if (err instanceof BlobNotFound) throw new AppError(404, 'Document not found');
-      throw err;
-    }
-    res.set({
-      'Content-Type': doc.mime,
-      'Content-Disposition': `attachment; filename="${safeFilename(doc.filename)}"`,
+    // Every header is set before the object is opened, so nothing can fail between opening it and streaming it.
+    const headers = {
+      'Content-Type': download.contentType,
+      'Content-Disposition': attachmentDisposition(doc.filename),
+      'Content-Security-Policy': "sandbox; default-src 'none'",
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, no-store',
-    });
-    stream.on('error', (err) => res.destroy(err));
-    stream.pipe(res);
+    };
+    res.set(headers);
+    let stream: Readable;
+    try {
+      stream = await storageCall('get', () => store.get(doc.sha256));
+    } catch (err) {
+      for (const name of Object.keys(headers)) res.removeHeader(name);
+      if (!(err instanceof BlobNotFound)) throw err;
+      // The registry says these bytes exist: losing them is an integrity failure, not "not found".
+      console.error(`Stored bytes missing for document ${doc.id} (sha256 ${doc.sha256})`);
+      throw new AppError(500, 'The stored file is missing', 'STORAGE_INTEGRITY');
+    }
+    try {
+      await pipeline(stream, res);
+    } catch (err) {
+      // The client went away: pipeline has already closed the storage stream.
+      if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+      // Headers (and maybe bytes) are out, so no JSON error is possible; the response was destroyed.
+      console.error(`Download of document ${doc.id} failed:`, err);
+    }
   }));
 
   r.get('/api/knowledge/search', readers, wrap(async (req, res) => {
-    const q = typeof req.query.q === 'string' ? req.query.q : '';
-    const engagementId = typeof req.query.engagementId === 'string' && req.query.engagementId ? req.query.engagementId : undefined;
-    const kinds = typeof req.query.kinds === 'string' ? z.array(z.enum(DOCUMENT_KINDS)).parse(req.query.kinds.split(',')) : undefined;
-    res.json(await new PgFtsRetriever(db).search(q, { user: actorOf(req), engagementId, kinds }));
+    const { q, engagementId, kinds, limit } = SearchQuery.parse(req.query);
+    res.json(await new PgFtsRetriever(db).search(q, { user: actorOf(req), engagementId, kinds, limit }));
   }));
 
   return r;

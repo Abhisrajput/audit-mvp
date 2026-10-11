@@ -73,6 +73,32 @@ describe('permission-filtered retrieval', () => {
     expect(hit.score).toBeGreaterThan(0);
   });
 
+  it("filters on the document row, even when a chunk's copied scope disagrees with it [REQ-23]", async () => {
+    // Chunks written directly (not through setDocumentText) with stale copies of the document's scope.
+    const db = svc.db.kysely;
+    const secret = await insertDocument(db, { sha256: 'c'.repeat(64), filename: 'stale-secret.pdf', mime: 'application/pdf', size: 1, kind: 'sop', classification: 'restricted', engagementId: null, uploadedBy: 'auditor' });
+    const other = await insertDocument(db, { sha256: 'd'.repeat(64), filename: 'stale-eng.pdf', mime: 'application/pdf', size: 1, kind: 'evidence', classification: 'internal', engagementId: engB, uploadedBy: 'auditor' });
+    await db.insertInto('chunks').values([
+      { id: `${secret.id}:0`, document_id: secret.id, kg_node_id: null, ordinal: 0, page: null, text: 'Quarantine hold release staleness.', classification: 'internal', engagement_id: null },
+      { id: `${other.id}:0`, document_id: other.id, kg_node_id: null, ordinal: 0, page: null, text: 'Quarantine hold release staleness.', classification: 'internal', engagement_id: null },
+    ]).execute();
+    const found = async (user: typeof auditor, engagementId?: string) =>
+      (await new PgFtsRetriever(db).search('quarantine staleness', { user, engagementId })).map((h) => h.citation.documentId).sort();
+    expect(await found(viewer)).toEqual([]);
+    expect(await found(auditor, engA)).toEqual([]);
+    expect(await found(auditor, engB)).toEqual([other.id]);
+    expect(await found(reviewer)).toEqual([secret.id]);
+  });
+
+  it('caps hits at 50 however many chunks match, and answers a stop-word-only query with nothing', async () => {
+    const db = svc.db.kysely;
+    const d = await insertDocument(db, { sha256: 'e'.repeat(64), filename: 'many.pdf', mime: 'application/pdf', size: 1, kind: 'sop', classification: 'internal', engagementId: null, uploadedBy: 'auditor' });
+    const text = Array.from({ length: 60 }, (_, i) => `Zymurgy paragraph ${i}. ${'filler '.repeat(150)}`).join('\n\n');
+    expect(await setDocumentText(db, d, { extractor: 'test', extractorVersion: '1', text })).toBeGreaterThanOrEqual(60);
+    expect((await new PgFtsRetriever(db).search('zymurgy', { user: viewer, limit: 10_000 })).length).toBe(50);
+    expect(await new PgFtsRetriever(db).search('the and of', { user: viewer })).toEqual([]);
+  });
+
   it('returns nothing for an empty query and caps the number of hits', async () => {
     expect(await new PgFtsRetriever(svc.db.kysely).search('   ', { user: reviewer })).toEqual([]);
     expect((await new PgFtsRetriever(svc.db.kysely).search('allergen', { user: reviewer, limit: 2 })).length).toBe(2);

@@ -39,6 +39,7 @@ export const MAX_HITS = 50;
 /**
  * Postgres full-text search over chunks. Permission filtering happens inside the
  * query, so text a user may not read never leaves the database — not even in a snippet.
+ * Classification, engagement and retention are checked against the documents row.
  */
 export class PgFtsRetriever implements Retriever {
   constructor(private readonly db: Kysely<DB>) {}
@@ -47,9 +48,11 @@ export class PgFtsRetriever implements Retriever {
     const allowed = CLASSIFICATIONS_BY_ROLE[scope.user.role];
     if (!query.trim() || !allowed.length) return [];
     const limit = Math.min(Math.max(scope.limit ?? 10, 1), MAX_HITS);
-    const engagementFilter = scope.engagementId
-      ? sql`(c.engagement_id IS NULL OR c.engagement_id = ${scope.engagementId})`
-      : sql`c.engagement_id IS NULL`;
+    // The documents row is authoritative; the chunk's copies (which the index uses) must agree too,
+    // so a stale copy can only hide a chunk, never reveal one.
+    const inScope = (column: ReturnType<typeof sql.ref>) =>
+      scope.engagementId ? sql`(${column} IS NULL OR ${column} = ${scope.engagementId})` : sql`${column} IS NULL`;
+    const classes = sql.join([...allowed]);
     const kindFilter = scope.kinds?.length ? sql`AND d.kind IN (${sql.join([...scope.kinds])})` : sql``;
 
     const { rows } = await sql<{ id: string; document_id: string; ordinal: number; page: number | null; filename: string; score: number; snippet: string }>`
@@ -60,8 +63,10 @@ export class PgFtsRetriever implements Retriever {
       JOIN documents d ON d.id = c.document_id,
            websearch_to_tsquery('english', ${query}) q
       WHERE c.tsv @@ q
-        AND c.classification IN (${sql.join([...allowed])})
-        AND ${engagementFilter}
+        AND c.classification IN (${classes})
+        AND d.classification IN (${classes})
+        AND ${inScope(sql.ref('c.engagement_id'))}
+        AND ${inScope(sql.ref('d.engagement_id'))}
         AND d.retention_expired = false
         ${kindFilter}
       ORDER BY score DESC, c.id

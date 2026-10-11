@@ -10,7 +10,7 @@ import type { DocumentRecord } from './document-repo';
 export async function recordDocumentEvent(trx: Transaction<DB>, actor: User, doc: DocumentRecord, chunks: number) {
   const now = new Date().toISOString();
   return appendTrail(trx, {
-    id: `DOC-EVT-${crypto.randomBytes(4).toString('hex')}`,
+    id: `DOC-EVT-${crypto.randomBytes(8).toString('hex')}`,
     engagementId: doc.engagementId,
     moduleId: 'document:register',
     moduleVersion: ENGINE_VERSION,
