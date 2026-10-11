@@ -132,6 +132,36 @@ Seeded demo data is signed by the seed script without re-authentication and show
 - The ID token must carry the `auth_time` claim. On **Entra ID**, add `auth_time` as an optional claim to the ID token (*Token configuration → Add optional claim*). Without it, signing is refused with "did not report when you signed in (auth_time)".
 - Signing asks for a fresh password with `prompt=login` and `max_age=0`. Identity providers that ignore these and reuse an existing session (e.g. Google) are refused at signing, because their `auth_time` is earlier than the signing request.
 
+### Documents and evidence files
+
+Files are stored **content-addressed**: each object's key is its own SHA-256, so a file can't change unnoticed and duplicates are stored once.
+
+**Where files are stored** (`BLOB_DRIVER`):
+- `local`: a folder; development only.
+- `s3`: AWS S3, or any S3-compatible store. Compose runs SeaweedFS (S3-compatible) for you; its keys come from `S3_ROOT_ACCESS_KEY` / `S3_ROOT_SECRET_KEY` in `.env`.
+- `azure`: Azure Blob Storage.
+
+For write-once retention, turn on S3 Object Lock, or time-based retention (immutability) on the Azure container.
+
+**Who can read what.** Each document is registered with a kind (evidence, SOP, policy, ...), a classification, and optionally an engagement:
+
+| Role | May read |
+|---|---|
+| Viewer | internal |
+| Auditor | internal, confidential |
+| Audit manager, CAE | internal, confidential, restricted |
+| Administrator | nothing (no audit content) |
+
+**Search** (`GET /api/knowledge/search?q=...&engagementId=...`) returns global documents plus that engagement's own, and never another engagement's.
+- Filtering by classification and engagement happens inside the database query, so text you may not read never leaves the database.
+- A document you may not read answers "not found".
+
+**API, for now** (the upload screen arrives with the evidence work):
+1. `PUT /api/blobs` with the file as the body returns its `sha256`.
+2. `POST /api/documents` registers it, optionally with its text.
+
+Registrations are recorded in the audit trail. Documents are never deleted; retention is flagged.
+
 ### Demo script (≈10 minutes)
 
 1. **Engagements**: open *H1 2026 Food Safety & Commodity Risk Audit*.
