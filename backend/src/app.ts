@@ -6,7 +6,6 @@ import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/htt
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
 import { signingRoutes } from './signing/routes';
-import { withSignatureStatus } from './signing/content-hash';
 import { evalMarkdown, runEval } from './eval/harness';
 import { wrap } from './http-util';
 import { AppError, AuditService, type MutationOptions } from './service';
@@ -100,8 +99,8 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
     res.status(201).json(await svc.createEngagement(body, actorOf(req)));
   }));
   app.get('/api/engagements/:id', readers, wrap(async (req, res) => {
-    const e = await svc.engagement(param(req, 'id'));
-    res.set('ETag', `"${e.version}"`).json(withSignatureStatus(e));
+    const e = await svc.engagementWithSignatureStatus(param(req, 'id'));
+    res.set('ETag', `"${e.version}"`).json(e);
   }));
 
   app.post('/api/engagements/:id/modules/:moduleId/run', readers, wrap(async (req, res) => {

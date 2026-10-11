@@ -147,8 +147,10 @@ export interface SignOff {
   contentHash?: string;
   /** How the signer proved who they were at the moment of signing; 'none' for server-side signing (seed, tests). */
   reauth?: { method: 'oidc' | 'dev' | 'none'; at: string | null };
-  /** Set only in API responses: the finding's content no longer matches what was signed. */
+  /** Set only in API responses and exports: the signature record is missing or no longer matches the content. */
   broken?: boolean;
+  /** Set only in API responses and exports: no signature record (signed before Part 11 signing, or imported). */
+  legacy?: boolean;
 }
 
 /** A finding with triple citation: regulation clause + control + evidence. */

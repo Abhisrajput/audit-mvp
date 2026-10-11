@@ -43,8 +43,14 @@ describe('HTTP API', () => {
 
     const md = await auditor.get(`/api/engagements/${id}/report.md`).expect(200);
     expect(md.text).toContain('§11.10(e)');
+    expect(md.text).toMatch(/Reviewed by Ravi Reviewer \(audit_manager\) at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC, re-authenticated by demo confirmation \[SIG-[0-9a-f]{12}\]/);
+    expect(md.text).toMatch(/Approved by Priya QA Head \(cae\) at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC, re-authenticated by demo confirmation \[SIG-[0-9a-f]{12}\]/);
     const csv = await auditor.get(`/api/engagements/${id}/findings.csv`).expect(200);
-    expect(csv.text.split('\n')).toHaveLength(2);
+    const lines = csv.text.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain(',signatures,');
+    expect(lines[0]).not.toContain('approvedBy');
+    expect(lines[1]).toMatch(/"Reviewed\|Ravi Reviewer\|audit_manager\|[^|]+\|dev\|SIG-[0-9a-f]{12}\|valid; Approved\|Priya QA Head\|cae\|[^|]+\|dev\|SIG-[0-9a-f]{12}\|valid"/);
     expect((await auditor.get('/api/trail/verify')).body.valid).toBe(true);
   });
 

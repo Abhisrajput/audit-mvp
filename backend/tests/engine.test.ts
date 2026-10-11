@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PackRegistry } from '../src/engine/packs';
 import { verifyChain } from '../src/engine/trail';
 import type { ContentPack, User } from '../src/engine/types';
-import { auditor, admin, approver, engagementWithFailedControl, FakeProvider, newService, registry, reviewer, viewer } from './helpers';
+import { auditor, admin, approver, engagementWithFailedControl, FakeProvider, newService, registry, reviewer, unattended, viewer } from './helpers';
 
 const META = { name: 'x', entity: 'x', site: 'x', periodFrom: 'a', periodTo: 'b', auditType: 'x', packIds: ['common'] };
 
@@ -76,7 +76,7 @@ describe('QA gates', () => {
     const f = e.findings[0];
     expect(f.status).toBe('blocked');
     expect(f.blockedReasons.join()).toMatch(/evidence/);
-    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer)).rejects.toThrow(/blocked/);
+    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended)).rejects.toThrow(/blocked/);
   });
 
   it('releases a finding with clause, control and evidence citations [REQ-02]', async () => {
@@ -128,11 +128,11 @@ describe('sign-off and release', () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
     const f = e.findings[0];
-    await expect(svc.signOff(e.id, f.id, 'approve', '', approver)).rejects.toThrow(/reviewed before/);
-    await expect(svc.signOff(e.id, f.id, 'review', '', auditor)).rejects.toThrow(/may not/);
-    await svc.signOff(e.id, f.id, 'review', 'ok', reviewer);
-    await expect(svc.signOff(e.id, f.id, 'approve', '', reviewer)).rejects.toThrow(/may not/);
-    const done = await svc.signOff(e.id, f.id, 'approve', 'agreed', approver);
+    await expect(svc.signOff(e.id, f.id, 'approve', '', approver, {}, unattended)).rejects.toThrow(/reviewed before/);
+    await expect(svc.signOff(e.id, f.id, 'review', '', auditor, {}, unattended)).rejects.toThrow(/may not/);
+    await svc.signOff(e.id, f.id, 'review', 'ok', reviewer, {}, unattended);
+    await expect(svc.signOff(e.id, f.id, 'approve', '', reviewer, {}, unattended)).rejects.toThrow(/may not/);
+    const done = await svc.signOff(e.id, f.id, 'approve', 'agreed', approver, {}, unattended);
     expect(done.status).toBe('approved');
     expect(done.signOffs.map((s) => [s.userId, s.role, s.meaning])).toEqual([
       ['reviewer', 'audit_manager', 'Reviewed'],
@@ -145,8 +145,8 @@ describe('sign-off and release', () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
     const f = e.findings[0];
-    await svc.signOff(e.id, f.id, 'review', '', reviewer);
-    await svc.signOff(e.id, f.id, 'approve', '', approver);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
+    await svc.signOff(e.id, f.id, 'approve', '', approver, {}, unattended);
     await expect(svc.editFinding(e.id, f.id, { title: 'changed' }, auditor)).rejects.toThrow(/locked/);
     await svc.runModule(e.id, 'gaps', auditor);
     expect((await svc.engagement(e.id)).findings.find((x) => x.id === f.id)?.title).toBe(f.title);
@@ -156,7 +156,7 @@ describe('sign-off and release', () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
     const f = e.findings[0];
-    await svc.signOff(e.id, f.id, 'review', '', reviewer);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
     const edited = await svc.editFinding(e.id, f.id, { evidenceRefs: [] }, auditor);
     expect(edited.status).toBe('blocked');
     expect(edited.signOffs).toEqual([]);
@@ -169,13 +169,18 @@ describe('sign-off and release', () => {
     await svc.runModule(e.id, 'report', auditor);
     expect((await svc.engagement(e.id)).report!.includedFindingIds).toEqual([]);
     expect((await svc.engagement(e.id)).report!.excludedFindingIds).toEqual([f.id]);
-    await svc.signOff(e.id, f.id, 'review', '', reviewer);
-    await svc.signOff(e.id, f.id, 'approve', '', approver);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
+    await svc.signOff(e.id, f.id, 'approve', '', approver, {}, unattended);
     await svc.runModule(e.id, 'report', auditor);
     const report = (await svc.engagement(e.id)).report!;
     expect(report.includedFindingIds).toEqual([f.id]);
     expect(report.markdown).toContain(f.title);
     expect(report.markdown).toContain('21 CFR Part 117');
+    // Signature manifestation (§11.50): meaning, printed name, role, UTC time, how the signer re-authenticated, signature id.
+    const [rev, appr] = (await svc.engagement(e.id)).findings[0].signOffs;
+    const utc = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+    expect(report.markdown).toContain(`Reviewed by Ravi Reviewer (audit_manager) at ${utc(rev.at)}, not re-authenticated [${rev.signatureId}]`);
+    expect(report.markdown).toContain(`Approved by Priya QA Head (cae) at ${utc(appr.at)}, not re-authenticated [${appr.signatureId}]`);
   });
 });
 
@@ -200,7 +205,7 @@ describe('audit trail', () => {
   it('detects tampering with any past bundle [REQ-07]', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
-    await svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer);
+    await svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer, {}, unattended);
     await svc.setScope(e.id, e.scope.map((s) => ({ controlId: s.controlId, included: !s.included })), auditor);
     expect((await svc.verifyTrail()).valid).toBe(true);
     const chain = await svc.trailFor(e.id);
@@ -263,8 +268,8 @@ describe('segregation of duties', () => {
     await svc.runModule(e.id, 'gaps', reviewer); // the audit manager redrafts, so now prepares the finding
     const f = (await svc.engagement(e.id)).findings[0];
     expect(f.preparedBy).toEqual(['reviewer']);
-    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
-    await expect(svc.signOff(e.id, f.id, 'review', '', manager2)).resolves.toMatchObject({ status: 'reviewed' });
+    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+    await expect(svc.signOff(e.id, f.id, 'review', '', manager2, {}, unattended)).resolves.toMatchObject({ status: 'reviewed' });
   });
 
   it('treats editing a finding as preparing it [REQ-17]', async () => {
@@ -274,16 +279,16 @@ describe('segregation of duties', () => {
     expect(f.preparedBy).toEqual(['auditor']);
     const edited = await svc.editFinding(e.id, f.id, { title: 'Roaster CCP logs unsigned' }, reviewer);
     expect(edited.preparedBy).toEqual(['auditor', 'reviewer']);
-    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer)).rejects.toMatchObject({ code: 'SOD_VIOLATION' });
+    await expect(svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended)).rejects.toMatchObject({ code: 'SOD_VIOLATION' });
   });
 
   it('keeps the reviewer from also approving, judged by person rather than role [REQ-17]', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
     const f = e.findings[0];
-    await svc.signOff(e.id, f.id, 'review', '', reviewer);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
     const promoted: User = { ...reviewer, role: 'cae' }; // same person, given the CAE role between steps
-    await expect(svc.signOff(e.id, f.id, 'approve', '', promoted)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+    await expect(svc.signOff(e.id, f.id, 'approve', '', promoted, {}, unattended)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
   });
 
   it('stops the Gap Writer runner from approving even after being given the CAE role [REQ-17]', async () => {
@@ -291,10 +296,10 @@ describe('segregation of duties', () => {
     const e = await engagementWithFailedControl(svc); // the auditor ran Gap Writer
     const f = e.findings[0];
     expect(f.preparedBy).toEqual(['auditor']);
-    await svc.signOff(e.id, f.id, 'review', '', reviewer);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
     const preparerAsCae: User = { ...auditor, role: 'cae' }; // same person, role switched before approval
-    await expect(svc.signOff(e.id, f.id, 'approve', '', preparerAsCae)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
-    await expect(svc.signOff(e.id, f.id, 'approve', '', approver)).resolves.toMatchObject({ status: 'approved' });
+    await expect(svc.signOff(e.id, f.id, 'approve', '', preparerAsCae, {}, unattended)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+    await expect(svc.signOff(e.id, f.id, 'approve', '', approver, {}, unattended)).resolves.toMatchObject({ status: 'approved' });
   });
 
   it('gives admins and viewers no way to change audit work [REQ-15]', async () => {
@@ -305,7 +310,7 @@ describe('segregation of duties', () => {
       await expect(
         svc.recordTest(e.id, 'FD-HACCP-03', { designAdequate: true, observation: 'x', evidenceRefs: ['X'], sampleTested: 1, exceptions: 0 }, u),
       ).rejects.toMatchObject({ status: 403 });
-      await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', u)).rejects.toMatchObject({ status: 403 });
+      await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', u, {}, unattended)).rejects.toMatchObject({ status: 403 });
     }
   });
 });

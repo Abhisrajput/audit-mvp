@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import { escapeHtml } from '../auth/page';
+import { escapeHtml, popupHeaders } from '../auth/page';
 import type { SignOutcome } from './flow';
 import type { SignIntent } from './intent-repo';
 
@@ -7,6 +7,7 @@ const MEANING = { review: 'Reviewed', approve: 'Approved', reject: 'Rejected' } 
 
 /** Demo users have no password: they re-authenticate by typing their user id. DEV_AUTH only. */
 export function devConfirmPage(res: Response, intent: SignIntent, userName: string) {
+  popupHeaders(res);
   res
     .status(200)
     .type('html')
@@ -26,6 +27,7 @@ export function resultPage(res: Response, outcome: SignOutcome) {
   const [status, title, message] = outcome.ok
     ? [200, 'Signed', 'Your signature was recorded. You can close this window.']
     : [409, 'Not signed', outcome.message];
+  popupHeaders(res);
   res
     .status(status as number)
     .type('html')

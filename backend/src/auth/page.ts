@@ -3,9 +3,15 @@ import type { Response } from 'express';
 export const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
+/** Sign-in and signing pages: never cached, never framed (no clickjacking of the signing window). */
+export function popupHeaders(res: Response) {
+  res.set({ 'Cache-Control': 'no-store', 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' });
+}
+
 /** A tiny HTML page. Redirecting from our own page keeps the SameSite=Strict session cookie on the next request. */
 export function page(res: Response, status: number, title: string, message: string, next?: string) {
   const go = next ? escapeHtml(next) : null;
+  popupHeaders(res);
   res
     .status(status)
     .type('html')

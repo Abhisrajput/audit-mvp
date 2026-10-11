@@ -28,6 +28,7 @@ export async function startMockOidc() {
   let nextUser: MockUser = { sub: 'user-1', name: 'Test User', groups: [] };
   let lastAuthorize: Record<string, string> = {};
   let authTimeOffset = 0;
+  let omitAuthTime = false;
 
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -69,7 +70,9 @@ export async function startMockOidc() {
     if (challenge !== pending.challenge) return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
     const now = Math.floor(Date.now() / 1000);
     const u = pending.user;
-    const idToken = await new SignJWT({ nonce: pending.nonce, name: u.name, email: u.email, groups: u.groups ?? [], auth_time: now - authTimeOffset })
+    const claims: Record<string, unknown> = { nonce: pending.nonce, name: u.name, email: u.email, groups: u.groups ?? [] };
+    if (!omitAuthTime) claims.auth_time = now - authTimeOffset;
+    const idToken = await new SignJWT(claims)
       .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
       .setIssuer(issuer)
       .setAudience(pending.clientId)
@@ -90,6 +93,10 @@ export async function startMockOidc() {
     /** Pretend the user last entered their password this many seconds ago. */
     setAuthTimeOffset(seconds: number) {
       authTimeOffset = seconds;
+    },
+    /** Leave auth_time out of ID tokens, as an IdP without the optional claim configured does. */
+    setOmitAuthTime(omit: boolean) {
+      omitAuthTime = omit;
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };

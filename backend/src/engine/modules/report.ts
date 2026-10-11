@@ -1,12 +1,32 @@
 import { z } from 'zod';
 import type { AuditModule } from '../module';
-import type { AuditReport, Engagement, Finding, TestConclusion } from '../types';
+import type { AuditReport, Engagement, Finding, SignOff, TestConclusion } from '../types';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 const ORDER = { High: 0, Medium: 1, Low: 2 } as const;
 
+/** 'YYYY-MM-DD HH:MM UTC' */
+function utc(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 16)} UTC`;
+}
+
+/**
+ * Signature manifestation (21 CFR 11.50): meaning, printed name, role, time and how the signer re-authenticated.
+ * `broken` and `legacy` are set by the service from the signatures table before this module runs; a sign-off
+ * without a signature id is never shown as re-authenticated.
+ */
+export function signatureText(s: SignOff): string {
+  const legacy = s.legacy || !s.signatureId;
+  const how = legacy || !s.reauth || s.reauth.method === 'none'
+    ? ', not re-authenticated'
+    : s.reauth.method === 'oidc' ? ', re-authenticated via identity provider' : ', re-authenticated by demo confirmation';
+  const status = s.broken ? ' — SIGNATURE BROKEN: the signed content no longer matches' : legacy ? ' (legacy signature, before Part 11)' : '';
+  return `${s.meaning} by ${s.userName} (${s.role}) at ${utc(s.at)}${how}${s.signatureId ? ` [${s.signatureId}]` : ''}${status}`;
+}
+
 function findingMd(f: Finding, n: number): string {
-  const signedBy = f.signOffs.map((s) => `${s.meaning} by ${s.userName} (${s.role}) on ${s.at.slice(0, 10)}`).join('; ');
+  const signedBy = f.signOffs.map(signatureText).join('; ');
   return [
     `### ${n}. ${f.title}`,
     ``,

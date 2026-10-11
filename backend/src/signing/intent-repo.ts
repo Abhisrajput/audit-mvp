@@ -70,12 +70,17 @@ export async function claimIntent(db: Executor, id: string): Promise<boolean> {
   return Number(res.numUpdatedRows) === 1;
 }
 
+/**
+ * Records how a request ended. Only a request still in one of `from` changes, so a request
+ * that was signed is never marked failed, and a cancel never overtakes a claim. Returns whether it changed.
+ */
 export async function finishIntent(
   db: Executor,
   id: string,
   outcome: { status: 'signed' } | { status: 'failed'; code: string; message: string },
-): Promise<void> {
-  await db
+  from: readonly ('pending' | 'claimed')[] = ['pending', 'claimed'],
+): Promise<boolean> {
+  const res = await db
     .updateTable('sign_intents')
     .set({
       status: outcome.status,
@@ -84,6 +89,7 @@ export async function finishIntent(
       completed_at: new Date().toISOString(),
     })
     .where('id', '=', id)
-    .where('status', 'in', ['pending', 'claimed'])
-    .execute();
+    .where('status', 'in', [...from])
+    .executeTakeFirst();
+  return Number(res.numUpdatedRows) === 1;
 }

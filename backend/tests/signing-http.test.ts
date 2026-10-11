@@ -2,7 +2,8 @@ import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
-import { appWithDevUsers, signIn } from './http';
+import { findingContentHash } from '../src/signing/content-hash';
+import { appWithDevUsers, failTrailWrites, signIn } from './http';
 
 type Session = Awaited<ReturnType<typeof signIn>>;
 
@@ -151,5 +152,119 @@ describe('signing over HTTP', () => {
     await sql`UPDATE findings SET data = jsonb_set(data, '{condition}', '"rewritten quietly"') WHERE id = ${fid}`.execute(svc.db.kysely);
     const e = (await reviewer.get(`/api/engagements/${id}`)).body;
     expect(e.findings[0].signOffs[0].broken).toBe(true);
+  });
+  it('shows a signature as broken even when the content and its recorded hash are rewritten together [REQ-19]', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    await devSign(reviewer, 'reviewer', id, fid, 'review');
+    const approver = await signIn(app, 'approver');
+    await devSign(approver, 'approver', id, fid, 'approve');
+    const csvBefore = (await approver.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
+    expect(csvBefore.split('\n')[0]).toContain(',signatures,');
+    expect(csvBefore).toMatch(/Approved\|Priya QA Head\|cae\|[^|]+\|dev\|SIG-[0-9a-f]{12}\|valid/);
+
+    // Rewrite the condition and recompute every recorded hash in the JSONB, as a database owner might:
+    // they can switch off the approved-finding lock, but cannot rewrite the append-only signature rows.
+    await sql`ALTER TABLE findings DISABLE TRIGGER findings_lock_approved`.execute(svc.db.kysely);
+    await sql`UPDATE findings SET data = jsonb_set(data, '{condition}', '"rewritten quietly"') WHERE id = ${fid}`.execute(svc.db.kysely);
+    const tampered = (await svc.engagement(id)).findings[0];
+    const newHash = JSON.stringify(findingContentHash(tampered));
+    await sql`UPDATE findings SET data = jsonb_set(jsonb_set(data, '{signOffs,0,contentHash}', ${newHash}::jsonb), '{signOffs,1,contentHash}', ${newHash}::jsonb) WHERE id = ${fid}`.execute(svc.db.kysely);
+
+    const e = (await reviewer.get(`/api/engagements/${id}`)).body;
+    expect(e.findings[0].signOffs.map((x: any) => x.broken)).toEqual([true, true]);
+    const csv = (await approver.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
+    expect(csv).toMatch(/Approved\|Priya QA Head\|cae\|[^|]+\|dev\|SIG-[0-9a-f]{12}\|broken/);
+  });
+
+  it('shows an imported sign-off without a signature record as legacy, never as re-authenticated', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    await devSign(reviewer, 'reviewer', id, fid, 'review');
+    // An MVP-era / imported sign-off: claims OIDC re-authentication but has no signature id.
+    await sql`UPDATE findings SET data = jsonb_set(data #- '{signOffs,0,signatureId}', '{signOffs,0,reauth}', '{"method":"oidc","at":"2026-01-01T00:00:00.000Z"}'::jsonb) WHERE id = ${fid}`.execute(svc.db.kysely);
+    const s = (await reviewer.get(`/api/engagements/${id}`)).body.findings[0].signOffs[0];
+    expect(s).toMatchObject({ legacy: true, broken: false });
+    const csv = (await reviewer.get(`/api/engagements/${id}/findings.csv`).expect(200)).text;
+    expect(csv).toMatch(/Reviewed\|Ravi Reviewer\|audit_manager\|[^|]+\|none\|\|legacy/);
+    expect(csv).not.toMatch(/\|oidc\|/);
+  });
+
+  it('marks the request failed, never stuck claimed, when the signature cannot be written', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    await failTrailWrites(svc.db, ['human:sign-off']);
+    const r = await devSign(reviewer, 'reviewer', id, fid, 'review');
+    expect(r.status).toMatchObject({ status: 'failed', code: 'INTERNAL' });
+    expect(await listSignatures(svc.db.kysely, id)).toEqual([]);
+    expect((await readTrail(svc.db.kysely)).some((b) => b.moduleId === 'identity:sign-failed')).toBe(true);
+  });
+
+  it('signs exactly once when the confirmation is posted twice at the same time', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
+    const nonce = /name="nonce" value="([^"]+)"/.exec((await reviewer.get(intent.body.reauthUrl)).text)![1];
+    const post = () => reviewer.agent.post(`${intent.body.reauthUrl}/dev`).type('form').send({ nonce, confirm: 'reviewer' });
+    const results = await Promise.all([post(), post()]);
+    expect(results.filter((x) => /signature was recorded/.test(x.text))).toHaveLength(1);
+    expect(await listSignatures(svc.db.kysely, id)).toHaveLength(1);
+    expect((await reviewer.get(`/api/sign-intents/${intent.body.intentId}`)).body.status).toBe('signed');
+    // A replay after the request is used is turned away without a misleading failure entry.
+    const trailCount = (await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed').length;
+    const replay = await post();
+    expect(replay.text).toMatch(/no longer valid/);
+    expect((await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed')).toHaveLength(trailCount);
+  });
+
+  it('records a confirmation by an account that lost its role as a failed attempt', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
+    const nonce = /name="nonce" value="([^"]+)"/.exec((await reviewer.get(intent.body.reauthUrl)).text)![1];
+    await sql`UPDATE users SET role = NULL WHERE id = 'reviewer'`.execute(svc.db.kysely);
+    const done = await reviewer.agent.post(`${intent.body.reauthUrl}/dev`).type('form').send({ nonce, confirm: 'reviewer' });
+    expect(done.text).not.toMatch(/signature was recorded/);
+    const row = await svc.db.kysely.selectFrom('sign_intents').selectAll().where('id', '=', intent.body.intentId).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ status: 'failed', failure_code: 'REAUTH_REQUIRED' });
+    expect((await readTrail(svc.db.kysely)).find((b) => b.moduleId === 'identity:sign-failed')).toMatchObject({ actor: 'reviewer', output: { code: 'REAUTH_REQUIRED' } });
+    expect(await listSignatures(svc.db.kysely, id)).toEqual([]);
+  });
+
+  it('cancels a pending signing request, but never one that was signed', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
+    const viewer = await signIn(app, 'viewer');
+    expect((await viewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`)).status).toBe(404);
+    expect((await reviewer.agent.post(`/api/sign-intents/${intent.body.intentId}/cancel`)).status).toBe(403); // CSRF gate
+    const cancelled = await reviewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`).expect(200);
+    expect(cancelled.body).toEqual({ status: 'failed', code: 'REAUTH_REQUIRED', message: 'Cancelled before re-authentication finished' });
+    expect((await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed')).toHaveLength(1);
+    await reviewer.post(`/api/sign-intents/${intent.body.intentId}/cancel`).expect(200);
+    expect((await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed')).toHaveLength(1);
+
+    const r = await devSign(reviewer, 'reviewer', id, fid, 'review');
+    const after = await reviewer.post(`/api/sign-intents/${r.intent.body.intentId}/cancel`).expect(200);
+    expect(after.body.status).toBe('signed');
+    expect((await reviewer.get(`/api/sign-intents/${r.intent.body.intentId}`)).body.status).toBe('signed');
+  });
+
+  it('serves the signing window uncached and refuses to be framed', async () => {
+    const { app } = await appWithDevUsers();
+    const { id, fid } = await draftFinding(app);
+    const reviewer = await signIn(app, 'reviewer');
+    const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
+    for (const res of [await reviewer.get(intent.body.reauthUrl).expect(200), await reviewer.get('/auth/sign/INT-nope').expect(404)]) {
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+      expect(res.headers['x-frame-options']).toBe('DENY');
+    }
   });
 });

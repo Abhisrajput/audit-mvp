@@ -3,8 +3,9 @@ import type { Transaction } from 'kysely';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
 import type { DB } from './db/schema';
-import { insertSignature } from './db/signature-repo';
-import { findingContentHash } from './signing/content-hash';
+import { insertSignature, listSignatures } from './db/signature-repo';
+import { findingContentHash, signatureState, withSignatureStatus } from './signing/content-hash';
+import { finishIntent } from './signing/intent-repo';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
 } from './db/engagement-repo';
@@ -54,6 +55,11 @@ export interface SignatureContext {
   intentId: string;
 }
 
+/** Server-side signing with nobody to re-authenticate (seed data, tests). Recorded as not re-authenticated. */
+export interface UnattendedSigning {
+  unattended: 'seed' | 'test';
+}
+
 type Emit = (bundle: UnsealedBundle) => void;
 
 export class AuditService {
@@ -78,6 +84,12 @@ export class AuditService {
     const loaded = await loadEngagement(this.db.kysely, id);
     if (!loaded) throw new AppError(404, `Engagement ${id} not found`);
     return loaded.engagement;
+  }
+
+  /** The engagement for display: each sign-off checked against the append-only signatures table (broken / legacy). */
+  async engagementWithSignatureStatus(id: string): Promise<Engagement> {
+    const e = await this.engagement(id);
+    return withSignatureStatus(e, await listSignatures(this.db.kysely, id));
   }
 
   listEngagements(): Promise<EngagementSummary[]> {
@@ -151,12 +163,16 @@ export class AuditService {
       }
     })();
 
-    const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit) => {
+    const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const blocker = mod.precondition(e);
       if (blocker) throw new AppError(409, blocker);
 
       const startedAt = new Date().toISOString();
-      const ctx = new ModuleContext(e, this.registry, this.grounding, this.llm, actor, input);
+      // Report Writer prints each signature with its status, which only the signatures table can tell, so it reads
+      // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
+      // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
+      const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id)) : e;
+      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input);
       ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
       const output = await mod.run(ctx);
       ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
@@ -269,15 +285,24 @@ export class AuditService {
     return { contentHash: findingContentHash(f) };
   }
 
+  /**
+   * Signs a finding. `signature` is required: proof of re-authentication from a signing request, or an explicit
+   * unattended marker for seed data and tests. Anything else fails closed (428 REAUTH_REQUIRED).
+   */
   async signOff(
     engagementId: string, findingId: string, action: SignAction, comment: string, actor: User,
-    opts: MutationOptions = {}, signature?: SignatureContext,
+    opts: MutationOptions, signature: SignatureContext | UnattendedSigning,
   ) {
+    const unattended = signature && 'unattended' in signature && (signature.unattended === 'seed' || signature.unattended === 'test') ? signature.unattended : null;
+    const reauthed = signature && !unattended && 'contentHash' in signature && signature.intentId ? (signature as SignatureContext) : null;
+    if (!unattended && !reauthed) {
+      throw new AppError(428, 'Signing needs re-authentication: start a signing request instead', 'REAUTH_REQUIRED');
+    }
     const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const f = e.findings.find((x) => x.id === findingId);
       if (!f) throw new AppError(404, `Finding ${findingId} not found`);
       const contentHash = findingContentHash(f);
-      if (signature && signature.contentHash !== contentHash) {
+      if (reauthed && reauthed.contentHash !== contentHash) {
         throw new AppError(409, 'The finding changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
       }
       const { meaning, status } = this.signOffGuard(f, action, actor);
@@ -285,18 +310,20 @@ export class AuditService {
 
       // Signature manifestation (§11.50) bound to the signed content (§11.70).
       const at = new Date().toISOString();
-      const reauth: NonNullable<SignOff['reauth']> = signature ? { method: signature.reauthMethod, at: signature.reauthAt } : { method: 'none', at: null };
+      const reauth: NonNullable<SignOff['reauth']> = reauthed ? { method: reauthed.reauthMethod, at: reauthed.reauthAt } : { method: 'none', at: null };
       const sig: SignOff = {
         userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at,
         signatureId: `SIG-${crypto.randomBytes(6).toString('hex')}`, contentHash, reauth,
       };
       f.signOffs.push(sig);
-      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: signature?.intentId ?? null }, sig);
+      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig);
       emit(bundle);
       await insertSignature(trx, {
         id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
-        contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: signature?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
+        contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
       });
+      // The signing request is marked signed in this same transaction, so it is never left 'claimed' after a signature commits.
+      if (reauthed) await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']);
       return f;
     });
     return result;
@@ -354,15 +381,21 @@ export class AuditService {
 
   /** Flat export for write-back into the client's QMS / GRC system of record. */
   async findingsCsv(engagementId: string): Promise<string> {
-    const e = await this.engagement(engagementId);
-    const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'approvedBy', 'bundleId'];
+    const e = await this.engagementWithSignatureStatus(engagementId);
+    const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'signatures', 'bundleId'];
+    // Every sign-off: meaning|name|role|time|re-authentication method|signature id|valid, broken or legacy.
+    // A legacy sign-off (no signature record) is never shown as re-authenticated.
+    const signature = (s: SignOff) => {
+      const state = signatureState(s);
+      return [s.meaning, s.userName, s.role, s.at, state === 'legacy' ? 'none' : (s.reauth?.method ?? 'none'), s.signatureId ?? '', state].join('|');
+    };
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const rows = e.findings.map((f) =>
       [
         f.id, f.status, f.rating, f.controlId, f.title, f.condition, f.criteria, f.cause, f.effect, f.recommendation,
         f.citations.map((c) => `${c.regulation} ${c.ref}`).join('; '),
         f.evidenceRefs.join('; '),
-        f.signOffs.filter((s) => s.meaning === 'Approved').map((s) => `${s.userName} ${s.at}`).join('; '),
+        f.signOffs.map(signature).join('; '),
         f.bundleId,
       ].map((v) => esc(String(v))).join(','),
     );

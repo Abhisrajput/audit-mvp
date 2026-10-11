@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
 import { listRevisions } from '../src/db/revision-repo';
 import { insertSignature, listSignatures, type SignatureRow } from '../src/db/signature-repo';
@@ -17,14 +18,26 @@ describe('finding content hash', () => {
     expect(findingContentHash({ ...f, evidenceRefs: [...f.evidenceRefs, 'EXTRA'] })).not.toBe(h);
   });
 
-  it('flags a sign-off whose content no longer matches as broken, without touching the original', async () => {
+  it('checks each signed sign-off against its append-only signature row; unsigned ones are legacy [REQ-19]', async () => {
     const e = await engagementWithFailedControl(await newService());
     const f = e.findings[0];
-    const good = { userId: 'r', userName: 'R', role: 'audit_manager', meaning: 'Reviewed' as const, comment: '', at: '2026-10-11T00:00:00.000Z', contentHash: findingContentHash(f) };
-    const bad = { ...good, contentHash: 'b'.repeat(64) };
-    const legacy = { userId: 'x', userName: 'X', role: 'reviewer', meaning: 'Reviewed' as const, comment: '', at: '2026-01-01T00:00:00.000Z' };
-    const shown = withSignatureStatus({ ...e, findings: [{ ...f, signOffs: [good, bad, legacy] }] });
-    expect(shown.findings[0].signOffs.map((s) => s.broken)).toEqual([false, true, undefined]);
+    const hash = findingContentHash(f);
+    const base = { userId: 'r', userName: 'R', role: 'audit_manager', meaning: 'Reviewed' as const, comment: '', at: '2026-10-11T00:00:00.000Z', reauth: { method: 'dev' as const, at: '2026-10-11T00:00:00.000Z' } };
+    const row = (id: string, contentHash: string, extra: Partial<SignatureRow> = {}): SignatureRow => ({
+      id, engagementId: e.id, findingId: f.id, userId: 'r', userName: 'R', role: 'audit_manager', meaning: 'Reviewed', comment: '', contentHash,
+      reauthMethod: 'dev', reauthAt: base.reauth.at, intentId: null, trailBundleId: 'HUM-1', signedAt: base.at, ...extra,
+    });
+    const good = { ...base, signatureId: 'SIG-good', contentHash: hash };
+    const changed = { ...base, signatureId: 'SIG-changed', contentHash: 'b'.repeat(64) };
+    const noRow = { ...base, signatureId: 'SIG-missing', contentHash: hash };
+    const rewritten = { ...base, signatureId: 'SIG-rewritten', contentHash: hash }; // JSONB rewritten to match; the row still has the original
+    const otherSigner = { ...base, signatureId: 'SIG-other', contentHash: hash };
+    const legacy = { ...base, reauth: { method: 'oidc' as const, at: base.at } }; // imported, pre-Part 11: no signature id
+    const rows = [row('SIG-good', hash), row('SIG-changed', 'b'.repeat(64)), row('SIG-rewritten', 'c'.repeat(64)), row('SIG-other', hash, { userId: 'x' })];
+    const shown = withSignatureStatus({ ...e, findings: [{ ...f, signOffs: [good, changed, noRow, rewritten, otherSigner, legacy] }] }, rows);
+    expect(shown.findings[0].signOffs.map((s) => [s.broken, s.legacy])).toEqual([
+      [false, false], [true, false], [true, false], [true, false], [true, false], [false, true],
+    ]);
     expect(e.findings[0].signOffs).toEqual([]);
   });
 });
@@ -59,5 +72,6 @@ describe('signatures table', () => {
     expect(await listSignatures(db, e.id)).toEqual([row]);
     await expect(db.updateTable('signatures').set({ comment: 'x' }).execute()).rejects.toThrow(/append-only: UPDATE/);
     await expect(db.deleteFrom('signatures').execute()).rejects.toThrow(/append-only: DELETE/);
+    await expect(sql`TRUNCATE signatures`.execute(db)).rejects.toThrow(/append-only: TRUNCATE/);
   });
 });

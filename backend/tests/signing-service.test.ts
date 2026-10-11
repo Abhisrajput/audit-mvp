@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { ensureDevUsers } from '../src/auth/dev-users';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
 import { findingContentHash } from '../src/signing/content-hash';
-import { approver, auditor, engagementWithFailedControl, newService, reviewer } from './helpers';
+import { claimIntent, createIntent, getIntent } from '../src/signing/intent-repo';
+import { approver, auditor, engagementWithFailedControl, newService, reviewer, unattended } from './helpers';
 import { failTrailWrites } from './http';
 
 const reauth = (contentHash: string, intentId = 'INT-1') => ({ contentHash, reauthMethod: 'dev' as const, reauthAt: '2026-10-11T09:00:00.000Z', intentId });
@@ -32,9 +34,41 @@ describe('signatures written by the service', () => {
   it('records server-side signing without re-authentication as such', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
-    const f = await svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer);
+    const f = await svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer, {}, unattended);
     expect(f.signOffs[0].reauth).toEqual({ method: 'none', at: null });
     expect((await listSignatures(svc.db.kysely, e.id))[0]).toMatchObject({ reauthMethod: 'none', reauthAt: null, intentId: null });
+    expect((await readTrail(svc.db.kysely, e.id)).at(-1)!.inputs).toMatchObject({ intentId: null, unattended: 'test' });
+  });
+
+  it('fails closed when called without a signature context [REQ-18]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    // @ts-expect-error the signature context is required
+    await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer)).rejects.toMatchObject({ status: 428, code: 'REAUTH_REQUIRED' });
+    await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer, {}, undefined as never)).rejects.toMatchObject({ status: 428, code: 'REAUTH_REQUIRED' });
+    expect(await listSignatures(svc.db.kysely, e.id)).toEqual([]);
+    expect((await svc.engagement(e.id)).findings[0].status).toBe('draft');
+  });
+
+  it('marks the signing request signed in the same transaction as the signature', async () => {
+    const svc = await newService();
+    await ensureDevUsers(svc.db.kysely);
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    const hash = findingContentHash(f);
+    const db = svc.db.kysely;
+    const intent = await createIntent(db, { userId: 'reviewer', engagementId: e.id, findingId: f.id, action: 'review', comment: '', contentHash: hash });
+    expect(await claimIntent(db, intent.id)).toBe(true);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, reauth(hash, intent.id));
+    expect((await getIntent(db, intent.id))!.status).toBe('signed');
+
+    // When the signature rolls back, so does the request's 'signed' mark.
+    const g = await engagementWithFailedControl(svc);
+    const other = await createIntent(db, { userId: 'reviewer', engagementId: g.id, findingId: g.findings[0].id, action: 'review', comment: '', contentHash: findingContentHash(g.findings[0]) });
+    await claimIntent(db, other.id);
+    await failTrailWrites(svc.db, ['human:sign-off']);
+    await expect(svc.signOff(g.id, g.findings[0].id, 'review', '', reviewer, {}, reauth(findingContentHash(g.findings[0]), other.id))).rejects.toThrow(/trail unavailable/);
+    expect((await getIntent(db, other.id))!.status).toBe('claimed');
   });
 
   it('refuses to sign content that changed after the signing request, writing nothing [REQ-19]', async () => {
@@ -43,15 +77,24 @@ describe('signatures written by the service', () => {
     const f = e.findings[0];
     const stale = findingContentHash(f);
     await svc.editFinding(e.id, f.id, { condition: 'Four of twenty logs unsigned.' }, auditor);
+    const before = await svc.engagement(e.id);
+    const trailBefore = await readTrail(svc.db.kysely, e.id);
     await expect(svc.signOff(e.id, f.id, 'review', '', reviewer, {}, reauth(stale, 'INT-2'))).rejects.toMatchObject({ status: 409, code: 'CONTENT_CHANGED' });
     expect(await listSignatures(svc.db.kysely, e.id)).toEqual([]);
+    const after = await svc.engagement(e.id);
+    expect(after.findings[0].status).toBe(before.findings[0].status);
+    expect(after.findings[0].signOffs).toEqual([]);
+    expect(after.version).toBe(before.version);
+    const trailAfter = await readTrail(svc.db.kysely, e.id);
+    expect(trailAfter).toHaveLength(trailBefore.length);
+    expect(trailAfter.some((b) => b.moduleId === 'human:sign-off')).toBe(false);
   });
 
   it('writes no signature when the sign-off cannot be trailed', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
     await failTrailWrites(svc.db, ['human:sign-off']);
-    await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer)).rejects.toThrow(/trail unavailable/);
+    await expect(svc.signOff(e.id, e.findings[0].id, 'review', '', reviewer, {}, unattended)).rejects.toThrow(/trail unavailable/);
     expect(await listSignatures(svc.db.kysely, e.id)).toEqual([]);
     expect((await svc.engagement(e.id)).findings[0].status).toBe('draft');
   });

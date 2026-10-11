@@ -4,6 +4,7 @@ import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import type { OidcConfig } from '../src/auth/config';
 import { createOidcClient, type OidcClient } from '../src/auth/oidc';
+import { sql } from 'kysely';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
 import type { AuditService } from '../src/service';
@@ -27,7 +28,10 @@ describe('signing with identity-provider re-authentication', () => {
     oidc = await createOidcClient(oidcCfg);
   });
   afterAll(() => mock.close());
-  beforeEach(() => mock.setAuthTimeOffset(0));
+  beforeEach(() => {
+    mock.setAuthTimeOffset(0);
+    mock.setOmitAuthTime(false);
+  });
 
   /**
    * Demo users prepare and review a finding; the CAE signs in through the IdP.
@@ -121,5 +125,66 @@ describe('signing with identity-provider re-authentication', () => {
     back.searchParams.set('state', 'forged');
     const forged = await request(app).get(back.pathname + back.search);
     expect(forged.text).toMatch(/expired/i); // treated as an ordinary login callback without its cookie
+  });
+  it('refuses a sign-in the identity provider reused from before the signing request [REQ-18]', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    mock.setAuthTimeOffset(60); // within two minutes, but before the request was made
+    const { status, result } = await approveViaIdp(app, id, fid, PRIYA);
+    expect(status).toMatchObject({ status: 'failed', code: 'REAUTH_STALE' });
+    expect(result.text).toMatch(/reused an earlier sign-in/);
+    expect((await listSignatures(svc.db.kysely, id)).filter((s) => s.meaning === 'Approved')).toEqual([]);
+  });
+
+  it('refuses a sign-in time in the future [REQ-18]', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    mock.setAuthTimeOffset(-60);
+    const { status } = await approveViaIdp(app, id, fid, PRIYA);
+    expect(status).toMatchObject({ status: 'failed', code: 'REAUTH_STALE' });
+    expect((await listSignatures(svc.db.kysely, id)).filter((s) => s.meaning === 'Approved')).toEqual([]);
+  });
+
+  it('explains a missing auth_time claim [REQ-18]', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    mock.setOmitAuthTime(true);
+    const { status } = await approveViaIdp(app, id, fid, PRIYA);
+    expect(status).toMatchObject({ status: 'failed', code: 'REAUTH_STALE', message: expect.stringMatching(/did not report when you signed in \(auth_time\)/) });
+    expect((await listSignatures(svc.db.kysely, id)).filter((s) => s.meaning === 'Approved')).toEqual([]);
+  });
+
+  it('turns away a replayed callback without asking the identity provider or trailing a failure', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    const { status, intent } = await approveViaIdp(app, id, fid, PRIYA);
+    expect(status.status).toBe('signed');
+    const before = (await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed').length;
+    const row = await svc.db.kysely.selectFrom('sign_intents').select('state').where('id', '=', intent.body.intentId).executeTakeFirstOrThrow();
+    const replay = await request(app).get(`/auth/callback?code=whatever&state=${row.state}`);
+    expect(replay.text).toMatch(/no longer valid/);
+    expect((await readTrail(svc.db.kysely)).filter((b) => b.moduleId === 'identity:sign-failed')).toHaveLength(before);
+    const after = await svc.db.kysely.selectFrom('sign_intents').select('status').where('id', '=', intent.body.intentId).executeTakeFirstOrThrow();
+    expect(after.status).toBe('signed');
+  });
+
+  it('records a signer deactivated during re-authentication as a failed attempt', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    const priya = await priyaSession(app);
+    const intent = await priya.agent.post(`/api/engagements/${id}/findings/${fid}/sign-intents`).set('x-csrf-token', priya.csrf).send({ action: 'approve' }).expect(201);
+    const popup = await priya.agent.get(intent.body.reauthUrl).expect(302);
+    const back = new URL((await fetch(popup.headers.location, { redirect: 'manual' })).headers.get('location')!);
+    await sql`UPDATE users SET active = false WHERE subject = ${PRIYA.sub}`.execute(svc.db.kysely);
+    const result = await request(app).get(back.pathname + back.search);
+    expect(result.text).toMatch(/can no longer sign/);
+    const row = await svc.db.kysely.selectFrom('sign_intents').selectAll().where('id', '=', intent.body.intentId).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ status: 'failed', failure_code: 'REAUTH_REQUIRED' });
+    expect((await readTrail(svc.db.kysely)).some((b) => b.moduleId === 'identity:sign-failed' && (b.output as any).code === 'REAUTH_REQUIRED')).toBe(true);
+    expect((await listSignatures(svc.db.kysely, id)).filter((s) => s.meaning === 'Approved')).toEqual([]);
+  });
+
+  it('records a sign-in cancelled at the identity provider as a failed attempt', async () => {
+    const { app, svc, id, fid } = await reviewedFinding();
+    const priya = await priyaSession(app);
+    const intent = await priya.agent.post(`/api/engagements/${id}/findings/${fid}/sign-intents`).set('x-csrf-token', priya.csrf).send({ action: 'approve' }).expect(201);
+    const row = await svc.db.kysely.selectFrom('sign_intents').select('state').where('id', '=', intent.body.intentId).executeTakeFirstOrThrow();
+    await request(app).get(`/auth/callback?error=access_denied&state=${row.state}`);
+    expect((await priya.agent.get(`/api/sign-intents/${intent.body.intentId}`).expect(200)).body).toMatchObject({ status: 'failed', code: 'REAUTH_REQUIRED' });
   });
 });
