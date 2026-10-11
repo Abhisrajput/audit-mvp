@@ -1,6 +1,7 @@
 import cookieParser from 'cookie-parser';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { adminRoutes } from './auth/admin-routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
@@ -67,6 +68,7 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   app.use('/api', requireUser());
   const readers = requireRole(READ_ROLES);
   const evaluators = requireRole([...PREPARER_ROLES, 'cae']);
+  app.use(adminRoutes(svc.db, auth.config));
 
   app.get('/api/modules', readers, (_req, res) => res.json(svc.modules()));
 
