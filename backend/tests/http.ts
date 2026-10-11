@@ -19,7 +19,7 @@ export function devAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig {
 export async function appWithDevUsers(config: AuthConfig = devAuthConfig()) {
   const svc = await newService();
   await ensureDevUsers(svc.db.kysely);
-  return { svc, app: createApp(svc, { config }) };
+  return { svc, app: createApp(svc, { config, oidc: null }) };
 }
 
 /** Signs in a demo user; the returned helpers carry the session cookie and CSRF token. */

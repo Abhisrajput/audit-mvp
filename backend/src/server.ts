@@ -1,5 +1,6 @@
 import { createApp } from './app';
 import { loadAuthConfig } from './auth/config';
+import { createOidcClient } from './auth/oidc';
 import { ensureDevUsers } from './auth/dev-users';
 import { loadConfig, loadDotEnv } from './config';
 import { connectPg } from './db';
@@ -25,9 +26,11 @@ async function main() {
     await ensureDevUsers(db.kysely);
     console.warn('DEV_AUTH is on: demo sign-in is enabled. Never use this in production.');
   }
+  const oidc = auth.oidc ? await createOidcClient(auth.oidc) : null;
+  if (oidc) console.log(`Sign-in via ${auth.oidc!.issuer}`);
   const registry = PackRegistry.loadFromDir(config.packsDir);
   const svc = new AuditService(db, registry, createProvider());
-  createApp(svc, { config: auth }).listen(config.port, () => {
+  createApp(svc, { config: auth, oidc }).listen(config.port, () => {
     console.log(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model}`);
   });
 }
