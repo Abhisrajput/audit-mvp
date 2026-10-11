@@ -1,6 +1,7 @@
 import { FactCheck as FactCheckIcon, Logout as LogoutIcon } from '@mui/icons-material';
-import { Alert, AppBar, Box, Button, Chip, Container, LinearProgress, Toolbar, Typography } from '@mui/material';
+import { AppBar, Box, Button, Chip, Container, LinearProgress, Toolbar, Typography } from '@mui/material';
 import { Link as RouterLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import AdminPage from './pages/AdminPage';
 import EngagementPage from './pages/EngagementPage';
 import EngagementsPage from './pages/EngagementsPage';
 import LibraryPage from './pages/LibraryPage';
@@ -21,7 +22,7 @@ function Shell() {
   const { pathname } = useLocation();
   if (!user) return null;
   const isAdmin = user.role === 'admin';
-  const nav = isAdmin ? [] : AUDIT_NAV;
+  const nav = isAdmin ? [{ to: '/admin', label: 'Administration' }] : AUDIT_NAV;
   return (
     <>
       <AppBar position="sticky" elevation={0}>
@@ -48,7 +49,10 @@ function Shell() {
       </AppBar>
       <Container maxWidth="xl" sx={{ py: 3 }}>
         {isAdmin ? (
-          <Alert severity="info">Administrators manage access and do not see audit content.</Alert>
+          <Routes>
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="*" element={<Navigate to="/admin" />} />
+          </Routes>
         ) : (
           <Routes>
             <Route path="/" element={<Navigate to="/engagements" />} />

@@ -32,6 +32,16 @@ services:
     environment:
       PORT: '3002'
       DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:-audit-dev-only}@postgres:5432/audit
+      # Local demo defaults. A real deployment sets NODE_ENV=production, DEV_AUTH=false and the OIDC_* settings.
+      NODE_ENV: ${NODE_ENV:-development}
+      DEV_AUTH: ${DEV_AUTH:-true}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
+      OIDC_ROLE_MAP: ${OIDC_ROLE_MAP:-}
       # offline (default, no key needed) | anthropic
       LLM_PROVIDER: ${LLM_PROVIDER:-offline}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -49,6 +59,20 @@ services:
       - '8080:80'
     depends_on:
       - backend
+
+  # Local OpenID provider for testing real sign-in: docker compose --profile sso up -d keycloak
+  # Run the API on the host (npm run dev) so the browser and the API see the same issuer URL.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ['sso']
+    command: ['start-dev', '--import-realm', '--http-port=8081']
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-dev-only}
+    volumes:
+      - ./deploy/keycloak/audit-realm.json:/opt/keycloak/data/import/audit-realm.json:ro
+    ports:
+      - '127.0.0.1:8081:8081'
 
 volumes:
   pgdata:
