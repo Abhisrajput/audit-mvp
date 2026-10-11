@@ -60,7 +60,7 @@ export default function EngagementPage() {
   }, [load]);
 
   const run = async (moduleId: string) => {
-    const res = await api<{ bundle: TrailBundle; engagement: Engagement }>(`/engagements/${id}/modules/${moduleId}/run`, { method: 'POST', body: {} });
+    const res = await api<{ bundle: TrailBundle; engagement: Engagement }>(`/engagements/${id}/modules/${moduleId}/run`, { method: 'POST', body: {}, ifMatch: engagement?.version });
     setEngagement(res.engagement);
     setLastRun(res.bundle);
   };

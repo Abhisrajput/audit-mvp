@@ -16,7 +16,7 @@ const toDraft = (t?: TestInput): Draft => ({
   exceptions: String(t?.exceptions ?? 0),
 });
 
-function RowCard({ row, input, result, engagementId, onSaved }: { row: RcmRow; input?: TestInput; result?: TestResult; engagementId: string; onSaved: (e: Engagement) => void }) {
+function RowCard({ row, input, result, engagementId, version, onSaved }: { row: RcmRow; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
   const [d, setD] = useState<Draft>(toDraft(input));
   const set = (k: keyof Draft) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
   const dirty = JSON.stringify(d) !== JSON.stringify(toDraft(input));
@@ -62,6 +62,7 @@ function RowCard({ row, input, result, engagementId, onSaved }: { row: RcmRow; i
               onSaved(
                 await api<Engagement>(`/engagements/${engagementId}/tests/${row.id}`, {
                   method: 'PUT',
+                  ifMatch: version,
                   body: {
                     designAdequate: d.designAdequate === 'na' ? null : d.designAdequate === 'yes',
                     observation: d.observation,
@@ -99,7 +100,7 @@ export default function FieldworkTab({ engagement: e, setEngagement, run }: TabP
         </Typography>
       </Stack>
       {e.rcm.map((r) => (
-        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} onSaved={setEngagement} />
+        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} />
       ))}
     </Stack>
   );

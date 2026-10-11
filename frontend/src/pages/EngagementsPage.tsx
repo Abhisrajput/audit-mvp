@@ -7,6 +7,8 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { ActionButton } from '../components/common';
+import { canPrepare } from '../roles';
+import { useSession } from '../session';
 
 interface Summary {
   id: string;
@@ -38,6 +40,7 @@ export default function EngagementsPage() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const navigate = useNavigate();
+  const { user } = useSession();
 
   useEffect(() => {
     api<Summary[]>('/engagements').then(setRows);
@@ -59,9 +62,11 @@ export default function EngagementsPage() {
             Each engagement runs the module chain: Risk & Scope → Control & Risk Writer → Testing → Gap Writer → Report Writer.
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
-          New engagement
-        </Button>
+        {canPrepare(user?.role) && (
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
+            New engagement
+          </Button>
+        )}
       </Stack>
 
       <Grid container spacing={2}>
