@@ -5,7 +5,7 @@ import { appendTrail } from '../db/trail-repo';
 import type { TrailBundle } from '../engine/types';
 import { ENGINE_VERSION } from '../service';
 
-export type IdentityEvent = 'login' | 'logout' | 'role-change' | 'deactivate' | 'reactivate' | 'sessions-revoked';
+export type IdentityEvent = 'login' | 'logout' | 'role-change' | 'deactivate' | 'reactivate' | 'sessions-revoked' | 'sign-failed';
 
 /**
  * Seals an identity event (who signed in, who changed whose access) into the shared audit trail.

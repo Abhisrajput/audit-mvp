@@ -34,8 +34,11 @@ describe('HTTP API', () => {
     const gaps = await auditor.post(`/api/engagements/${id}/modules/gaps/run`).expect(200);
     const fid = gaps.body.engagement.findings[0].id;
 
-    await reviewer.post(`/api/engagements/${id}/findings/${fid}/signoff`, { action: 'review' }).expect(200);
-    await approver.post(`/api/engagements/${id}/findings/${fid}/signoff`, { action: 'approve', comment: 'ok' }).expect(200);
+    for (const [user, userId, action] of [[reviewer, 'reviewer', 'review'], [approver, 'approver', 'approve']] as const) {
+      const intent = await user.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action, comment: 'ok' }).expect(201);
+      const nonce = /name="nonce" value="([^"]+)"/.exec((await user.get(intent.body.reauthUrl).expect(200)).text)![1];
+      await user.agent.post(`${intent.body.reauthUrl}/dev`).type('form').send({ nonce, confirm: userId }).expect(200);
+    }
     await auditor.post(`/api/engagements/${id}/modules/report/run`).expect(200);
 
     const md = await auditor.get(`/api/engagements/${id}/report.md`).expect(200);

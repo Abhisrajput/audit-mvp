@@ -24,6 +24,8 @@ export interface OidcIdentity {
 export interface OidcClient {
   start(): Promise<{ url: string } & OidcChecks>;
   finish(callbackUrl: URL, checks: OidcChecks): Promise<OidcIdentity>;
+  /** The identity provider's sign-in URL that forces a fresh password entry, for signing. */
+  reauthUrl(checks: OidcChecks): Promise<string>;
 }
 
 const text = (v: unknown) => (typeof v === 'string' && v ? v : null);
@@ -49,6 +51,19 @@ export async function createOidcClient(cfg: OidcConfig): Promise<OidcClient> {
       return { url: url.href, state, nonce, codeVerifier };
     },
 
+    async reauthUrl(checks) {
+      const url = client.buildAuthorizationUrl(server, {
+        redirect_uri: cfg.redirectUri,
+        scope: cfg.scopes,
+        code_challenge: await client.calculatePKCECodeChallenge(checks.codeVerifier),
+        code_challenge_method: 'S256',
+        state: checks.state,
+        nonce: checks.nonce,
+        prompt: 'login',
+        max_age: '0',
+      });
+      return url.href;
+    },
     async finish(callbackUrl, checks) {
       const tokens = await client.authorizationCodeGrant(server, callbackUrl, {
         pkceCodeVerifier: checks.codeVerifier,
