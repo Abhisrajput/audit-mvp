@@ -8,7 +8,10 @@ import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { seal, verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, SignOff, TestInput, TrailBundle, User } from './engine/types';
+import { AppError } from './errors';
 import type { Store } from './store';
+
+export { AppError } from './errors';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -17,12 +20,6 @@ export const USERS: User[] = [
   { id: 'reviewer', name: 'Ravi Reviewer', role: 'reviewer' },
   { id: 'approver', name: 'Priya QA Head', role: 'approver' },
 ];
-
-export class AppError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
 
 export interface NewEngagement {
   name: string;
