@@ -178,6 +178,12 @@ export interface ChunksTable {
 }
 
 
+export interface BlobUploadsTable {
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: Generated<Date>;
+}
+
 export interface DB {
   engagements: EngagementsTable;
   engagement_work: EngagementWorkTable;
@@ -193,4 +199,5 @@ export interface DB {
   documents: DocumentsTable;
   document_text: DocumentTextTable;
   chunks: ChunksTable;
+  blob_uploads: BlobUploadsTable;
 }

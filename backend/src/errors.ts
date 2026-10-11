@@ -1,5 +1,6 @@
 export type ErrorCode =
   | 'VALIDATION'
+  | 'STORAGE_UNAVAILABLE'
   | 'UNAUTHENTICATED'
   | 'FORBIDDEN'
   | 'NOT_FOUND'

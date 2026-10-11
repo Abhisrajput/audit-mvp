@@ -5,6 +5,7 @@ import { adminRoutes } from './auth/admin-routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
+import { documentRoutes, type StorageDeps } from './knowledge/routes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { wrap } from './http-util';
@@ -43,7 +44,7 @@ const FindingPatchSchema = z
   })
   .partial();
 
-export function createApp(svc: AuditService, auth: AuthDeps) {
+export function createApp(svc: AuditService, auth: AuthDeps, storage: StorageDeps = { blobs: null, maxUploadBytes: 25 * 1024 * 1024, presignDownloads: false }) {
   const app = express();
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
@@ -72,6 +73,7 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   const evaluators = requireRole([...PREPARER_ROLES, 'cae']);
   app.use(adminRoutes(svc.db, auth.config));
   app.use(signing.router);
+  app.use(documentRoutes(svc, storage));
 
   app.get('/api/modules', readers, (_req, res) => res.json(svc.modules()));
 
@@ -155,6 +157,9 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', code: 'VALIDATION', issues: err.issues });
+    if ((err as { type?: string }).type === 'entity.too.large') {
+      return res.status(413).json({ error: 'The file is larger than the upload limit', code: 'VALIDATION' });
+    }
     console.error(err);
     res.status(500).json({ error: 'Internal error', code: 'INTERNAL' });
   });
