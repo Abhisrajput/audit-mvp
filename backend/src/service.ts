@@ -205,7 +205,8 @@ export class AuditService {
   // ---------- Trail ----------
 
   private append(bundle: Omit<TrailBundle, 'hash' | 'prevHash' | 'seq'>): TrailBundle {
-    const sealed = seal(this.store.trail, bundle);
+    const tip = this.store.trail.at(-1);
+    const sealed = seal(tip ? { seq: tip.seq, hash: tip.hash } : null, bundle);
     this.store.trail.push(sealed);
     return sealed;
   }
