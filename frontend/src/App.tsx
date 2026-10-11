@@ -1,6 +1,7 @@
 import { FactCheck as FactCheckIcon, Logout as LogoutIcon } from '@mui/icons-material';
 import { AppBar, Box, Button, Chip, Container, LinearProgress, Toolbar, Typography } from '@mui/material';
 import { Link as RouterLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { ActionButton } from './components/common';
 import AdminPage from './pages/AdminPage';
 import EngagementPage from './pages/EngagementPage';
 import EngagementsPage from './pages/EngagementsPage';
@@ -42,9 +43,9 @@ function Shell() {
           )}
           <Typography variant="body2">{user.name}</Typography>
           <Chip size="small" label={ROLE_LABEL[user.role]} sx={{ bgcolor: 'rgba(255,255,255,0.15)', color: 'inherit' }} />
-          <Button color="inherit" startIcon={<LogoutIcon />} onClick={logout}>
+          <ActionButton variant="text" color="inherit" startIcon={<LogoutIcon />} action={logout}>
             Sign out
-          </Button>
+          </ActionButton>
         </Toolbar>
       </AppBar>
       <Container maxWidth="xl" sx={{ py: 3 }}>
@@ -60,6 +61,7 @@ function Shell() {
             <Route path="/engagements/:id" element={<EngagementPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/validation" element={<ValidationPage />} />
+            <Route path="*" element={<Navigate to="/engagements" />} />
           </Routes>
         )}
       </Container>

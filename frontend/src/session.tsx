@@ -67,12 +67,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     await refresh();
   };
 
+  /** Signs out locally only once the server has ended the session (401: it already had). Otherwise rethrows. */
   const logout = async () => {
     try {
       await request('/auth/logout', { method: 'POST' });
-    } finally {
-      signedOut();
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 401)) throw e;
     }
+    signedOut();
   };
 
   const user: User | null = me?.user.role ? { id: me.user.id, name: me.user.name, role: me.user.role } : null;
