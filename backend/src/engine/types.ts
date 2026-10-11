@@ -190,6 +190,8 @@ export interface Engagement {
   testResults: Record<string, TestResult>;
   findings: Finding[];
   report: AuditReport | null;
+  /** Optimistic-concurrency version from the database; absent on objects not yet saved. */
+  version?: number;
 }
 
 // ---------- Evidence / audit trail ----------
