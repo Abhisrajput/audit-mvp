@@ -98,8 +98,8 @@ describe('sessions', () => {
 describe('identity events', () => {
   it('seals identity events into the same chain with no engagement', async () => {
     const db = (await testDb()).kysely;
-    await recordIdentityEvent(db, 'login', { id: 'auditor', name: 'Asha Auditor', role: 'auditor' }, { method: 'dev' }, { userId: 'auditor' });
-    await recordIdentityEvent(db, 'logout', { id: 'auditor', name: 'Asha Auditor', role: 'auditor' }, {}, {});
+    await db.transaction().execute((trx) => recordIdentityEvent(trx, 'login', { id: 'auditor', name: 'Asha Auditor', role: 'auditor' }, { method: 'dev' }, { userId: 'auditor' }));
+    await db.transaction().execute((trx) => recordIdentityEvent(trx, 'logout', { id: 'auditor', name: 'Asha Auditor', role: 'auditor' }, {}, {}));
     const trail = await readTrail(db);
     expect(trail.map((b) => [b.moduleId, b.engagementId, b.actor])).toEqual([
       ['identity:login', null, 'auditor'],

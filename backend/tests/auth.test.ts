@@ -2,7 +2,8 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { loadAuthConfig } from '../src/auth/config';
 import { readTrail } from '../src/db/trail-repo';
-import { appWithDevUsers, devAuthConfig, signIn } from './http';
+import { createApp } from '../src/app';
+import { appWithDevUsers, devAuthConfig, failTrailWrites, restoreTrailWrites, signIn } from './http';
 
 const NEW_ENGAGEMENT = {
   name: 'n', entity: 'e', site: 's', periodFrom: '2026-01-01', periodTo: '2026-06-30', auditType: 't', scopeStatement: 'hedging limits', packIds: ['common'],
@@ -52,6 +53,41 @@ describe('sign-in and sessions', () => {
     expect((await readTrail(svc.db.kysely)).map((b) => b.moduleId)).toEqual(['identity:login', 'identity:logout']);
   });
 
+  it('opens no session when the login cannot be trailed', async () => {
+    const { app, svc } = await appWithDevUsers();
+    await failTrailWrites(svc.db, ['identity:login']);
+    const res = await request(app).post('/auth/dev-login').send({ userId: 'auditor' });
+    expect(res.status).toBe(500);
+    expect(res.headers['set-cookie']).toBeUndefined();
+    expect(await svc.db.kysely.selectFrom('sessions').selectAll().execute()).toEqual([]);
+    expect(await readTrail(svc.db.kysely)).toEqual([]);
+  });
+
+  it('keeps the session alive when the logout cannot be trailed', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const auditor = await signIn(app, 'auditor');
+    await failTrailWrites(svc.db, ['identity:logout']);
+    const res = await auditor.post('/auth/logout');
+    expect(res.status).toBe(500);
+    expect(String(res.headers['set-cookie'] ?? '')).not.toMatch(/audit_session=;/);
+    await auditor.get('/api/me').expect(200);
+    await restoreTrailWrites(svc.db);
+    await auditor.post('/auth/logout').expect(204);
+    expect((await readTrail(svc.db.kysely)).map((b) => b.moduleId)).toEqual(['identity:login', 'identity:logout']);
+  });
+
+  it('ends demo sessions once DEV_AUTH is turned off', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const login = await request(app).post('/auth/dev-login').send({ userId: 'auditor' }).expect(200);
+    const cookie = login.headers['set-cookie'] as unknown as string[];
+    await request(app).get('/api/me').set('Cookie', cookie).expect(200);
+    const hardened = createApp(svc, { config: devAuthConfig({ devAuth: false }), oidc: null });
+    const res = await request(hardened).get('/api/me').set('Cookie', cookie);
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('UNAUTHENTICATED');
+    expect((await request(hardened).get('/api/engagements').set('Cookie', cookie)).status).toBe(401);
+  });
+
   it('keeps admins out of audit content and viewers read-only [REQ-15]', async () => {
     const { app } = await appWithDevUsers();
     const auditor = await signIn(app, 'auditor');
@@ -92,8 +128,29 @@ describe('DEV_AUTH safety', () => {
     });
     expect(prod).toMatchObject({
       devAuth: false, secureCookies: true, publicUrl: 'https://audit.example.com', session: { idleMinutes: 30, maxHours: 12 },
-      oidc: { issuer: 'https://login.example.com/tenant/v2.0', clientId: 'audit', clientSecret: 's', groupsClaim: 'groups', roleMap: { 'Audit-CAE': 'cae' }, allowInsecure: false },
+      oidc: { issuer: 'https://login.example.com/tenant/v2.0', clientId: 'audit', clientSecret: 's', groupsClaim: 'groups', scopes: 'openid profile email', roleMap: { 'Audit-CAE': 'cae' }, allowInsecure: false },
     });
     expect(loadAuthConfig({ ...base, DEV_AUTH: 'true', OIDC_ISSUER: '', OIDC_CLIENT_ID: '' })).toMatchObject({ devAuth: true, secureCookies: false, oidc: null });
+  });
+
+  it('refuses production settings that would silently break sign-in', () => {
+    const base = { DATABASE_URL: 'postgres://u:p@h/d' };
+    const prodOidc = { ...base, NODE_ENV: 'production', OIDC_ISSUER: 'https://idp.example.com', OIDC_CLIENT_ID: 'c' };
+    expect(() =>
+      loadAuthConfig({ ...prodOidc, PUBLIC_URL: 'http://audit.example.com', OIDC_REDIRECT_URI: 'http://audit.example.com/auth/callback' }),
+    ).toThrow(/PUBLIC_URL must use https in production[\s\S]*OIDC_REDIRECT_URI must use https in production/);
+    expect(() =>
+      loadAuthConfig({ ...prodOidc, PUBLIC_URL: 'https://audit.example.com', OIDC_REDIRECT_URI: 'https://api.example.com/auth/callback' }),
+    ).toThrow(/OIDC_REDIRECT_URI must be on the same origin as PUBLIC_URL.*SameSite/);
+    // The origin rule applies outside production too.
+    expect(() =>
+      loadAuthConfig({ ...base, DEV_AUTH: 'true', OIDC_ISSUER: 'http://localhost:8081/realms/audit', OIDC_CLIENT_ID: 'c', PUBLIC_URL: 'http://localhost:5174', OIDC_REDIRECT_URI: 'http://localhost:3002/auth/callback' }),
+    ).toThrow(/same origin as PUBLIC_URL/);
+    expect(
+      loadAuthConfig({ ...base, OIDC_ISSUER: 'http://localhost:8081/realms/audit', OIDC_CLIENT_ID: 'c', PUBLIC_URL: 'http://localhost:5174/', OIDC_REDIRECT_URI: 'http://localhost:5174/auth/callback' }).oidc,
+    ).toMatchObject({ redirectUri: 'http://localhost:5174/auth/callback', scopes: 'openid profile email' });
+    expect(
+      loadAuthConfig({ ...base, OIDC_ISSUER: 'http://localhost:8081/realms/audit', OIDC_CLIENT_ID: 'c', OIDC_REDIRECT_URI: 'http://localhost:5174/auth/callback', OIDC_SCOPES: 'openid profile email groups' }).oidc?.scopes,
+    ).toBe('openid profile email groups');
   });
 });

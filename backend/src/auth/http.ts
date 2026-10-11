@@ -5,7 +5,8 @@ import type { DB } from '../db/schema';
 import type { Role, User } from '../engine/types';
 import { AppError } from '../errors';
 import type { AuthConfig } from './config';
-import { resolveSession, type ActiveSession, type SessionPolicy } from './session-repo';
+import { DEV_ISSUER } from './dev-users';
+import { resolveSession, type ActiveSession } from './session-repo';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -17,12 +18,16 @@ declare module 'express-serve-static-core' {
 export const SESSION_COOKIE = 'audit_session';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-export function sessionMiddleware(db: Kysely<DB>, policy: SessionPolicy): RequestHandler {
+/**
+ * Resolves the session cookie into req.auth. Demo-user sessions count only while
+ * DEV_AUTH is on, so turning it off ends any demo session still in the database.
+ */
+export function sessionMiddleware(db: Kysely<DB>, cfg: Pick<AuthConfig, 'session' | 'devAuth'>): RequestHandler {
   return (req, _res, next) => {
     const token: unknown = req.cookies?.[SESSION_COOKIE];
     if (typeof token !== 'string' || !token) return next();
-    resolveSession(db, token, policy).then((session) => {
-      if (session) req.auth = session;
+    resolveSession(db, token, cfg.session).then((session) => {
+      if (session && (cfg.devAuth || session.user.issuer !== DEV_ISSUER)) req.auth = session;
       next();
     }, next);
   };

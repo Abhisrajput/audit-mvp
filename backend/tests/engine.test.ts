@@ -286,6 +286,17 @@ describe('segregation of duties', () => {
     await expect(svc.signOff(e.id, f.id, 'approve', '', promoted)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
   });
 
+  it('stops the Gap Writer runner from approving even after being given the CAE role [REQ-17]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc); // the auditor ran Gap Writer
+    const f = e.findings[0];
+    expect(f.preparedBy).toEqual(['auditor']);
+    await svc.signOff(e.id, f.id, 'review', '', reviewer);
+    const preparerAsCae: User = { ...auditor, role: 'cae' }; // same person, role switched before approval
+    await expect(svc.signOff(e.id, f.id, 'approve', '', preparerAsCae)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+    await expect(svc.signOff(e.id, f.id, 'approve', '', approver)).resolves.toMatchObject({ status: 'approved' });
+  });
+
   it('gives admins and viewers no way to change audit work [REQ-15]', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);

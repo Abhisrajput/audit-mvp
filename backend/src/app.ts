@@ -47,7 +47,7 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   app.use(express.json({ limit: '1mb' }));
-  app.use(sessionMiddleware(svc.db.kysely, auth.config.session));
+  app.use(sessionMiddleware(svc.db.kysely, auth.config));
 
   const param = (req: Request, name: string) => String(req.params[name]);
 

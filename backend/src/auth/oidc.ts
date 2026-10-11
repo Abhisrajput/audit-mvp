@@ -40,7 +40,7 @@ export async function createOidcClient(cfg: OidcConfig): Promise<OidcClient> {
       const nonce = client.randomNonce();
       const url = client.buildAuthorizationUrl(server, {
         redirect_uri: cfg.redirectUri,
-        scope: 'openid profile email',
+        scope: cfg.scopes,
         code_challenge: await client.calculatePKCECodeChallenge(codeVerifier),
         code_challenge_method: 'S256',
         state,

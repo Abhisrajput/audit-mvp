@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import request from 'supertest';
+import { getUser } from '../src/auth/user-repo';
 import { readTrail } from '../src/db/trail-repo';
-import { appWithDevUsers, signIn } from './http';
+import { appWithDevUsers, failTrailWrites, signIn } from './http';
 
 describe('administration', () => {
   it('is for admins only', async () => {
@@ -66,5 +68,60 @@ describe('administration', () => {
     expect((await admin.patch('/api/admin/users/admin', { role: 'viewer' })).status).toBe(409);
     expect((await admin.patch('/api/admin/users/admin', { active: false })).status).toBe(409);
     expect((await admin.get('/api/admin/users')).status).toBe(200);
+  });
+
+  it('changes nothing for non-admins or anonymous callers', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const auditorSession = await signIn(app, 'auditor');
+    const trailBefore = (await readTrail(svc.db.kysely)).length;
+    for (const id of ['auditor', 'reviewer', 'approver', 'viewer']) {
+      const u = await signIn(app, id);
+      const patch = await u.patch('/api/admin/users/viewer', { role: 'admin', active: false });
+      expect(patch.status).toBe(403);
+      expect(patch.body.code).toBe('FORBIDDEN');
+      const revoke = await u.post('/api/admin/users/auditor/revoke-sessions');
+      expect(revoke.status).toBe(403);
+      expect(revoke.body.code).toBe('FORBIDDEN');
+    }
+    expect((await request(app).patch('/api/admin/users/viewer').send({ role: 'admin' })).status).toBe(401);
+    expect((await request(app).post('/api/admin/users/auditor/revoke-sessions')).status).toBe(401);
+    expect((await request(app).get('/api/admin/users')).status).toBe(401);
+
+    expect(await getUser(svc.db.kysely, 'viewer')).toMatchObject({ role: 'viewer', active: true, roleSource: 'admin' });
+    await auditorSession.get('/api/me').expect(200);
+    const trail = await readTrail(svc.db.kysely);
+    expect(trail.slice(trailBefore).map((b) => b.moduleId)).toEqual(Array(4).fill('identity:login'));
+  });
+
+  it('refuses an admin change without the CSRF token, changing and trailing nothing', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const admin = await signIn(app, 'admin');
+    const forged = await admin.agent.patch('/api/admin/users/viewer').send({ role: 'auditor' });
+    expect(forged.status).toBe(403);
+    expect(forged.body.code).toBe('CSRF_FAILED');
+    const revoke = await admin.agent.post('/api/admin/users/viewer/revoke-sessions');
+    expect(revoke.status).toBe(403);
+    expect(revoke.body.code).toBe('CSRF_FAILED');
+    expect(await getUser(svc.db.kysely, 'viewer')).toMatchObject({ role: 'viewer', roleSource: 'admin' });
+    expect((await readTrail(svc.db.kysely)).map((b) => b.moduleId)).toEqual(['identity:login']);
+  });
+
+  it('rolls an access change back when it cannot be trailed', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const auditor = await signIn(app, 'auditor');
+    const admin = await signIn(app, 'admin');
+    await failTrailWrites(svc.db, ['identity:role-change', 'identity:deactivate', 'identity:sessions-revoked']);
+
+    expect((await admin.patch('/api/admin/users/viewer', { role: 'auditor' })).status).toBe(500);
+    expect(await getUser(svc.db.kysely, 'viewer')).toMatchObject({ role: 'viewer' });
+
+    // Role and deactivation in one request: neither may stick.
+    expect((await admin.patch('/api/admin/users/auditor', { role: 'viewer', active: false })).status).toBe(500);
+    expect(await getUser(svc.db.kysely, 'auditor')).toMatchObject({ role: 'auditor', active: true });
+    await auditor.get('/api/me').expect(200);
+
+    expect((await admin.post('/api/admin/users/auditor/revoke-sessions')).status).toBe(500);
+    await auditor.get('/api/me').expect(200);
+    expect((await readTrail(svc.db.kysely)).map((b) => b.moduleId)).toEqual(['identity:login', 'identity:login']);
   });
 });

@@ -1,6 +1,8 @@
 import { Router, type Response } from 'express';
+import type { Transaction } from 'kysely';
 import { z } from 'zod';
 import type { Db } from '../db';
+import type { DB } from '../db/schema';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import type { AuthConfig } from './config';
@@ -10,7 +12,7 @@ import { recordIdentityEvent } from './identity-trail';
 import { createSession, revokeSession } from './session-repo';
 import type { OidcChecks, OidcClient } from './oidc';
 import { roleFromGroups } from './oidc';
-import { getUser, provisionUser, type UserRecord } from './user-repo';
+import { getUser, getUserByIdentity, provisionUser, type UserRecord } from './user-repo';
 
 export interface AuthDeps {
   config: AuthConfig;
@@ -36,11 +38,20 @@ function page(res: Response, status: number, title: string, message: string, nex
     );
 }
 
-/** Opens a session for a user who has just proved who they are, and trails the login. */
+/** Creates the session and trails the login inside the caller's transaction; returns the cookie token. */
+async function openSession(trx: Transaction<DB>, user: UserRecord, method: string, details: object): Promise<string> {
+  const { token } = await createSession(trx, user.id);
+  await recordIdentityEvent(trx, 'login', user, { method, ...details }, { userId: user.id, role: user.role });
+  return token;
+}
+
+/**
+ * Opens a session for a user who has just proved who they are, and trails the login.
+ * The session and its trail entry commit together; the cookie is set only after commit.
+ */
 export async function startSession(db: Db, res: Response, cfg: AuthConfig, user: UserRecord, method: string, details: object) {
-  const { token } = await createSession(db.kysely, user.id);
+  const token = await db.kysely.transaction().execute((trx) => openSession(trx, user, method, details));
   setSessionCookie(res, token, cfg);
-  await recordIdentityEvent(db.kysely, 'login', user, { method, ...details }, { userId: user.id, role: user.role });
 }
 
 export function authRoutes(db: Db, auth: AuthDeps): Router {
@@ -95,19 +106,35 @@ export function authRoutes(db: Db, auth: AuthDeps): Router {
         return page(res, 400, 'Sign-in failed', 'The identity provider response could not be verified. Please try again.', home);
       }
 
-      const user = await provisionUser(db.kysely, {
-        issuer: identity.issuer, subject: identity.subject, name: identity.name, email: identity.email,
-        idpRole: roleFromGroups(identity.groups, oidcCfg.roleMap),
+      // Provisioning, any IdP-driven role change, the session and the login trail commit together.
+      const token = await db.kysely.transaction().execute(async (trx) => {
+        const existing = await getUserByIdentity(trx, identity.issuer, identity.subject, true);
+        // A deactivated user is turned away before anything about them is updated.
+        if (existing && !existing.active) return null;
+        const user = await provisionUser(trx, {
+          issuer: identity.issuer, subject: identity.subject, name: identity.name, email: identity.email,
+          idpRole: roleFromGroups(identity.groups, oidcCfg.roleMap),
+        });
+        if (existing && existing.role !== user.role) {
+          await recordIdentityEvent(
+            trx, 'role-change', { id: 'idp', name: identity.issuer, role: null },
+            { userId: user.id, from: existing.role, to: user.role, source: 'idp' }, { roleSource: user.roleSource },
+          );
+        }
+        return openSession(trx, user, 'oidc', { issuer: identity.issuer, groups: identity.groups });
       });
-      if (!user.active) return page(res, 403, 'Account deactivated', 'Your account has been deactivated. Contact your administrator.');
-      await startSession(db, res, cfg, user, 'oidc', { issuer: identity.issuer, groups: identity.groups });
+      if (!token) return page(res, 403, 'Account deactivated', 'Your account has been deactivated. Contact your administrator.');
+      setSessionCookie(res, token, cfg);
       page(res, 200, 'Signed in', 'Signed in. Taking you to the audit platform…', home);
     }));
   }
 
   r.post('/auth/logout', requireUser({ allowPending: true }), wrap(async (req, res) => {
-    await revokeSession(db.kysely, String(req.cookies[SESSION_COOKIE]));
-    await recordIdentityEvent(db.kysely, 'logout', req.auth!.user, {}, {});
+    const token = String(req.cookies[SESSION_COOKIE]);
+    await db.kysely.transaction().execute(async (trx) => {
+      await revokeSession(trx, token);
+      await recordIdentityEvent(trx, 'logout', req.auth!.user, {}, {});
+    });
     clearSessionCookie(res, cfg);
     res.status(204).end();
   }));

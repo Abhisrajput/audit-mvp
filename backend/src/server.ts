@@ -25,6 +25,13 @@ async function main() {
   if (auth.devAuth) {
     await ensureDevUsers(db.kysely);
     console.warn('DEV_AUTH is on: demo sign-in is enabled. Never use this in production.');
+    if (auth.oidc) {
+      console.warn(
+        '!!! WARNING: DEV_AUTH=true AND OIDC is configured. Anyone who can reach this server can sign in as a demo ' +
+          'user (including the admin) without a password, alongside real identity-provider users. Use this only for ' +
+          'local testing on a machine nobody else can reach; set DEV_AUTH=false anywhere else.',
+      );
+    }
   }
   const oidc = auth.oidc ? await createOidcClient(auth.oidc) : null;
   if (oidc) console.log(`Sign-in via ${auth.oidc!.issuer}`);

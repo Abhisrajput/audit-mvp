@@ -42,11 +42,13 @@ services:
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
       OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
       OIDC_ROLE_MAP: ${OIDC_ROLE_MAP:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email}
       # offline (default, no key needed) | anthropic
       LLM_PROVIDER: ${LLM_PROVIDER:-offline}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # Bound to this machine only: demo sign-in (DEV_AUTH=true) must never be reachable by others.
     ports:
-      - '3002:3002'
+      - '127.0.0.1:3002:3002'
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -56,7 +58,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     ports:
-      - '8080:80'
+      - '127.0.0.1:8080:80'
     depends_on:
       - backend
 

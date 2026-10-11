@@ -2,6 +2,7 @@ import request from 'supertest';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import type { AuthConfig } from '../src/auth/config';
 import { createApp } from '../src/app';
+import type { Db } from '../src/db';
 import { newService } from './helpers';
 
 export function devAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig {
@@ -36,4 +37,26 @@ export async function signIn(app: ReturnType<typeof createApp>, userId: string) 
     put: (path: string, body: object) => agent.put(path).set('x-csrf-token', csrf).send(body),
     patch: (path: string, body: object) => agent.patch(path).set('x-csrf-token', csrf).send(body),
   };
+}
+
+/**
+ * Makes every trail insert for the given identity events fail inside Postgres,
+ * so a route that writes state and trail in one transaction must roll back both.
+ * A trigger on this test's own database exercises real rollback without mocking modules.
+ */
+export async function failTrailWrites(db: Db, moduleIds: string[]) {
+  const list = moduleIds.map((m) => `'${m.replace(/'/g, "''")}'`).join(', ');
+  await db.execScript(`
+    CREATE OR REPLACE FUNCTION test_fail_trail() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.module_id = ANY (ARRAY[${list}]::text[]) THEN RAISE EXCEPTION 'trail unavailable (test)'; END IF;
+      RETURN NEW;
+    END $$;
+    DROP TRIGGER IF EXISTS test_fail_trail ON trail;
+    CREATE TRIGGER test_fail_trail BEFORE INSERT ON trail FOR EACH ROW EXECUTE FUNCTION test_fail_trail();`);
+}
+
+/** Lets the trail accept writes again. */
+export async function restoreTrailWrites(db: Db) {
+  await db.execScript('DROP TRIGGER IF EXISTS test_fail_trail ON trail;');
 }

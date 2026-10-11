@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Db } from '../db';
+import type { Role } from '../engine/types';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import type { AuthConfig } from './config';
@@ -32,35 +33,44 @@ export function adminRoutes(db: Db, cfg: AuthConfig): Router {
     }),
   );
 
+  // Each change and its trail entries commit together, or not at all.
   r.patch('/api/admin/users/:id', wrap(async (req, res) => {
     const me = actorOf(req);
     const id = String(req.params.id);
     const patch = PatchUser.parse(req.body);
-    const before = await getUser(db.kysely, id);
-    if (!before) throw new AppError(404, `User ${id} not found`);
-    if (id === me.id && ((patch.role !== undefined && patch.role !== 'admin') || patch.active === false)) {
+    if (patch.role !== undefined && patch.role !== null && !isRole(patch.role)) throw new AppError(400, `Unknown role ${patch.role}`, 'VALIDATION');
+    const role = patch.role as Role | null | undefined;
+    if (id === me.id && ((role !== undefined && role !== 'admin') || patch.active === false)) {
       throw new AppError(409, 'You cannot remove your own admin access; ask another admin');
     }
 
-    let after = before;
-    if (patch.role !== undefined && patch.role !== before.role) {
-      const role = patch.role === null ? null : isRole(patch.role) ? patch.role : null;
-      after = (await setUserRole(db.kysely, id, role))!;
-      await recordIdentityEvent(db.kysely, 'role-change', me, { userId: id, from: before.role, to: after.role }, { roleSource: after.roleSource });
-    }
-    if (patch.active !== undefined && patch.active !== before.active) {
-      after = (await setUserActive(db.kysely, id, patch.active))!;
-      const revoked = patch.active ? 0 : await revokeUserSessions(db.kysely, id);
-      await recordIdentityEvent(db.kysely, patch.active ? 'reactivate' : 'deactivate', me, { userId: id }, { sessionsRevoked: revoked });
-    }
+    const after = await db.kysely.transaction().execute(async (trx) => {
+      const before = await getUser(trx, id);
+      if (!before) throw new AppError(404, `User ${id} not found`);
+      let current = before;
+      if (role !== undefined && role !== before.role) {
+        current = (await setUserRole(trx, id, role))!;
+        await recordIdentityEvent(trx, 'role-change', me, { userId: id, from: before.role, to: current.role }, { roleSource: current.roleSource });
+      }
+      if (patch.active !== undefined && patch.active !== before.active) {
+        current = (await setUserActive(trx, id, patch.active))!;
+        const revoked = patch.active ? 0 : await revokeUserSessions(trx, id);
+        await recordIdentityEvent(trx, patch.active ? 'reactivate' : 'deactivate', me, { userId: id }, { sessionsRevoked: revoked });
+      }
+      return current;
+    });
     res.json(after);
   }));
 
   r.post('/api/admin/users/:id/revoke-sessions', wrap(async (req, res) => {
+    const me = actorOf(req);
     const id = String(req.params.id);
-    if (!(await getUser(db.kysely, id))) throw new AppError(404, `User ${id} not found`);
-    const revoked = await revokeUserSessions(db.kysely, id);
-    await recordIdentityEvent(db.kysely, 'sessions-revoked', actorOf(req), { userId: id }, { revoked });
+    const revoked = await db.kysely.transaction().execute(async (trx) => {
+      if (!(await getUser(trx, id))) throw new AppError(404, `User ${id} not found`);
+      const n = await revokeUserSessions(trx, id);
+      await recordIdentityEvent(trx, 'sessions-revoked', me, { userId: id }, { revoked: n });
+      return n;
+    });
     res.json({ revoked });
   }));
 

@@ -16,6 +16,8 @@ export interface OidcConfig {
   groupsClaim: string;
   /** Identity-provider group → role. */
   roleMap: Record<string, Role>;
+  /** Space-separated scopes requested at sign-in (some providers need an extra scope to send groups). */
+  scopes: string;
   /** Plain-http identity provider allowed (development and tests only). */
   allowInsecure: boolean;
 }
@@ -44,6 +46,7 @@ const AuthEnv = z
     OIDC_REDIRECT_URI: z.string().url().optional(),
     OIDC_GROUPS_CLAIM: z.string().min(1).default('groups'),
     OIDC_ROLE_MAP: z.string().default('{}'),
+    OIDC_SCOPES: z.string().trim().min(1).default('openid profile email'),
   })
   .superRefine((env, ctx) => {
     const production = env.NODE_ENV === 'production';
@@ -57,10 +60,32 @@ const AuthEnv = z
     if (production && env.OIDC_ISSUER && !env.OIDC_ISSUER.startsWith('https://')) {
       ctx.addIssue({ code: 'custom', path: ['OIDC_ISSUER'], message: 'OIDC_ISSUER must use https in production' });
     }
+    if (production && !env.PUBLIC_URL.startsWith('https://')) {
+      ctx.addIssue({ code: 'custom', path: ['PUBLIC_URL'], message: 'PUBLIC_URL must use https in production (session cookies are Secure)' });
+    }
+    if (production && env.OIDC_REDIRECT_URI && !env.OIDC_REDIRECT_URI.startsWith('https://')) {
+      ctx.addIssue({ code: 'custom', path: ['OIDC_REDIRECT_URI'], message: 'OIDC_REDIRECT_URI must use https in production' });
+    }
+    const appOrigin = originOf(env.PUBLIC_URL);
+    const redirectOrigin = env.OIDC_REDIRECT_URI ? originOf(env.OIDC_REDIRECT_URI) : null;
+    if (appOrigin && redirectOrigin && redirectOrigin !== appOrigin) {
+      ctx.addIssue({
+        code: 'custom', path: ['OIDC_REDIRECT_URI'],
+        message: `OIDC_REDIRECT_URI must be on the same origin as PUBLIC_URL (${appOrigin}); the SameSite cookies set at sign-in are otherwise not sent back to the app`,
+      });
+    }
     if (parseRoleMap(env.OIDC_ROLE_MAP) === null) {
       ctx.addIssue({ code: 'custom', path: ['OIDC_ROLE_MAP'], message: 'OIDC_ROLE_MAP must be a JSON object of group → auditor | audit_manager | cae | admin | viewer' });
     }
   });
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 
 function parseRoleMap(raw: string): Record<string, Role> | null {
   try {
@@ -96,6 +121,7 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
             redirectUri: e.OIDC_REDIRECT_URI,
             groupsClaim: e.OIDC_GROUPS_CLAIM,
             roleMap: parseRoleMap(e.OIDC_ROLE_MAP) ?? {},
+            scopes: e.OIDC_SCOPES,
             allowInsecure: !production,
           }
         : null,

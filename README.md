@@ -69,6 +69,7 @@ Or run everything with Docker: `docker compose up --build` from the repo root.
 Compose starts Postgres, runs migrations once, then starts the API and the UI on
 http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
 To reset the local database: `docker compose down -v`.
+Compose binds the UI and API to localhost only; demo sign-in must be off (`DEV_AUTH=false`) on any machine others can reach.
 
 **Coming from the JSON-file MVP?** Import your old data once into an empty
 database: `npm run import-json -- data/db.json`. The trail's hash chain is
@@ -94,6 +95,12 @@ Locally, demo sign-in is on (`DEV_AUTH=true`). The sign-in page lists five demo 
 **Real sign-in** uses OpenID Connect against your identity provider (Entra ID, Okta, Keycloak, …):
 - Set `DEV_AUTH=false`, `NODE_ENV=production` and the `OIDC_*` settings (see `backend/.env.example`).
 - Map identity-provider groups to roles with `OIDC_ROLE_MAP`.
+- `OIDC_REDIRECT_URI` must be on the same origin as `PUBLIC_URL` (both https in production), or the sign-in cookies are not sent back.
+- `OIDC_SCOPES` (default `openid profile email`) sets the scopes requested at sign-in. Getting groups into the ID token, per provider:
+  - **Keycloak:** add a *Group Membership* mapper (claim `groups`, full path off) to the client.
+  - **Okta:** add a `groups` claim to the authorization server and request it, e.g. `OIDC_SCOPES=openid profile email groups`.
+  - **Entra ID:** enable the groups claim under *Token configuration*. Groups arrive as object IDs, so map those IDs in `OIDC_ROLE_MAP`.
+    Users in more than 200 groups get an overage claim instead of a list; they land in pending access until an admin assigns a role.
 - New people with no mapped group see "waiting for access" until an administrator assigns a role.
 
 To try real sign-in locally with Keycloak:

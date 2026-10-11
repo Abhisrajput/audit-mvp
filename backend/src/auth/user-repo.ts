@@ -66,6 +66,14 @@ export async function getUser(db: Executor, id: string): Promise<UserRecord | nu
   return row ? toUserRecord(row) : null;
 }
 
+/** The user signed in by this identity provider subject, locked for the rest of the transaction when `lock` is set. */
+export async function getUserByIdentity(db: Executor, issuer: string, subject: string, lock = false): Promise<UserRecord | null> {
+  let q = db.selectFrom('users').selectAll().where('issuer', '=', issuer).where('subject', '=', subject);
+  if (lock) q = q.forUpdate();
+  const row = await q.executeTakeFirst();
+  return row ? toUserRecord(row) : null;
+}
+
 export async function listUsers(db: Executor): Promise<UserRecord[]> {
   return (await db.selectFrom('users').selectAll().orderBy('id').execute()).map(toUserRecord);
 }
