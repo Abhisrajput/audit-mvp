@@ -15,7 +15,8 @@ export async function createMemoryDb(): Promise<Db> {
   const { PGlite } = await import('@electric-sql/pglite');
   // Migration 005 creates the pgvector extension, so the in-process database needs it too.
   const { vector } = await import('@electric-sql/pglite-pgvector');
-  const pglite = new PGlite({ extensions: { vector } });
+  // date stays the 'YYYY-MM-DD' string it is, as in db/index.ts.
+  const pglite = new PGlite({ extensions: { vector }, parsers: { 1082: (v: string) => v } });
   await pglite.waitReady;
 
   let queue: Promise<void> = Promise.resolve();

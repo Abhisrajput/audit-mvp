@@ -13,7 +13,7 @@ interface Piece {
   text: string;
 }
 
-/** Paragraphs (split on blank lines) with their offsets; over-long paragraphs are cut at word boundaries. */
+/** Paragraphs (split on blank lines) with their offsets; over-long paragraphs are cut at whitespace (word boundaries). */
 function pieces(text: string): Piece[] {
   const out: Piece[] = [];
   const re = /\S[\s\S]*?(?=\n\s*\n|$)/g;
@@ -28,22 +28,34 @@ function pieces(text: string): Piece[] {
     while (offset < para.length) {
       let end = Math.min(offset + CHUNK_TARGET_CHARS, para.length);
       if (end < para.length) {
-        const space = para.lastIndexOf(' ', end);
-        if (space > offset) end = space;
+        const cut = lastWhitespace(para, offset, end);
+        if (cut > offset) end = cut;
       }
       out.push({ start: m.index! + offset, text: para.slice(offset, end).trim() });
       offset = end;
-      while (para[offset] === ' ') offset++;
+      while (offset < para.length && /\s/.test(para[offset])) offset++;
     }
   }
   return out;
 }
 
+/** Index of the last whitespace character in para[from, to], or -1. */
+function lastWhitespace(para: string, from: number, to: number): number {
+  for (let i = to; i > from; i--) if (/\s/.test(para[i])) return i;
+  return -1;
+}
+
+/** Page start offsets as the chunker needs them: whole, non-negative, distinct and ascending. */
+export function normalisePageStarts(pageStarts: readonly number[] = []): number[] {
+  return [...new Set(pageStarts.filter((s) => Number.isInteger(s) && s >= 0))].sort((a, b) => a - b);
+}
+
 /**
  * Splits document text into paragraph-aligned chunks of about CHUNK_TARGET_CHARS.
- * pageStarts holds the character offset where each page begins (page 1 first).
+ * pageStarts holds the character offset where each page begins (page 1 first; sorted and de-duplicated here).
  */
-export function chunkText(text: string, pageStarts: number[] = []): TextChunk[] {
+export function chunkText(text: string, pageStartsIn: readonly number[] = []): TextChunk[] {
+  const pageStarts = normalisePageStarts(pageStartsIn);
   const pageOf = (offset: number) => (pageStarts.length ? Math.max(1, pageStarts.filter((s) => s <= offset).length) : null);
   const chunks: TextChunk[] = [];
   let current: Piece[] = [];

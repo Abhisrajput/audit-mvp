@@ -1,10 +1,10 @@
 import crypto from 'node:crypto';
-import type { Selectable } from 'kysely';
+import { sql, type Selectable } from 'kysely';
 import type { DocumentsTable } from '../db/schema';
 import type { Executor } from '../db/trail-repo';
 import { AppError } from '../errors';
 import type { Classification, DocumentKind } from './access';
-import { chunkText } from './chunk';
+import { chunkText, normalisePageStarts } from './chunk';
 
 export type { Classification, DocumentKind } from './access';
 
@@ -41,7 +41,7 @@ function toRecord(r: Selectable<DocumentsTable>): DocumentRecord {
   return {
     id: r.id, sha256: r.sha256, filename: r.filename, mime: r.mime, size: Number(r.size), kind: r.kind, classification: r.classification,
     engagementId: r.engagement_id, uploadedBy: r.uploaded_by, uploadedAt: new Date(r.uploaded_at).toISOString(),
-    retainUntil: r.retain_until ? new Date(r.retain_until).toISOString().slice(0, 10) : null, retentionExpired: r.retention_expired, metadata: r.metadata,
+    retainUntil: r.retain_until, retentionExpired: r.retention_expired, metadata: r.metadata,
   };
 }
 
@@ -63,35 +63,42 @@ export async function getDocument(db: Executor, id: string): Promise<DocumentRec
   return row ? toRecord(row) : null;
 }
 
-/** Documents in one scope (global when engagementId is null) that the reader's classifications allow. */
+/** Global documents, plus one engagement's when engagementId is given, that the reader's classifications allow. */
 export async function listDocuments(db: Executor, f: { engagementId: string | null; classifications: readonly Classification[] }): Promise<DocumentRecord[]> {
   if (!f.classifications.length) return [];
   let q = db.selectFrom('documents').selectAll().where('classification', 'in', [...f.classifications]);
-  q = f.engagementId === null ? q.where('engagement_id', 'is', null) : q.where('engagement_id', '=', f.engagementId);
+  // An engagement's listing includes global documents, as search does; never another engagement's.
+  const engagementId = f.engagementId;
+  q = engagementId === null ? q.where('engagement_id', 'is', null) : q.where((eb) => eb.or([eb('engagement_id', 'is', null), eb('engagement_id', '=', engagementId)]));
   return (await q.orderBy('uploaded_at').orderBy('id').execute()).map(toRecord);
 }
 
-/** Stores a document's text once and indexes it as chunks carrying the document's classification and engagement. */
+/**
+ * Stores a document's text once and indexes it as chunks. The chunks' classification and
+ * engagement are copied from the documents row in the same statement, never from the caller.
+ * A second call for the same document (even a concurrent one) is a 409.
+ */
 export async function setDocumentText(
   db: Executor,
-  doc: DocumentRecord,
+  doc: Pick<DocumentRecord, 'id'>,
   t: { extractor: string; extractorVersion: string; text: string; pageStarts?: number[] },
 ): Promise<number> {
-  const existing = await db.selectFrom('document_text').select('document_id').where('document_id', '=', doc.id).executeTakeFirst();
-  if (existing) throw new AppError(409, `Document ${doc.id} already has text`);
-  await db
+  const pageStarts = normalisePageStarts(t.pageStarts);
+  const inserted = await db
     .insertInto('document_text')
-    .values({ document_id: doc.id, extractor: t.extractor, extractor_version: t.extractorVersion, text: t.text, pages: JSON.stringify(t.pageStarts ?? []) })
-    .execute();
-  const chunks = chunkText(t.text, t.pageStarts);
+    .values({ document_id: doc.id, extractor: t.extractor, extractor_version: t.extractorVersion, text: t.text, pages: JSON.stringify(pageStarts) })
+    .onConflict((oc) => oc.column('document_id').doNothing())
+    .returning('document_id')
+    .executeTakeFirst();
+  if (!inserted) throw new AppError(409, `Document ${doc.id} already has text`);
+  const chunks = chunkText(t.text, pageStarts);
   if (chunks.length) {
-    await db
-      .insertInto('chunks')
-      .values(chunks.map((c) => ({
-        id: `${doc.id}:${c.ordinal}`, document_id: doc.id, kg_node_id: null, ordinal: c.ordinal, page: c.page, text: c.text,
-        classification: doc.classification, engagement_id: doc.engagementId,
-      })))
-      .execute();
+    const rows = sql.join(chunks.map((c) => sql`(${c.ordinal}::integer, ${c.page}::integer, ${c.text}::text)`));
+    await sql`
+      INSERT INTO chunks (id, document_id, kg_node_id, ordinal, page, text, classification, engagement_id)
+      SELECT d.id || ':' || v.ordinal, d.id, NULL, v.ordinal, v.page, v.text, d.classification, d.engagement_id
+      FROM documents d CROSS JOIN (VALUES ${rows}) AS v (ordinal, page, text)
+      WHERE d.id = ${doc.id}`.execute(db);
   }
   return chunks.length;
 }

@@ -150,7 +150,7 @@ export interface DocumentsTable {
   engagement_id: string | null;
   uploaded_by: string;
   uploaded_at: Generated<Date>;
-  retain_until: ColumnType<Date | null, string | null | undefined, string | null>;
+  retain_until: ColumnType<string | null, string | null | undefined, string | null>;
   retention_expired: ColumnType<boolean, boolean | undefined, boolean>;
   metadata: ColumnType<Record<string, unknown>, string | undefined, string>;
 }

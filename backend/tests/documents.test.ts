@@ -34,6 +34,34 @@ describe('chunking', () => {
     }
   });
 
+  it('splits over-long paragraphs on any whitespace and never exceeds 1,200 characters', () => {
+    const lines = Array.from({ length: 400 }, (_, i) => `line${i} value`).join('\n');
+    const tabs = Array.from({ length: 400 }, (_, i) => `cell${i}`).join('\t');
+    const mixed = `${para(1, 30)}\n\n${lines}\n\n${tabs}\n\n${para(2, 500)}`;
+    const chunks = chunkText(mixed);
+    for (const c of chunks) {
+      expect(c.text.length).toBeLessThanOrEqual(CHUNK_TARGET_CHARS);
+      expect(c.text).not.toMatch(/^\s|\s$/);
+    }
+    // No word is cut in two: every token in the output is a whole token from the input.
+    const tokens = new Set(mixed.split(/\s+/));
+    for (const c of chunks) for (const t of c.text.split(/\s+/)) expect(tokens.has(t)).toBe(true);
+    for (const text of [para(1, 1200), Array.from({ length: 30 }, (_, i) => para(i, 30 + i * 7)).join('\n\n')]) {
+      for (const c of chunkText(text)) expect(c.text.length).toBeLessThanOrEqual(CHUNK_TARGET_CHARS);
+    }
+  });
+
+  it('accepts page offsets in any order and ignores invalid ones', () => {
+    const p1 = para(1, 200);
+    const p2 = para(2, 200);
+    const text = `${p1}\n\n${p2}`;
+    const start2 = text.indexOf(p2);
+    const sorted = chunkText(text, [0, start2]).map((c) => c.page);
+    expect(chunkText(text, [start2, 0]).map((c) => c.page)).toEqual(sorted);
+    expect(chunkText(text, [start2, 0, -5, Number.NaN, 1.5, start2]).map((c) => c.page)).toEqual(sorted);
+    expect(sorted).toContain(2);
+  });
+
   it('labels each chunk with the page it starts on', () => {
     const p1 = para(1);
     const p2 = para(2);
@@ -86,7 +114,7 @@ describe('document registry', () => {
     await expect(db.deleteFrom('documents').where('id', '=', global.id).execute()).rejects.toThrow(/append-only: DELETE/);
   });
 
-  it('lists documents within the requested scope and readable classifications', async () => {
+  it('lists global documents plus the requested engagement\'s, within readable classifications [REQ-23]', async () => {
     const svc = await newService();
     await ensureDevUsers(svc.db.kysely);
     const e = await engagementWithFailedControl(svc);
@@ -95,8 +123,86 @@ describe('document registry', () => {
     await insertDocument(db, doc({ classification: 'restricted' }));
     const c = await insertDocument(db, doc({ engagementId: e.id, classification: 'internal' }));
     expect((await listDocuments(db, { engagementId: null, classifications: ['internal'] })).map((d) => d.id)).toEqual([a.id]);
-    expect((await listDocuments(db, { engagementId: e.id, classifications: ['internal'] })).map((d) => d.id)).toEqual([c.id]);
+    expect((await listDocuments(db, { engagementId: e.id, classifications: ['internal'] })).map((d) => d.id)).toEqual([a.id, c.id]);
     expect(await listDocuments(db, { engagementId: null, classifications: [] })).toEqual([]);
+  });
+
+  it('returns retain_until as the stored calendar date, whatever the server time zone', async () => {
+    const svc = await newService();
+    await ensureDevUsers(svc.db.kysely);
+    const mem = await createMemoryDb();
+    const tz = process.env.TZ;
+    process.env.TZ = 'Asia/Tokyo'; // east of UTC: local midnight is the previous day in UTC
+    try {
+      await ensureDevUsers(mem.kysely);
+      for (const db of [svc.db.kysely, mem.kysely]) {
+        const d = await insertDocument(db, doc({ retainUntil: '2030-06-15' }));
+        expect(d.retainUntil).toBe('2030-06-15');
+        expect((await getDocument(db, d.id))!.retainUntil).toBe('2030-06-15');
+        expect((await listDocuments(db, { engagementId: null, classifications: ['confidential'] }))[0].retainUntil).toBe('2030-06-15');
+      }
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+      await mem.close();
+    }
+  });
+
+  it("indexes chunks with the document row's classification and engagement, not the caller's copy", async () => {
+    const svc = await newService();
+    await ensureDevUsers(svc.db.kysely);
+    const e = await engagementWithFailedControl(svc);
+    const db = svc.db.kysely;
+    const real = await insertDocument(db, doc({ classification: 'restricted', engagementId: e.id }));
+    await setDocumentText(db, { ...real, classification: 'internal', engagementId: null }, { extractor: 'test', extractorVersion: '1', text: 'Restricted words.' });
+    expect(await db.selectFrom('chunks').select(['classification', 'engagement_id']).where('document_id', '=', real.id).execute()).toEqual([
+      { classification: 'restricted', engagement_id: e.id },
+    ]);
+  });
+
+  it('stores a document\'s text once even when two requests race (409 for the loser)', async () => {
+    const svc = await newService();
+    await ensureDevUsers(svc.db.kysely);
+    const db = svc.db.kysely;
+    const d = await insertDocument(db, doc());
+    const results = await Promise.allSettled(
+      Array.from({ length: 4 }, () => setDocumentText(db, d, { extractor: 'test', extractorVersion: '1', text: `${para(1)}\n\n${para(2)}` })),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    for (const r of results.filter((x) => x.status === 'rejected')) expect((r as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+    expect((await db.selectFrom('document_text').select('document_id').execute()).length).toBe(1);
+  });
+
+  it('keeps documents, their text, chunks and upload records immutable [REQ-23]', async () => {
+    const svc = await newService();
+    await ensureDevUsers(svc.db.kysely);
+    const db = svc.db.kysely;
+    const d = await insertDocument(db, doc());
+    await setDocumentText(db, d, { extractor: 'test', extractorVersion: '1', text: 'Some text.' });
+    await db.insertInto('blob_uploads').values({ sha256: d.sha256, uploaded_by: 'auditor' }).execute();
+
+    // documents: only the retention flag may change.
+    await db.updateTable('documents').set({ retention_expired: true }).where('id', '=', d.id).execute();
+    expect((await getDocument(db, d.id))!.retentionExpired).toBe(true);
+    for (const change of [{ classification: 'internal' }, { engagement_id: null, filename: 'renamed.pdf' }, { sha256: 'b'.repeat(64) }, { metadata: '{"a":1}' }] as const) {
+      await expect(db.updateTable('documents').set(change as never).where('id', '=', d.id).execute()).rejects.toThrow(/append-only: UPDATE/);
+    }
+    await expect(sql`UPDATE documents SET retain_until = '2040-01-01' WHERE id = ${d.id}`.execute(db)).rejects.toThrow(/append-only: UPDATE/);
+
+    await expect(db.updateTable('document_text').set({ text: 'rewritten' }).execute()).rejects.toThrow(/append-only: UPDATE/);
+    await expect(db.deleteFrom('document_text').execute()).rejects.toThrow(/append-only: DELETE/);
+    await expect(db.updateTable('chunks').set({ classification: 'internal' }).execute()).rejects.toThrow(/append-only: UPDATE/);
+    await expect(db.deleteFrom('chunks').execute()).rejects.toThrow(/append-only: DELETE/);
+    await expect(db.updateTable('blob_uploads').set({ uploaded_by: 'reviewer' }).execute()).rejects.toThrow(/append-only: UPDATE/);
+    await expect(db.deleteFrom('blob_uploads').execute()).rejects.toThrow(/append-only: DELETE/);
+    for (const table of ['documents', 'document_text', 'chunks', 'blob_uploads']) {
+      await expect(sql`TRUNCATE ${sql.table(table)} CASCADE`.execute(db)).rejects.toThrow(/append-only: TRUNCATE/);
+    }
+
+    // Knowledge-graph chunks (plan 1E) are not document chunks and stay editable for now.
+    await db.insertInto('chunks').values({ id: 'KG-1:0', document_id: null, kg_node_id: 'KG-1', ordinal: 0, page: null, text: 'node', classification: 'internal', engagement_id: null }).execute();
+    await db.updateTable('chunks').set({ text: 'node v2' }).where('id', '=', 'KG-1:0').execute();
+    await db.deleteFrom('chunks').where('id', '=', 'KG-1:0').execute();
   });
 
   it('runs the same migrations on the in-process database used by eval', async () => {
