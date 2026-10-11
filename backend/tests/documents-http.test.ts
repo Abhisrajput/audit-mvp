@@ -87,7 +87,7 @@ describe('document API', () => {
     expect(res.headers['content-disposition']).not.toMatch(/[\r\n"]ALG/);
   });
 
-  it("answers 404 for a document the reader may not see, exactly as for one that doesn't exist [REQ-23]", async () => {
+  it('answers 404 for a document the reader may not see, exactly as for one that does not exist [REQ-23]', async () => {
     const { app } = await setup();
     const manager = await signIn(app, 'reviewer');
     const up = await upload(manager, SOP).expect(201);

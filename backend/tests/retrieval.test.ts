@@ -47,7 +47,7 @@ describe('permission-filtered retrieval', () => {
     expect(await docsFound(admin)).toEqual([]);
   });
 
-  it("never lets one engagement's evidence surface in another engagement's search [REQ-23]", async () => {
+  it('never lets the evidence of one engagement surface in a search of a different engagement [REQ-23]', async () => {
     expect(await docsFound(auditor, { engagementId: engA })).toEqual([ids.internal, ids.confidential, ids.engA].sort());
     expect(await docsFound(auditor, { engagementId: engB })).toEqual([ids.internal, ids.confidential, ids.engB].sort());
     expect(await docsFound(auditor)).not.toContain(ids.engA);
@@ -73,7 +73,7 @@ describe('permission-filtered retrieval', () => {
     expect(hit.score).toBeGreaterThan(0);
   });
 
-  it("filters on the document row, even when a chunk's copied scope disagrees with it [REQ-23]", async () => {
+  it('filters on the document row, even when the chunk copy of its scope disagrees with it [REQ-23]', async () => {
     // Chunks written directly (not through setDocumentText) with stale copies of the document's scope.
     const db = svc.db.kysely;
     const secret = await insertDocument(db, { sha256: 'c'.repeat(64), filename: 'stale-secret.pdf', mime: 'application/pdf', size: 1, kind: 'sop', classification: 'restricted', engagementId: null, uploadedBy: 'auditor' });

@@ -114,7 +114,7 @@ describe('document registry', () => {
     await expect(db.deleteFrom('documents').where('id', '=', global.id).execute()).rejects.toThrow(/append-only: DELETE/);
   });
 
-  it('lists global documents plus the requested engagement\'s, within readable classifications [REQ-23]', async () => {
+  it('lists global documents plus those of the requested engagement, within readable classifications [REQ-23]', async () => {
     const svc = await newService();
     await ensureDevUsers(svc.db.kysely);
     const e = await engagementWithFailedControl(svc);
