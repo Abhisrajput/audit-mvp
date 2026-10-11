@@ -184,4 +184,16 @@ describe('signatures written by the service', () => {
     // The stored finding keeps what was written; only the response copy is corrected.
     expect((await svc.engagement(e.id)).findings[0].signOffs[0].reauth).toEqual(forged);
   });
+
+  it('shows the recorded signer on a sign-off whose signer was rewritten, and marks it broken [REQ-19]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
+    const [row] = await listSignatures(svc.db.kysely, e.id);
+    await sql`UPDATE findings SET data = jsonb_set(jsonb_set(jsonb_set(data, '{signOffs,0,userId}', '"approver"'), '{signOffs,0,userName}', '"Priya QA Head"'), '{signOffs,0,role}', '"cae"') WHERE id = ${f.id}`.execute(svc.db.kysely);
+    const shown = (await svc.engagementWithSignatureStatus(e.id)).findings[0];
+    expect(shown.signOffs[0]).toMatchObject({ broken: true, legacy: false, userName: 'Ravi Reviewer', role: 'audit_manager', signatureId: row.id, at: row.signedAt });
+    expect(shown.signatureIssues).toBeUndefined();
+  });
 });

@@ -39,11 +39,10 @@ export function withSignatureStatus(e: Engagement, rows: SignatureRow[]): Engage
       const named = f.signOffs.map((s): SignOff | null => {
         if (!s.signatureId) return null;
         const row = byId.get(s.signatureId);
-        if (!row || row.findingId !== f.id || row.userId !== s.userId || row.meaning !== s.meaning) {
-          if (row) used.add(row.id);
-          return { ...s, broken: true, legacy: false };
-        }
-        return fromRow(s, row, !(row.contentHash === s.contentHash && row.contentHash === current));
+        // No record for this finding: nothing better to show than the finding's own copy.
+        if (!row || row.findingId !== f.id) return { ...s, broken: true, legacy: false };
+        const intact = row.userId === s.userId && row.meaning === s.meaning && row.contentHash === s.contentHash && row.contentHash === current;
+        return fromRow(s, row, !intact);
       });
       const signOffs = f.signOffs.map((s, i): SignOff => {
         if (named[i]) return named[i]!;

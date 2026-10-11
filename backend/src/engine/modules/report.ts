@@ -21,7 +21,7 @@ export function signatureText(s: SignOff): string {
   const how = legacy || !s.reauth || s.reauth.method === 'none'
     ? ', not re-authenticated'
     : s.reauth.method === 'oidc' ? ', re-authenticated via identity provider' : ', re-authenticated by demo confirmation';
-  const status = s.broken ? ' — SIGNATURE BROKEN: the signed content no longer matches' : legacy ? ' (legacy signature, before Part 11)' : '';
+  const status = s.broken ? ' — SIGNATURE BROKEN: does not match its signature record' : legacy ? ' (legacy signature, before Part 11)' : '';
   return `${s.meaning} by ${s.userName} (${s.role}) at ${utc(s.at)}${how}${s.signatureId ? ` [${s.signatureId}]` : ''}${status}`;
 }
 

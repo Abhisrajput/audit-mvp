@@ -147,7 +147,7 @@ export interface SignOff {
   contentHash?: string;
   /** How the signer proved who they were at the moment of signing; 'none' for server-side signing (seed, tests). */
   reauth?: { method: 'oidc' | 'dev' | 'none'; at: string | null };
-  /** Set only in API responses and exports: the signature record is missing or no longer matches the content. */
+  /** Set only in API responses and exports: the signature record is missing, or the sign-off or content no longer matches it. */
   broken?: boolean;
   /** Set only in API responses and exports: no signature record (signed before Part 11 signing, or imported). */
   legacy?: boolean;
