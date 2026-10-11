@@ -1,6 +1,6 @@
 import type { ColumnType, Generated } from 'kysely';
 import type { EvalReport } from '../eval/harness';
-import type { AuditReport, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestInput, TestResult } from '../engine/types';
+import type { AuditReport, Role, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestInput, TestResult } from '../engine/types';
 
 // JSONB columns are read as parsed values and written as JSON strings.
 type Json<T> = ColumnType<T, string, string>;
@@ -70,6 +70,28 @@ export interface SchemaMigrationsTable {
   applied_at: Generated<Date>;
 }
 
+export interface UsersTable {
+  id: string;
+  issuer: string;
+  subject: string;
+  name: string;
+  email: string | null;
+  role: Role | null;
+  role_source: ColumnType<'idp' | 'admin', 'idp' | 'admin' | undefined, 'idp' | 'admin'>;
+  active: ColumnType<boolean, boolean | undefined, boolean>;
+  created_at: Generated<Date>;
+  last_login_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+export interface SessionsTable {
+  id: string;
+  user_id: string;
+  csrf_token: string;
+  created_at: Generated<Date>;
+  last_seen_at: DefaultedTimestamp;
+  revoked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
 export interface DB {
   engagements: EngagementsTable;
   engagement_work: EngagementWorkTable;
@@ -77,4 +99,6 @@ export interface DB {
   trail: TrailTable;
   eval_runs: EvalRunsTable;
   schema_migrations: SchemaMigrationsTable;
+  users: UsersTable;
+  sessions: SessionsTable;
 }
