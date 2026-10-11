@@ -13,5 +13,7 @@
   { "id": "REQ-12", "risk": "Medium", "text": "Content packs are schema-validated on load; a control citing an unknown clause is rejected.", "evalKinds": [] },
   { "id": "REQ-13", "risk": "High", "text": "Retrieval returns the expert-expected clauses for labelled queries.", "evalKinds": ["retrieval"] },
   { "id": "REQ-14", "risk": "Medium", "text": "Model output is constrained: controls outside the library are rejected, and a failed model call falls back to deterministic rules with a QA flag.", "evalKinds": [] },
-  { "id": "REQ-15", "risk": "Medium", "text": "Actions are restricted by role (auditor, reviewer, approver).", "evalKinds": [] }
+  { "id": "REQ-15", "risk": "Medium", "text": "Actions are restricted by role (auditor, reviewer, approver).", "evalKinds": [] },
+  { "id": "REQ-20", "risk": "High", "text": "Trail records cannot be updated, deleted or truncated, and approved findings cannot be changed, at the database level (21 CFR Part 11 §11.10(e), ALCOA+).", "evalKinds": [] },
+  { "id": "REQ-21", "risk": "High", "text": "Concurrent conflicting edits are rejected, never silently overwritten; state and its trail entries commit or roll back together.", "evalKinds": [] }
 ]
