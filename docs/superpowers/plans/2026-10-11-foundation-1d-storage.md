@@ -55,6 +55,7 @@ Builds on 1A–1C; this plan's branch is `design/foundation-1d-storage`, stacked
 - No secrets are committed:
   - Test containers get random credentials generated in the test.
   - Compose reads `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` from the git-ignored `.env`.
+  - *Note (during 1D):* MinIO was superseded by SeaweedFS (S3-compatible) in Compose and tests, because MinIO community images are no longer pullable; Compose reads `S3_ROOT_ACCESS_KEY`/`S3_ROOT_SECRET_KEY` instead.
 - Every commit message ends with a `Co-Authored-By:` trailer naming the model that wrote it.
 
 **Deliberate refinements of the spec (1D):**

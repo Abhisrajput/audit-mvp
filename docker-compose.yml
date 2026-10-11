@@ -53,6 +53,8 @@ services:
       S3_ACCESS_KEY_ID: ${S3_ROOT_ACCESS_KEY:?Set S3_ROOT_ACCESS_KEY in .env}
       S3_SECRET_ACCESS_KEY: ${S3_ROOT_SECRET_KEY:?Set S3_ROOT_SECRET_KEY in .env}
       BLOB_MAX_BYTES: ${BLOB_MAX_BYTES:-26214400}
+      # SeaweedFS 3.80 ignores If-None-Match on PUT, so the API checks for an object before writing it.
+      S3_CONDITIONAL_WRITES: 'false'
     # Bound to this machine only: demo sign-in (DEV_AUTH=true) must never be reachable by others.
     ports:
       - '127.0.0.1:3002:3002'
@@ -95,6 +97,7 @@ services:
       - |
         mkdir -p /etc/seaweedfs /data
         printf '{"identities":[{"name":"audit","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' "$$S3_ROOT_ACCESS_KEY" "$$S3_ROOT_SECRET_KEY" > /etc/seaweedfs/s3.json
+        # -dir=/data holds both the volumes and the filer's metadata (/data/filerldb2), so both persist in blobdata.
         exec weed server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data
     environment:
       S3_ROOT_ACCESS_KEY: ${S3_ROOT_ACCESS_KEY:?Set S3_ROOT_ACCESS_KEY in .env - copy .env.example to .env first}
@@ -103,8 +106,9 @@ services:
       - blobdata:/data
     ports:
       - '127.0.0.1:8333:8333'
+    # Healthy = the S3 gateway answers: an anonymous request gets 200 or 403 (AccessDenied). Anything else (no answer, 5xx) is not ready.
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8333/ || wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q "HTTP/"']
+      test: ['CMD-SHELL', 'wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -qE "HTTP/[0-9.]+ (200|403)"']
       interval: 2s
       retries: 60
 
@@ -114,12 +118,14 @@ services:
     entrypoint: ['/bin/sh', '-c']
     command:
       - |
+        last=""
         for i in $$(seq 1 60); do
-          aws --endpoint-url http://objectstore:8333 s3api head-bucket --bucket audit-evidence 2>/dev/null && exit 0
-          aws --endpoint-url http://objectstore:8333 s3api create-bucket --bucket audit-evidence 2>/dev/null && exit 0
+          if last=$$(aws --endpoint-url http://objectstore:8333 s3api head-bucket --bucket audit-evidence 2>&1); then exit 0; fi
+          if last=$$(aws --endpoint-url http://objectstore:8333 s3api create-bucket --bucket audit-evidence 2>&1); then exit 0; fi
           sleep 2
         done
-        echo "could not create bucket audit-evidence" >&2; exit 1
+        # aws-cli errors name the operation and the service's answer, never the keys.
+        echo "could not create bucket audit-evidence; last error: $$last" >&2; exit 1
     environment:
       AWS_ACCESS_KEY_ID: ${S3_ROOT_ACCESS_KEY:?Set S3_ROOT_ACCESS_KEY in .env}
       AWS_SECRET_ACCESS_KEY: ${S3_ROOT_SECRET_KEY:?Set S3_ROOT_SECRET_KEY in .env}
