@@ -12,8 +12,23 @@ export interface Db {
   close(): Promise<void>;
 }
 
-export function connectPg(connectionString: string, opts: { max?: number } = {}): Db {
-  const pool = new pg.Pool({ connectionString, max: opts.max ?? 10 });
+export interface ConnectOptions {
+  max?: number;
+  connectionTimeoutMillis?: number;
+  idle_in_transaction_session_timeout?: number;
+  statement_timeout?: number;
+}
+
+export function connectPg(connectionString: string, opts: ConnectOptions = {}): Db {
+  const pool = new pg.Pool({
+    connectionString,
+    max: opts.max ?? 10,
+    connectionTimeoutMillis: opts.connectionTimeoutMillis ?? 5000,
+    idle_in_transaction_session_timeout: opts.idle_in_transaction_session_timeout ?? 60000,
+    statement_timeout: opts.statement_timeout ?? 120000,
+  });
+  // A server restart or admin kill of an idle client emits 'error' on the pool; unhandled, it crashes the process.
+  pool.on('error', (err) => console.error('Postgres pool error (idle client):', err.message));
   const kysely = new Kysely<DB>({ dialect: new PostgresDialect({ pool }) });
   return {
     kysely,

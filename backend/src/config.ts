@@ -21,8 +21,9 @@ export function loadDotEnv(file = path.resolve(__dirname, '../.env')) {
   if (process.env.NODE_ENV === 'production') return;
   try {
     process.loadEnvFile(file);
-  } catch {
-    // No .env file: rely on the real environment.
+  } catch (err) {
+    // No .env file: rely on the real environment. Anything else (permissions, parse errors) is a real problem.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
 }
 

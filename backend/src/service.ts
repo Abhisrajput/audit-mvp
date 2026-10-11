@@ -176,7 +176,7 @@ export class AuditService {
         qaActions: ctx.qa,
         output,
       };
-      emit(bundle);
+      emit(structuredClone(bundle));
       mod.apply(e, output, bundle.id);
       return e;
     });

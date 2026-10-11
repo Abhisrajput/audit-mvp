@@ -5,7 +5,9 @@ import type { DB } from './schema';
 
 // An in-process Postgres (PGlite) used by the evaluation harness, so eval runs
 // never write to the operational database or its audit trail. PGlite is a
-// single connection, so connections are handed out one at a time.
+// single connection, so connections are handed out one at a time. Inside a
+// transaction every query must use the transaction handle: a query through
+// db.kysely there would wait for the held connection and deadlock.
 
 const commandOf = (text: string) => text.trimStart().split(/\s/, 1)[0].toUpperCase();
 

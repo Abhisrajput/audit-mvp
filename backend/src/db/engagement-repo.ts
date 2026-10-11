@@ -122,12 +122,13 @@ export async function saveEngagement(db: Executor, loaded: LoadedEngagement): Pr
         .set({ status: f.status, rating: f.rating, data: json(f), updated_at: now })
         .where('engagement_id', '=', e.id)
         .where('id', '=', f.id)
+        .where('superseded_at', 'is', null)
         .execute();
     }
   }
   for (const id of loaded.findingSnapshots.keys()) {
     if (!live.has(id)) {
-      await db.updateTable('findings').set({ superseded_at: now }).where('engagement_id', '=', e.id).where('id', '=', id).execute();
+      await db.updateTable('findings').set({ superseded_at: now }).where('engagement_id', '=', e.id).where('id', '=', id).where('superseded_at', 'is', null).execute();
     }
   }
   e.version = loaded.version + 1;

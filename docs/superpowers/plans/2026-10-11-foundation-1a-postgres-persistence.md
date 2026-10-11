@@ -25,11 +25,18 @@ The spec covers six subsystems, so it is split into plans that each ship working
 | Plan | Scope | Spec sections |
 |---|---|---|
 | **1A (this plan)** | Postgres persistence: migrations, transactions, optimistic locking, append-only trail, import-json, eval isolation | §2, §3.1 (core tables), §3.3, §3.4 |
-| 1B | Identity: OIDC login, sessions, CSRF, `DEV_AUTH`, roles, segregation of duties, admin page | §4.1–4.3, §4.5, §9 (auth parts) |
+| 1B | Identity: OIDC login, sessions, CSRF, `DEV_AUTH`, roles, segregation of duties, admin page; UI sends If-Match from the engagement ETag and shows 'Someone else changed this — reload' on VERSION_CONFLICT; findings mutations return the new engagement version | §4.1–4.3, §4.5, §9 (auth parts), §9 (conflict message) |
 | 1C | Part 11 signing: `signatures` and `finding_revisions` tables, sign intents, re-auth popup, `gates`/`agent_*` tables | §3.1–3.2, §4.4, §9 (sign flow) |
 | 1D | Storage: `BlobStore` (S3, Azure, local), `documents`/`document_text`/`chunks`, `Retriever` with permission filtering | §5, §6.5 |
 | 1E | Knowledge: OKF bundles, `packs:migrate`/`packs:compile`, `kg_nodes`/`kg_edges`, trust rules in the citation gate | §6.1–6.4 |
 | 1F | Operations: config hardening, pino, helmet, rate limits, `/healthz` `/readyz` `/metrics`, full `verify`, CI, Azure deployment guide, client responsibilities | §7, §8, §10 (CI), §11 |
+
+**Carried into later plans:**
+
+- (a) 1F: separate Postgres roles — migrate/owner vs API role with only SELECT/INSERT on `trail` and DML elsewhere, so REQ-20 holds against the API's own credentials.
+- (b) 1F: request_id in trail bundles and error bodies.
+- (c) Sub-project 2 (agent orchestration): run model calls outside the engagement transaction and apply with expectedVersion.
+- (d) 1F: map pg constraint/trigger errors (23505, 23514, 42501, 22P05) to 4xx codes instead of 500.
 
 ## Global Constraints
 

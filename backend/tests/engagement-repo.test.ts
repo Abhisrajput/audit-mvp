@@ -28,6 +28,27 @@ describe('engagement repository', () => {
     expect(await loadEngagement(db, 'NOPE')).toBeNull();
   });
 
+  it('lets a new finding reuse the id of a superseded one, keeping the old row', async () => {
+    const db = (await testDb()).kysely;
+    await insertEngagement(db, engagement());
+    const a = (await loadEngagement(db, 'ENG-1'))!;
+    a.engagement.findings = a.engagement.findings.filter((f) => f.id !== 'F-1');
+    await saveEngagement(db, a);
+    const b = (await loadEngagement(db, 'ENG-1'))!;
+    b.engagement.findings.push({ ...finding('F-1'), title: 'Reborn' });
+    await saveEngagement(db, b);
+    const c = (await loadEngagement(db, 'ENG-1'))!;
+    expect(c.engagement.findings.map((f) => f.title)).toContain('Reborn');
+    const rows = await db.selectFrom('findings').select(['superseded_at']).where('id', '=', 'F-1').execute();
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.superseded_at === null)).toHaveLength(1);
+    // a further edit touches only the live row
+    c.engagement.findings.find((f) => f.id === 'F-1')!.title = 'Edited';
+    await saveEngagement(db, c);
+    const live = await db.selectFrom('findings').select('data').where('id', '=', 'F-1').where('superseded_at', 'is', null).executeTakeFirstOrThrow();
+    expect(live.data.title).toBe('Edited');
+  });
+
   it('rejects a save from a stale copy instead of overwriting [REQ-21]', async () => {
     const db = (await testDb()).kysely;
     await insertEngagement(db, engagement());
