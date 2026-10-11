@@ -1,16 +1,42 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: audit
+      POSTGRES_USER: audit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audit-dev-only}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U audit -d audit']
+      interval: 2s
+      retries: 30
+
+  # Migrations are a separate one-shot step; the API never migrates on start-up.
+  migrate:
+    build: ./backend
+    command: ['node', 'dist/db/cli.js', 'migrate']
+    environment:
+      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:-audit-dev-only}@postgres:5432/audit
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     build: ./backend
     environment:
       PORT: '3002'
-      DATA_FILE: /data/db.json
+      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:-audit-dev-only}@postgres:5432/audit
       # offline (default, no key needed) | anthropic
       LLM_PROVIDER: ${LLM_PROVIDER:-offline}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-    volumes:
-      - auditdata:/data
     ports:
       - '3002:3002'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:
@@ -22,4 +48,4 @@ services:
       - backend
 
 volumes:
-  auditdata:
+  pgdata:

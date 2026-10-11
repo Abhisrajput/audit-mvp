@@ -27,7 +27,7 @@ Screenshots: [scope](docs/screenshots/scope.png) · [findings & sign-off](docs/s
 |---|---|---|
 | Module orchestration (daisy-chaining) | `backend/src/engine/modules/*`, `service.ts` | 5 modules, chain order enforced |
 | Runtime QA gates | `backend/src/engine/qa.ts` | Citation, evidence, triple-citation, release, consistency, library-only |
-| Audit-trail bundle per execution | `backend/src/engine/trail.ts` | Inputs, retrieval set, log, QA actions, output, versions, actor; SHA-256 chained |
+| Audit-trail bundle per execution | `backend/src/engine/trail.ts` | Inputs, retrieval set, log, QA actions, output, versions, actor; SHA-256 chained; append-only in Postgres (UPDATE/DELETE/TRUNCATE rejected by trigger) |
 | Grounding index with clause metadata | `backend/src/engine/grounding.ts` | BM25 keyword index; swap for vector search later |
 | Model routing, model-agnostic | `backend/src/engine/llm/*` | `offline` deterministic rules (default) or `anthropic` (Claude) |
 | Common pack (RCM, TOD/TOE, gap writer) | `backend/packs/common` | COSO-based P2P, ITGC, **treasury & commodity hedging**, governance |
@@ -45,13 +45,18 @@ any client use.
 
 ## Quick start
 
-Requires Node 20+ (tested on 22).
+Requires Node 20+ (tested on 22) and Docker.
 
 ```bash
+# Database (Postgres 16 + pgvector) on localhost:5432
+docker compose up -d postgres
+
 # API (port 3002)
 cd backend
+cp .env.example .env
 npm install
-npm run seed        # two demo engagements: food+treasury, and pharma GMP
+npm run migrate     # apply SQL migrations; the API never migrates by itself
+npm run seed        # two demo engagements (empty database only): food+treasury, and pharma GMP
 npm run dev
 
 # UI (port 5174), in a second terminal
@@ -60,8 +65,15 @@ npm install
 npm run dev         # open http://localhost:5174
 ```
 
-Or with Docker: `docker compose up --build` from the repo root. The UI is then on
-http://localhost:8080.
+Or run everything with Docker: `docker compose up --build` from the repo root.
+Compose starts Postgres, runs migrations once, then starts the API and the UI on
+http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
+To reset the local database: `docker compose down -v`.
+
+**Coming from the JSON-file MVP?** Import your old data once into an empty
+database: `npm run import-json -- data/db.json`. The trail's hash chain is
+verified before and after import. A broken chain or a non-empty database is
+refused and nothing is written.
 
 ### Demo script (≈10 minutes)
 
@@ -130,9 +142,10 @@ rejected. No engine code changes are needed.
 
 ```bash
 cd backend
-npm test              # 21 tests, tagged to requirements [REQ-xx]
-npm run eval          # 25/25 eval cases (offline) -> validation-output/eval-latest.md
+npm test              # needs Docker: tests run against a real Postgres (Testcontainers)
+npm run eval          # 25/25 eval cases (offline), on a throwaway in-process database
 npm run traceability  # requirements traceability matrix -> validation-output/traceability.md
+npm run verify        # recompute the audit-trail hash chain in the configured database
 npm run typecheck
 ```
 
@@ -144,9 +157,10 @@ npm run typecheck
 - **Real evidence ingestion:** evidence is recorded as references today. Next is
   reading SOPs, deviations and CAPAs from an eQMS (Veeva, MasterControl, TrackWise)
   and attaching documents.
-- **Persistence and identity:** the JSON file store and demo user switcher are
-  placeholders. Production needs Postgres or Dataverse plus Entra ID SSO, with
-  Part 11-grade e-signatures (re-authentication at signing).
+- **Identity:** the demo user switcher is a placeholder. Production needs OIDC
+  SSO (Entra ID, Okta and others) with Part 11-grade e-signatures
+  (re-authentication at signing). See
+  `docs/superpowers/specs/2026-10-11-production-foundation-design.md`.
 - **Deployment:** deploy into the client's tenant (e.g. Azure App Service +
   Azure AI Search).
 - **Further modules:** pharma deviation/CAPA effectiveness review, ALCOA+
