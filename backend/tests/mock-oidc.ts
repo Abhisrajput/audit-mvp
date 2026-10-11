@@ -26,6 +26,8 @@ export async function startMockOidc() {
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
   const codes = new Map<string, PendingCode>();
   let nextUser: MockUser = { sub: 'user-1', name: 'Test User', groups: [] };
+  let lastAuthorize: Record<string, string> = {};
+  let authTimeOffset = 0;
 
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -50,6 +52,7 @@ export async function startMockOidc() {
 
   app.get('/authorize', (req, res) => {
     const q = req.query as Record<string, string>;
+    lastAuthorize = { ...q };
     const code = crypto.randomBytes(16).toString('hex');
     codes.set(code, { nonce: q.nonce, challenge: q.code_challenge, clientId: q.client_id, user: nextUser });
     const back = new URL(q.redirect_uri);
@@ -66,7 +69,7 @@ export async function startMockOidc() {
     if (challenge !== pending.challenge) return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
     const now = Math.floor(Date.now() / 1000);
     const u = pending.user;
-    const idToken = await new SignJWT({ nonce: pending.nonce, name: u.name, email: u.email, groups: u.groups ?? [], auth_time: now })
+    const idToken = await new SignJWT({ nonce: pending.nonce, name: u.name, email: u.email, groups: u.groups ?? [], auth_time: now - authTimeOffset })
       .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
       .setIssuer(issuer)
       .setAudience(pending.clientId)
@@ -81,6 +84,12 @@ export async function startMockOidc() {
     issuer,
     setUser(user: MockUser) {
       nextUser = user;
+    },
+    /** Query parameters of the most recent /authorize request. */
+    lastAuthorize: () => lastAuthorize,
+    /** Pretend the user last entered their password this many seconds ago. */
+    setAuthTimeOffset(seconds: number) {
+      authTimeOffset = seconds;
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };

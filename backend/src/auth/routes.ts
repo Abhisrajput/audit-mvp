@@ -1,4 +1,4 @@
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import type { Transaction } from 'kysely';
 import { z } from 'zod';
 import type { Db } from '../db';
@@ -40,7 +40,12 @@ export async function startSession(db: Db, res: Response, cfg: AuthConfig, user:
   setSessionCookie(res, token, cfg);
 }
 
-export function authRoutes(db: Db, auth: AuthDeps): Router {
+export interface AuthHooks {
+  /** Gets the IdP callback first; returns true when it handled the response (e.g. a signing re-authentication). */
+  idpCallback?: (req: Request, res: Response) => Promise<boolean>;
+}
+
+export function authRoutes(db: Db, auth: AuthDeps, hooks: AuthHooks = {}): Router {
   const cfg = auth.config;
   const r = Router();
 
@@ -69,6 +74,7 @@ export function authRoutes(db: Db, auth: AuthDeps): Router {
     }));
 
     r.get('/auth/callback', wrap(async (req, res) => {
+      if (hooks.idpCallback && (await hooks.idpCallback(req, res))) return;
       const home = `${cfg.publicUrl}/`;
       const raw: unknown = req.cookies?.[LOGIN_COOKIE];
       res.clearCookie(LOGIN_COOKIE, { path: '/auth' });

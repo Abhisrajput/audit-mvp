@@ -65,7 +65,7 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   // ----- Public -----
   app.get('/api/health', (_req, res) => res.json({ ok: true, provider: svc.providerInfo }));
   const signing = signingRoutes(svc, auth);
-  app.use(authRoutes(svc.db, auth));
+  app.use(authRoutes(svc.db, auth, { idpCallback: signing.handleIdpCallback }));
 
   // ----- Everything below needs a signed-in user with a role (and CSRF on changes) -----
   app.use('/api', requireUser());
