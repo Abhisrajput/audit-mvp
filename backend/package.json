@@ -24,6 +24,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1149.0",
     "@azure/storage-blob": "^12.34.0",
     "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-pgvector": "^0.0.9",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "express": "^5.2.1",

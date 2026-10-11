@@ -13,7 +13,9 @@ const commandOf = (text: string) => text.trimStart().split(/\s/, 1)[0].toUpperCa
 
 export async function createMemoryDb(): Promise<Db> {
   const { PGlite } = await import('@electric-sql/pglite');
-  const pglite = new PGlite();
+  // Migration 005 creates the pgvector extension, so the in-process database needs it too.
+  const { vector } = await import('@electric-sql/pglite-pgvector');
+  const pglite = new PGlite({ extensions: { vector } });
   await pglite.waitReady;
 
   let queue: Promise<void> = Promise.resolve();
