@@ -196,4 +196,36 @@ describe('signatures written by the service', () => {
     expect(shown.signOffs[0]).toMatchObject({ broken: true, legacy: false, userName: 'Ravi Reviewer', role: 'audit_manager', signatureId: row.id, at: row.signedAt });
     expect(shown.signatureIssues).toBeUndefined();
   });
+
+  it('treats a save that changes nothing as no edit: the finding keeps its status and signature', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
+    const before = await svc.engagement(e.id);
+    const trailBefore = await readTrail(svc.db.kysely, e.id);
+    const { title, condition, evidenceRefs } = before.findings[0];
+    const same = await svc.editFinding(e.id, f.id, { title, condition, evidenceRefs: [...evidenceRefs] }, auditor);
+    expect(same).toMatchObject({ status: 'reviewed', signOffs: [expect.objectContaining({ meaning: 'Reviewed' })] });
+    const after = await svc.engagement(e.id);
+    expect(after.findings[0]).toEqual(before.findings[0]);
+    expect(after.version).toBe(before.version);
+    expect(await readTrail(svc.db.kysely, e.id)).toHaveLength(trailBefore.length);
+    expect((await svc.engagementWithSignatureStatus(e.id)).findings[0].signatureIssues).toBeUndefined();
+    // A real change still resets the sign-offs.
+    expect(await svc.editFinding(e.id, f.id, { condition: 'Four of twenty logs unsigned.' }, auditor)).toMatchObject({ status: 'draft', signOffs: [] });
+  });
+
+  it('reports no signature issue after content is changed and changed back (the signature predates both edits)', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
+    await svc.editFinding(e.id, f.id, { condition: 'Four of twenty logs unsigned.' }, auditor);
+    await svc.editFinding(e.id, f.id, { condition: f.condition }, auditor);
+    const shown = (await svc.engagementWithSignatureStatus(e.id)).findings[0];
+    expect(findingContentHash(shown)).toBe(findingContentHash(f));
+    expect(shown.signOffs).toEqual([]);
+    expect(shown.signatureIssues).toBeUndefined();
+  });
 });

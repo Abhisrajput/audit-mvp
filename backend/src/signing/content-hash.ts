@@ -8,6 +8,9 @@ export function findingContentHash(f: Finding): string {
   return sha256(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs }));
 }
 
+/** Whether the finding's content last changed after this signature was made. */
+const revisedAfter = (lastRevision: string | undefined, signedAt: string) => !!lastRevision && Date.parse(lastRevision) > Date.parse(signedAt);
+
 /**
  * A copy of the engagement for display, with each sign-off checked against the append-only `signatures` rows.
  * The rows are the record; the finding's JSONB is only a convenient copy and can be edited behind the application.
@@ -18,9 +21,11 @@ export function findingContentHash(f: Finding): string {
  * - A sign-off backed by a row shows the row's name, role, meaning, time, re-authentication and id.
  * - A row for this finding that no sign-off accounts for, on the finding's current content, is reported in
  *   `signatureIssues` (a sign-off was removed). Rows on earlier content are history: the finding was edited since.
+ *   So is a row signed before the finding's latest revision (`revisedAt`): its content changed after signing,
+ *   even if a later edit changed it back.
  * The copy is for responses and exports only; it is never saved.
  */
-export function withSignatureStatus(e: Engagement, rows: SignatureRow[]): Engagement {
+export function withSignatureStatus(e: Engagement, rows: SignatureRow[], revisedAt: ReadonlyMap<string, string>): Engagement {
   const byId = new Map(rows.map((r) => [r.id, r]));
   return {
     ...e,
@@ -51,7 +56,7 @@ export function withSignatureStatus(e: Engagement, rows: SignatureRow[]): Engage
         return row ? fromRow(s, row, true) : { ...s, broken: false, legacy: true };
       });
       const issues = mine
-        .filter((r) => !used.has(r.id) && r.contentHash === current)
+        .filter((r) => !used.has(r.id) && r.contentHash === current && !revisedAfter(revisedAt.get(f.id), r.signedAt))
         .map((r) => `Signature ${r.id} (${r.meaning} by ${r.userName}) is recorded but missing from the finding`);
       const shown: Finding = { ...f, signOffs };
       if (issues.length) shown.signatureIssues = issues;

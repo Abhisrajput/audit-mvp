@@ -9,6 +9,7 @@ import { finishIntent } from './signing/intent-repo';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
 } from './db/engagement-repo';
+import { lastRevisionTimes } from './db/revision-repo';
 import { getEvalRun, latestEvalRun, listEvalRuns, saveEvalRun } from './db/eval-repo';
 import { appendTrail, readTrail, type UnsealedBundle } from './db/trail-repo';
 import { Bm25Index, clauseText, controlText } from './engine/grounding';
@@ -62,6 +63,11 @@ export interface UnattendedSigning {
 
 type Emit = (bundle: UnsealedBundle) => void;
 
+/** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
+class NoChange {
+  constructor(readonly finding: Finding) {}
+}
+
 export class AuditService {
   readonly grounding: Grounding;
 
@@ -89,7 +95,7 @@ export class AuditService {
   /** The engagement for display: each sign-off checked against the append-only signatures table (broken / legacy). */
   async engagementWithSignatureStatus(id: string): Promise<Engagement> {
     const e = await this.engagement(id);
-    return withSignatureStatus(e, await listSignatures(this.db.kysely, id));
+    return withSignatureStatus(e, await listSignatures(this.db.kysely, id), await lastRevisionTimes(this.db.kysely, id));
   }
 
   listEngagements(): Promise<EngagementSummary[]> {
@@ -171,7 +177,7 @@ export class AuditService {
       // Report Writer prints each signature with its status, which only the signatures table can tell, so it reads
       // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
       // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
-      const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id)) : e;
+      const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id), await lastRevisionTimes(trx, e.id)) : e;
       const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input);
       ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
       const output = await mod.run(ctx);
@@ -242,13 +248,32 @@ export class AuditService {
     opts: MutationOptions = {},
   ) {
     this.require(actor, PREPARER_ROLES, 'edit findings');
+    try {
+      return await this.applyFindingEdit(engagementId, findingId, patch, actor, opts);
+    } catch (err) {
+      if (err instanceof NoChange) return err.finding;
+      throw err;
+    }
+  }
+
+  private async applyFindingEdit(
+    engagementId: string,
+    findingId: string,
+    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    actor: User,
+    opts: MutationOptions,
+  ) {
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
       const idx = e.findings.findIndex((f) => f.id === findingId);
       if (idx < 0) throw new AppError(404, `Finding ${findingId} not found`);
       if (e.findings[idx].status === 'approved') throw new AppError(409, 'Approved findings are locked', 'FINDING_LOCKED');
 
-      const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const previous = e.findings[idx];
+      // A save that leaves the content as it was is not an edit: status, sign-offs and preparers stay, and nothing is
+      // written (throwing rolls back this transaction, which has written nothing yet).
+      if (findingContentHash({ ...previous, ...patch }) === findingContentHash(previous)) throw new NoChange(previous);
+
+      const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed);

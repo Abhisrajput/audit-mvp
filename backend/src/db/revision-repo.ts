@@ -36,3 +36,15 @@ export async function listRevisions(db: Executor, engagementId: string, findingI
     .execute();
   return rows.map((r) => ({ revision: r.revision, contentHash: r.content_hash, recordedAt: new Date(r.recorded_at).toISOString() }));
 }
+
+/** When each finding of an engagement last had its content change: finding id → ISO time of its latest revision. */
+export async function lastRevisionTimes(db: Executor, engagementId: string): Promise<Map<string, string>> {
+  const rows = await db
+    .selectFrom('finding_revisions')
+    .select(['finding_id'])
+    .select((eb) => eb.fn.max('recorded_at').as('last'))
+    .where('engagement_id', '=', engagementId)
+    .groupBy('finding_id')
+    .execute();
+  return new Map(rows.map((r) => [r.finding_id, new Date(r.last as unknown as string).toISOString()]));
+}

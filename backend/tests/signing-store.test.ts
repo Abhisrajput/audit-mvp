@@ -34,7 +34,7 @@ describe('finding content hash', () => {
     const otherSigner = { ...base, signatureId: 'SIG-other', contentHash: hash };
     const legacy = { ...base, userId: 'imported', reauth: { method: 'oidc' as const, at: base.at } }; // imported, pre-Part 11: no signature id and no record
     const rows = [row('SIG-good', hash), row('SIG-changed', 'b'.repeat(64)), row('SIG-rewritten', 'c'.repeat(64)), row('SIG-other', hash, { userId: 'x' })];
-    const shown = withSignatureStatus({ ...e, findings: [{ ...f, signOffs: [good, changed, noRow, rewritten, otherSigner, legacy] }] }, rows);
+    const shown = withSignatureStatus({ ...e, findings: [{ ...f, signOffs: [good, changed, noRow, rewritten, otherSigner, legacy] }] }, rows, new Map());
     expect(shown.findings[0].signOffs.map((s) => [s.broken, s.legacy])).toEqual([
       [false, false], [true, false], [true, false], [true, false], [true, false], [false, true],
     ]);
