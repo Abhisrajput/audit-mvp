@@ -46,14 +46,17 @@ export default function AdminPage() {
   const { user } = useSession();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [settings, setSettings] = useState<AdminSettings | null>(null);
-  const [due, setDue] = useState<DueConcept[]>([]);
+  // null until loaded: a failed request must never read as "everything is verified".
+  const [due, setDue] = useState<DueConcept[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => api<AdminUser[]>('/admin/users').then(setUsers), []);
   useEffect(() => {
     load();
     api<AdminSettings>('/admin/settings').then(setSettings);
-    api<DueConcept[]>('/admin/knowledge/due').then(setDue);
+    api<DueConcept[]>('/admin/knowledge/due')
+      .then(setDue)
+      .catch((e) => setError(`Could not load knowledge due for re-review: ${e instanceof Error ? e.message : String(e)}`));
   }, [load]);
 
   const patch = async (id: string, body: { role?: Role | null; active?: boolean }) => {
@@ -141,9 +144,13 @@ export default function AdminPage() {
       <Card variant="outlined">
         <CardContent>
           <Typography variant="h6" fontSize={16}>
-            Knowledge due for re-review ({due.length})
+            Knowledge due for re-review{due ? ` (${due.length})` : ''}
           </Typography>
-          {due.length === 0 ? (
+          {due === null ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Not loaded.
+            </Typography>
+          ) : due.length === 0 ? (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               Every library concept is verified and current.
             </Typography>
