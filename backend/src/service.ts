@@ -19,7 +19,7 @@ import { ModuleContext, type Grounding } from './engine/module';
 import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
-import { STRICT_CITATIONS, type CitationPolicy } from './engine/trust';
+import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
@@ -293,20 +293,35 @@ export class AuditService {
   }
 
   /** Who may sign what, and what signing does. The same checks guard the signing request and the signature itself. */
-  private signOffGuard(f: Finding, action: SignAction, actor: User): { meaning: SignOff['meaning']; status: Finding['status'] } {
+  private signOffGuard(f: Finding, action: SignAction, actor: User): { meaning: SignOff['meaning']; status: Finding['status']; trust: QaAction[] } {
     if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
     const preparedBy = f.preparedBy ?? [];
     if (action === 'review') {
       this.require(actor, REVIEWER_ROLES, 'review findings');
       if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
       if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
-      return { meaning: 'Reviewed', status: 'reviewed' };
+      return { meaning: 'Reviewed', status: 'reviewed', trust: [] };
     }
     this.require(actor, APPROVER_ROLES, `${action} findings`);
     if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
     if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
     if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
-    return action === 'approve' ? { meaning: 'Approved', status: 'approved' } : { meaning: 'Rejected', status: 'rejected' };
+    if (action === 'reject') return { meaning: 'Rejected', status: 'rejected', trust: [] };
+    // Approval is the release (REQ-22): trust is checked again against today's library and policy.
+    const trust = this.approvalTrust(f);
+    const blocked = trust.filter((a) => a.action === 'blocked');
+    if (blocked.length) throw new AppError(409, `Finding is blocked by QA gates: ${blocked.map((a) => a.detail).join('; ')}`, 'FINDING_BLOCKED');
+    return { meaning: 'Approved', status: 'approved', trust };
+  }
+
+  /** Trust gate actions for a finding's clauses and control; a concept no longer in the library counts as unverified. */
+  private approvalTrust(f: Finding): QaAction[] {
+    const clauseIds = f.citations.map((c) => c.clauseId);
+    const current = {
+      clauses: new Map(clauseIds.map((id) => [id, this.registry.clauses.get(id) ?? { id }])),
+      controls: new Map([[f.controlId, this.registry.controls.get(f.controlId) ?? { id: f.controlId }]]),
+    } as unknown as PackRegistry;
+    return trustActions(current, f.id, { clauseIds, controlId: f.controlId }, this.citationPolicy);
   }
 
   /** Checks a signature would be allowed, before the signer is asked to re-authenticate; returns the content to bind. */
@@ -338,7 +353,7 @@ export class AuditService {
       if (reauthed && reauthed.contentHash !== contentHash) {
         throw new AppError(409, 'The finding changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
       }
-      const { meaning, status } = this.signOffGuard(f, action, actor);
+      const { meaning, status, trust } = this.signOffGuard(f, action, actor);
       f.status = status;
 
       // Signature manifestation (§11.50) bound to the signed content (§11.70).
@@ -349,7 +364,7 @@ export class AuditService {
         signatureId: `SIG-${crypto.randomBytes(6).toString('hex')}`, contentHash, reauth,
       };
       f.signOffs.push(sig);
-      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig);
+      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig, trust);
       emit(bundle);
       await insertSignature(trx, {
         id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,

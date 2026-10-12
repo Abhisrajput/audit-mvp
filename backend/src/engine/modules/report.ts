@@ -85,12 +85,17 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'>> = {
     const counts: Record<TestConclusion, number> = { Effective: 0, Ineffective: 0, 'Design deficient': 0, 'Not tested': 0 };
     e.rcm.forEach((r) => counts[e.testResults[r.id]?.conclusion ?? 'Not tested']++);
     const packs = e.packIds.map((id) => `${ctx.registry.get(id).name} v${ctx.registry.get(id).version}`).join(', ');
-    // Every cited source that can't be cited under the trust rules (REQ-22): each row's clauses and its control.
+    // Every cited source that can't be cited under the trust rules (REQ-22): each row's and each reported finding's
+    // clauses and control. A finding may cite clauses outside its row (Gap Writer's grounding hits, human edits).
     const notCitable = new Set<string>();
-    e.rcm.forEach((r) => {
-      r.citations.forEach((c) => trustProblems(ctx.registry.clauses.get(c.clauseId)?.trust).length && notCitable.add(c.clauseId));
-      if (trustProblems(ctx.registry.controls.get(r.controlId)?.trust).length) notCitable.add(r.controlId);
-    });
+    const cited = [
+      ...e.rcm.map((r) => ({ clauseIds: r.citations.map((c) => c.clauseId), controlId: r.controlId })),
+      ...approved.map((f) => ({ clauseIds: f.citations.map((c) => c.clauseId), controlId: f.controlId })),
+    ];
+    for (const { clauseIds, controlId } of cited) {
+      clauseIds.forEach((id) => trustProblems(ctx.registry.clauses.get(id)?.trust).length && notCitable.add(id));
+      if (trustProblems(ctx.registry.controls.get(controlId)?.trust).length) notCitable.add(controlId);
+    }
 
     const md = [
       `# Internal Audit Report — ${e.name}`,
