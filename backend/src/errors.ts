@@ -19,6 +19,7 @@ export type ErrorCode =
   | 'INTENT_EXPIRED'
   | 'CONTENT_CHANGED'
   | 'CANCELLED'
+  | 'RECORD_IMMUTABLE'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

@@ -1,6 +1,7 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { seal } from '../engine/trail';
 import type { TrailBundle } from '../engine/types';
+import { currentRequestId } from '../observability/context';
 import type { DB } from './schema';
 
 export type Executor = Kysely<DB> | Transaction<DB>;
@@ -17,7 +18,8 @@ export const TRAIL_LOCK_KEY = 0x41554454;
 export async function appendTrail(trx: Transaction<DB>, bundle: UnsealedBundle): Promise<TrailBundle> {
   await sql`select pg_advisory_xact_lock(${TRAIL_LOCK_KEY})`.execute(trx);
   const tip = await trx.selectFrom('trail').select(['seq', 'hash']).orderBy('seq', 'desc').limit(1).executeTakeFirst();
-  const sealed = seal(tip ? { seq: Number(tip.seq), hash: tip.hash } : null, bundle);
+  const requestId = bundle.requestId ?? currentRequestId();
+  const sealed = seal(tip ? { seq: Number(tip.seq), hash: tip.hash } : null, requestId ? { ...bundle, requestId } : bundle);
   await insertSealed(trx, sealed);
   return sealed;
 }

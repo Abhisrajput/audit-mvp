@@ -32,6 +32,13 @@ describe('api errors', () => {
     });
   });
 
+  it('shows the request id of an unexpected server error so it can be reported', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(500, { code: 'INTERNAL', requestId: 'req-12345678' })));
+    await expect(api('/x')).rejects.toMatchObject({
+      status: 500, code: 'INTERNAL', requestId: 'req-12345678', message: expect.stringContaining('req-12345678'),
+    });
+  });
+
   it("keeps the server's own message for other errors", async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(403, { error: 'You prepared this finding, so someone else must review it', code: 'SOD_VIOLATION' })));
     await expect(api('/x', { method: 'POST' })).rejects.toMatchObject({ code: 'SOD_VIOLATION', message: 'You prepared this finding, so someone else must review it' });

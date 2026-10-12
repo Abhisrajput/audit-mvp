@@ -1,6 +1,7 @@
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { DatabaseSsl } from '../config';
+import { logger } from '../observability/log';
 import type { DB } from './schema';
 
 // int8 (counts, bigserial) as numbers; values in this application stay far below 2^53.
@@ -34,7 +35,7 @@ export function connectPg(connectionString: string, opts: ConnectOptions = {}): 
     statement_timeout: opts.statement_timeout ?? 120000,
   });
   // A server restart or admin kill of an idle client emits 'error' on the pool; unhandled, it crashes the process.
-  pool.on('error', (err) => console.error('Postgres pool error (idle client):', err.message));
+  pool.on('error', (err) => logger.error({ err: err.message }, 'Postgres pool error (idle client)'));
   const kysely = new Kysely<DB>({ dialect: new PostgresDialect({ pool }) });
   return {
     kysely,

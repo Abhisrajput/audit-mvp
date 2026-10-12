@@ -5,6 +5,7 @@ import type { Db } from '../db';
 import type { DB } from '../db/schema';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
+import { logger } from '../observability/log';
 import type { AuthConfig } from './config';
 import { DEV_ISSUER, DEV_USERS } from './dev-users';
 import { clearSessionCookie, requireUser, SESSION_COOKIE, setSessionCookie } from './http';
@@ -94,7 +95,7 @@ export function authRoutes(db: Db, auth: AuthDeps, hooks: AuthHooks = {}): Route
       try {
         identity = await oidc.finish(callbackUrl, checks);
       } catch (err) {
-        console.warn('OIDC callback rejected:', err instanceof Error ? err.message : err);
+        logger.warn({ err }, 'OIDC callback rejected');
         return page(res, 400, 'Sign-in failed', 'The identity provider response could not be verified. Please try again.', home);
       }
 

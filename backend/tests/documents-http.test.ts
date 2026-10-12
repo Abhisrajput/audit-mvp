@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
@@ -10,6 +10,7 @@ import { blobKey, sha256Of, type BlobStore } from '../src/storage/blob-store';
 import { Readable } from 'node:stream';
 import { sql } from 'kysely';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
+import { captureLogs } from '../src/observability/log';
 import { engagementWithFailedControl, newService } from './helpers';
 import { devAuthConfig, signIn } from './http';
 
@@ -161,7 +162,7 @@ describe('document API', () => {
     // Other routes keep the 1 MB limit and say so generically.
     const tooBig = await auditor.post('/api/engagements', { name: 'x'.repeat(1_100_000) });
     expect(tooBig.status).toBe(413);
-    expect(tooBig.body).toEqual({ error: 'The request body is larger than the limit', code: 'VALIDATION' });
+    expect(tooBig.body).toEqual({ error: 'The request body is larger than the limit', code: 'VALIDATION', requestId: tooBig.headers['x-request-id'] });
   });
 
   it('serves active content types as inert downloads with a sandboxing CSP and a UTF-8 filename', async () => {
@@ -208,14 +209,14 @@ describe('document API', () => {
     const up = await upload(auditor, SOP).expect(201);
     const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' }).expect(201);
     fs.rmSync(path.join(dir, blobKey(up.body.sha256)));
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const errors = captureLogs('error');
     try {
       const lost = await auditor.get(`/api/documents/${reg.body.id}/content`);
       expect(lost.status).toBe(500);
       expect(lost.body.code).toBe('STORAGE_INTEGRITY');
       expect(lost.headers['content-disposition']).toBeUndefined();
-      expect(errors.mock.calls.flat().join(' ')).toContain(reg.body.id);
-      expect(errors.mock.calls.flat().join(' ')).toContain(up.body.sha256);
+      expect(errors.text()).toContain(reg.body.id);
+      expect(errors.text()).toContain(up.body.sha256);
 
       const outage = Object.assign(new Error('NoSuchBucket'), { name: 'NoSuchBucket' });
       const down = await setup({ blobs: (local) => fakeStore(local, { get: async () => { throw outage; }, head: async () => { throw outage; }, put: async () => { throw outage; } }) });
@@ -226,7 +227,7 @@ describe('document API', () => {
         expect(res.body.code).toBe('STORAGE_UNAVAILABLE');
       }
     } finally {
-      errors.mockRestore();
+      errors.restore();
     }
   });
 
@@ -239,12 +240,7 @@ describe('document API', () => {
     const auditor = await signIn(app, 'auditor');
     const up = await upload(auditor, SOP).expect(201);
     const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' }).expect(201);
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    try {
-      await expect(auditor.get(`/api/documents/${reg.body.id}/content`).buffer(true).parse(binary)).rejects.toThrow();
-    } finally {
-      errors.mockRestore();
-    }
+    await expect(auditor.get(`/api/documents/${reg.body.id}/content`).buffer(true).parse(binary)).rejects.toThrow();
     await auditor.get(`/api/documents/${reg.body.id}`).expect(200);
   });
 
