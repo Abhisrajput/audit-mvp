@@ -6,6 +6,7 @@ import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/htt
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
 import { errorHandler } from './http/errors';
+import { DEFAULT_RATE_LIMITS, rateLimiters, securityHeaders, type RateLimits } from './http/security';
 import { documentRoutes, UPLOAD_PATH, type StorageDeps } from './knowledge/routes';
 import { requestContext } from './observability/context';
 import { accessLog } from './observability/log';
@@ -50,10 +51,12 @@ const FindingPatchSchema = z
 /** Routes that parse their own bodies (see documentRoutes). */
 const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
 
-/** Operational settings; Tasks 3 and 4 add rate limits and metrics. */
+/** Operational settings; Task 4 adds metrics. */
 export interface OpsOptions {
   /** Proxy hops to trust (TRUST_PROXY); above 0, a forwarded X-Request-Id is reused. */
   trustProxy?: number;
+  /** Per-client request limits; tests lower them. */
+  rateLimits?: RateLimits;
 }
 
 export function createApp(
@@ -64,8 +67,14 @@ export function createApp(
 ) {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', ops.trustProxy ?? 0);
   app.use(requestContext({ trustProxy: ops.trustProxy ?? 0 }));
   app.use(accessLog());
+  app.use(securityHeaders());
+  const limits = rateLimiters(ops.rateLimits ?? DEFAULT_RATE_LIMITS);
+  app.use('/auth', limits.auth);
+  app.use('/auth/sign', limits.signing);
+  app.post('/api/engagements/:id/findings/:fid/sign-intents', limits.signing);
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,

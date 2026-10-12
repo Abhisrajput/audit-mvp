@@ -331,7 +331,8 @@ describe('signing over HTTP', () => {
     const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
     for (const res of [await reviewer.get(intent.body.reauthUrl).expect(200), await reviewer.get('/auth/sign/INT-nope').expect(404)]) {
       expect(res.headers['cache-control']).toBe('no-store');
-      expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+      expect(res.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+      expect(res.headers['content-security-policy']).toContain("script-src 'nonce-");
       expect(res.headers['x-frame-options']).toBe('DENY');
     }
   });

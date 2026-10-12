@@ -20,6 +20,7 @@ export type ErrorCode =
   | 'CONTENT_CHANGED'
   | 'CANCELLED'
   | 'RECORD_IMMUTABLE'
+  | 'RATE_LIMITED'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

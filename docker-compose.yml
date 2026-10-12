@@ -34,6 +34,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: '3002'
+      TRUST_PROXY: '1' # nginx (frontend) is the one proxy in front of the API
       DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
       # Local demo defaults. A real deployment sets NODE_ENV=production, DEV_AUTH=false, ALLOW_UNVERIFIED_CITATIONS=false (start-up refuses true in production) and the OIDC_* settings.
       NODE_ENV: ${NODE_ENV:-development}
