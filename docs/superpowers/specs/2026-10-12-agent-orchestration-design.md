@@ -149,7 +149,7 @@ scope ─QA─▶ [GATE scope] ─▶ rcm ─QA─▶ [GATE rcm] ─▶ test pla
 |---|---|---|---|
 | scope | scope workpaper revision | `audit_manager` | workpaper signature, `Approved` / `Rejected` |
 | rcm | RCM revision | `audit_manager` | workpaper signature |
-| finding | one finding | existing flow: `audit_manager` Reviewed, then `cae` Approved | existing finding signatures. Approved closes the gate as `approved`, Rejected as `rejected` |
+| finding | one finding | existing flow: `audit_manager` Reviewed, then `cae` Approved or Rejected | existing finding signatures. Approved closes the gate as `approved`, Rejected as `rejected`. Only `cae` can reject (`APPROVER_ROLES`), so finding rework instructions come from the CAE |
 | report | report revision | `cae` | workpaper signature |
 
 The signer of a scope, RCM or report gate must not be the run's `started_by` user.
@@ -173,7 +173,7 @@ by hand and resumes; the edited version goes through QA and a fresh gate.
 ### 4.6 Run lifecycle and permissions
 
 - **Starting a run:** `PREPARER_ROLES`. The engagement must have no non-terminal run.
-- **Resume, cancel:** `PREPARER_ROLES`.
+- **Pause, resume, cancel:** `PREPARER_ROLES`.
 - **Raising a budget:** `audit_manager` only. The change goes to the trail.
 - **Kill switch:** with `AGENT_ENABLED=false` the API refuses to start runs and
   the worker leases nothing. Existing runs stay as they are.
@@ -184,7 +184,7 @@ by hand and resumes; the edited version goes through QA and a fresh gate.
 
 1. Lease the run and load its state.
 2. `menu = allowedActions(state, budget)`.
-3. If the menu has one entry, take it without asking the policy. Otherwise call `policy.decide(state, menu)`.
+3. If the menu has one entry, take it without asking the policy and log the decision with `policy: 'forced'`. Otherwise call `policy.decide(state, menu)`.
 4. Validate the decision against the menu, then append a `decision` step and its trail entry.
 5. `executor.apply(decision)` appends `delegate` / `tool_call` / `qa` steps and commits through `mutate` with `expectedVersion`.
 6. Update `spent` and release or renew the lease.
@@ -201,7 +201,7 @@ by hand and resumes; the edited version goes through QA and a fresh gate.
 | `escalate { reason }` | `needs_human` |
 | `complete` | Terminal `completed` |
 
-A `Decision` is `{ action, args, rationale (≤ 500 chars), policy, policyVersion }`.
+A `Decision` is `{ action, args, rationale (≤ 500 chars), policy: 'llm' | 'rules' | 'forced', policyVersion }`.
 
 ### 5.3 Where the policy chooses
 
@@ -225,6 +225,9 @@ These are code checks, not prompt instructions. Each refusal throws
 
 - no signature creation, from any path the worker can reach;
 - no writes to `test_inputs`;
+- no setting or clearing `notTestedJustification` on a test plan: only an auditor's
+  edit sets it, so the agent cannot satisfy the testing wait condition (§4.2) by
+  itself. A specialist may suggest it in the `procedure` text;
 - no edits to a finding whose status is Reviewed or later;
 - a specialist calls only tools on its allow-list;
 - every commit uses `expectedVersion`.
@@ -295,11 +298,12 @@ logs carry `runId`. `/healthz` and `/readyz` are added to the worker for its con
 | `POST /api/engagements/:id/runs` | preparer | Start a run (optional lower budget) |
 | `GET /api/engagements/:id/runs` | read roles | List runs |
 | `GET /api/runs/:id` | read roles | Run with its steps, paginated by `seq` |
+| `POST /api/runs/:id/pause` | preparer | → `waiting` with reason `paused_by_user`; the worker stops between steps |
 | `POST /api/runs/:id/resume` | preparer | `needs_human` or `waiting` → `runnable` |
 | `POST /api/runs/:id/cancel` | preparer | Request cancel |
 | `POST /api/runs/:id/budget` | audit_manager | Raise the budget |
 | `GET /api/engagements/:id/gates` | read roles | Gates with QA reports |
-| `POST /api/gates/:id/sign-intents` | per §4.3 | Begin a gate signature (existing sign-intent flow) |
+| `POST /api/gates/:id/sign-intents` | per §4.3 | Begin a scope, RCM or report gate signature (existing sign-intent flow). Finding gates close through the existing finding signature endpoints |
 | `GET/PUT /api/engagements/:id/test-plans` | read / preparer | Read or edit test plans |
 
 Errors use the existing envelope. New codes: `RUN_ACTIVE` (409), `AGENT_DISABLED`
@@ -364,9 +368,9 @@ each closed gate's signature matches the gate's subject hash; and no gate is
 
 | Plan | Contents | Usable result |
 |---|---|---|
-| **2A — Rails and runtime** | Migration 010 including the signature generalisation, `types`, `graph`, rules policy, budget, executor guards, gates, worker, run and gate API, test-plan storage with a deterministic test-plan drafter, offline end-to-end integration test, REQ-26/27/28 | The chain runs offline through its gates on the rules policy |
+| **2A — Rails and runtime** | Migration 010 including the signature generalisation, `types`, `graph`, rules policy, budget, executor guards, gates, worker, run and gate API, test-plan storage with a deterministic test-plan drafter, kill switch, offline end-to-end integration test, REQ-26/27/28/29 | The chain runs offline through its gates on the rules policy |
 | **2B — Intelligence** | LLM policy, LLM test-plan drafting, QA agent (review and challenge), knowledge-graph tools and allow-lists, prompt-injection tests, eval golden traces, REQ-30 | Model-assisted decisions and drafts |
-| **2C — UI and operations** | Run panel, gate UI, test-plan tab, metrics, worker Compose service and Azure Container App, docs, REQ-29, `verify` additions | Pilot-ready |
+| **2C — UI and operations** | Run panel, gate UI, test-plan tab, metrics, worker Compose service and Azure Container App, docs, `verify` additions | Pilot-ready |
 
 ## 11. Risks
 
