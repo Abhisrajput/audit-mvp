@@ -48,7 +48,7 @@ authentication-context fallback described in spec section 13.
    - Run again with the same name, it only changes the password. It does so only for a login this tool made: no privileged attributes, owning nothing, and `audit_api` as its only membership. Otherwise it refuses; choose a new name.
    - `API_DB_PASSWORD_FILE` works in place of `API_DB_PASSWORD`.
 6. The API's `DATABASE_URL` uses `audit_app` and the server's host name, with `DATABASE_SSL=verify-full` (the default in production). Azure's server certificate chains to a public CA; set `DATABASE_SSL_CA_FILE` only for a private CA.
-7. Never put `sslmode` in the URL. Start-up refuses it, because node-postgres would let the URL override `DATABASE_SSL`.
+7. Never put TLS parameters in the URL (`sslmode`, `ssl`, `sslcert`, `sslkey`, `sslrootcert`, `sslnegotiation`, `uselibpqcompat`). Start-up refuses them, because node-postgres would let the URL override `DATABASE_SSL`; the API also strips them before connecting.
 
 The API login cannot run `migrate` or `packs:compile`; those keep the owner login.
 
@@ -94,7 +94,7 @@ The API never migrates or compiles at start-up in production, and refuses to sta
 | `ALLOW_UNVERIFIED_CITATIONS` | `false` or unset (true is refused) |
 | `PUBLIC_URL` | `https://` |
 | `OIDC_ISSUER`, `OIDC_REDIRECT_URI` | set, `https://`; the redirect on the same origin as `PUBLIC_URL`; `OIDC_CLIENT_ID` also required |
-| `DATABASE_URL` | no `sslmode` |
+| `DATABASE_URL` | no TLS parameters (`sslmode`, `ssl`, `sslcert`, ...) |
 | `DATABASE_SSL` | `verify-full` (default), or `require`; `disable` is refused |
 | `METRICS_TOKEN` | required for the API server, at least 24 characters. The `migrate`, `compile`, `verify` and `create-api-login` commands do not need it |
 | `BLOB_DRIVER` | `s3` or `azure` (`local` is refused); the S3 endpoint, if set, is `https://`; the Azurite emulator account is refused |

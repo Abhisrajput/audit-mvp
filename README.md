@@ -78,7 +78,7 @@ On Azure Database for PostgreSQL Flexible Server, first allow-list it: add `vect
 Compose binds the UI and API to localhost only; demo sign-in must be off (`DEV_AUTH=false`) on any machine others can reach.
 
 **Operations settings** (all optional locally; see `backend/.env.example`):
-- `DATABASE_SSL`: `disable`, `require` or `verify-full`. Defaults to `verify-full` in production, `disable` otherwise; `disable` is refused in production. Never put `sslmode` in `DATABASE_URL`.
+- `DATABASE_SSL`: `disable`, `require` or `verify-full`. Defaults to `verify-full` in production, `disable` otherwise; `disable` is refused in production. Never put TLS parameters (`sslmode`, `ssl`, `sslcert`, `sslkey`, `sslrootcert`, `sslnegotiation`, `uselibpqcompat`) in `DATABASE_URL`; start-up refuses them.
 - `DATABASE_SSL_CA_FILE`: path to a PEM file, for a private certificate authority.
 - `LOG_LEVEL`: `fatal`, `error`, `warn`, `info` (default), `debug`, `trace` or `silent`.
 - `TRUST_PROXY`: how many proxies sit in front of the API (0 to 5, default 0). It sets the client address used for rate limits and whether an incoming `X-Request-Id` is trusted.

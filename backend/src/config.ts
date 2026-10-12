@@ -80,11 +80,40 @@ const EnvSchema = z.object({
   METRICS_TOKEN: z.string().min(24, 'must be at least 24 characters').optional(),
 });
 
+/** Connection-URL parameters node-postgres turns into TLS settings that replace ours (it merges the parsed URL over the options). */
+export const TLS_URL_PARAMS = ['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'sslnegotiation', 'uselibpqcompat'] as const;
+
+/** The URL's query split into raw pairs, each with its decoded, lower-cased name, plus the parts around the query. */
+function splitQuery(url: string) {
+  const q = url.indexOf('?');
+  if (q < 0) return { base: url, pairs: [], hash: '' };
+  const h = url.indexOf('#', q);
+  const query = url.slice(q + 1, h < 0 ? undefined : h);
+  const pairs = query.split('&').filter(Boolean).map((raw) => ({ raw, name: (new URLSearchParams(raw).keys().next().value ?? '').toLowerCase() }));
+  return { base: url.slice(0, q), pairs, hash: h < 0 ? '' : url.slice(h) };
+}
+
+const isTlsParam = (name: string) => (TLS_URL_PARAMS as readonly string[]).includes(name);
+
+/** The TLS parameters present in a connection URL (lower-cased, de-duplicated). */
+export function tlsParamsIn(url: string): string[] {
+  return [...new Set(splitQuery(url).pairs.map((p) => p.name).filter(isTlsParam))];
+}
+
+/** The URL without any TLS parameter; returned unchanged when it has none. */
+export function stripTlsParams(url: string): string {
+  const { base, pairs, hash } = splitQuery(url);
+  if (!pairs.some((p) => isTlsParam(p.name))) return url;
+  const kept = pairs.filter((p) => !isTlsParam(p.name)).map((p) => p.raw);
+  return `${base}${kept.length ? `?${kept.join('&')}` : ''}${hash}`;
+}
+
 /** Cross-field rules run over the raw environment, so a bad field elsewhere never hides them (zod skips refinements then). */
 function crossFieldProblems(env: Record<string, string | undefined>): string[] {
   const problems: string[] = [];
-  if (/[?&]sslmode=/i.test(env.DATABASE_URL ?? '')) {
-    problems.push('  - DATABASE_URL: remove sslmode from the URL and set DATABASE_SSL instead (the URL would override it)');
+  const tls = tlsParamsIn(env.DATABASE_URL ?? '');
+  if (tls.length) {
+    problems.push(`  - DATABASE_URL: remove ${tls.join(', ')} from the URL and set DATABASE_SSL (and DATABASE_SSL_CA_FILE) instead (the URL would override them)`);
   }
   if (env.NODE_ENV === 'production' && env.DATABASE_SSL === 'disable') {
     problems.push('  - DATABASE_SSL: must not be disable in production; the database connection must use TLS');

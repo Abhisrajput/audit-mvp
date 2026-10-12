@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import pg from 'pg';
 import { loadConfig, loadServerConfig, resolveSecretFiles } from '../src/config';
+import { poolConfig } from '../src/db';
 
 const URL = 'postgres://u:p@db.example.com:5432/audit';
 const TOKEN = 'm'.repeat(32);
@@ -68,6 +70,39 @@ describe('configuration', () => {
       message = (err as Error).message;
     }
     for (const key of ['DATABASE_SSL', 'DATABASE_URL', 'LOG_LEVEL', 'TRUST_PROXY']) expect(message.match(new RegExp(`- ${key}:`, 'g'))).toHaveLength(1);
+  });
+
+  it.each(['ssl=0', 'ssl', 'SSL=false', 'uselibpqcompat=true', 'sslcert=/nonexistent/cert.pem', 'sslkey=/nonexistent/key.pem', 'sslrootcert=/nonexistent/ca.pem', 'sslnegotiation=direct'])(
+    'refuses the TLS parameter %s in DATABASE_URL, which would override DATABASE_SSL [REQ-25]',
+    (param) => {
+      let message = '';
+      try {
+        loadServerConfig(prod({ DATABASE_URL: `${URL}?application_name=audit&${param}` }));
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      const key = param.split('=')[0].toLowerCase();
+      expect(message).toMatch(new RegExp(`- DATABASE_URL: .*${key}.*DATABASE_SSL`));
+      expect(message.match(/- DATABASE_URL:/g)).toHaveLength(1);
+    },
+  );
+
+  it('accepts other DATABASE_URL query parameters [REQ-25]', () => {
+    expect(loadConfig(prod({ DATABASE_URL: `${URL}?application_name=audit` })).databaseSsl).toEqual({ rejectUnauthorized: true });
+  });
+
+  it('keeps our TLS setting in the pool even if the URL carries TLS parameters [REQ-25]', () => {
+    const ssl = { rejectUnauthorized: true };
+    // pg's own view of the connection: an unstripped sslcert would make it read the (missing) file and throw.
+    const effective = (url: string) => (new pg.Client(poolConfig(url, { ssl })) as unknown as { connectionParameters: { ssl: unknown; host: string; database: string; user: string } }).connectionParameters;
+    for (const q of ['ssl=0', 'ssl', 'uselibpqcompat=true&sslmode=require', 'sslmode=disable', 'sslcert=/nonexistent/cert.pem', 'sslnegotiation=direct']) {
+      const params = effective(`${URL}?application_name=audit&${q}`);
+      expect(params.ssl, q).toEqual(ssl);
+      expect(params).toMatchObject({ host: 'db.example.com', database: 'audit', user: 'u' });
+    }
+    expect(effective(`${URL}?sslmode=disable`).ssl).toEqual(ssl);
+    expect(poolConfig(URL, {}).ssl).toBe(false);
+    expect(poolConfig(`${URL}?application_name=audit`, { ssl }).connectionString).toBe(`${URL}?application_name=audit`);
   });
 
   it('reads database TLS settings and keeps development defaults simple', () => {
