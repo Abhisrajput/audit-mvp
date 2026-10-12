@@ -9,13 +9,13 @@ import { readTrail } from '../src/db/trail-repo';
 import { verifyChain } from '../src/engine/trail';
 import { AuditService } from '../src/service';
 import { emptyDb, testDb } from './db';
-import { auditor, engagementWithFailedControl, newService, registry, reviewer } from './helpers';
+import { auditor, engagementWithFailedControl, newService, registry, reviewer, unattended } from './helpers';
 
 /** Builds an MVP-format db.json (engagements + trail + evalRuns) from a real run. */
 async function mvpExport() {
   const svc = await newService();
   const e = await engagementWithFailedControl(svc);
-  await svc.signOff(e.id, e.findings[0].id, 'review', 'ok', reviewer);
+  await svc.signOff(e.id, e.findings[0].id, 'review', 'ok', reviewer, {}, unattended);
   const engagement = await svc.engagement(e.id);
   delete engagement.version; // MVP files have no version field
   const data = { engagements: [engagement], trail: await readTrail(svc.db.kysely), evalRuns: [] };

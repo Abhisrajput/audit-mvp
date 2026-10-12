@@ -4,6 +4,9 @@ import { DEV_USERS } from '../src/auth/dev-users';
 import { AuditService } from '../src/service';
 import { testDb } from './db';
 
+/** Server-side signing in tests: no person re-authenticates, and the signature records that. */
+export const unattended = { unattended: 'test' } as const;
+
 export const registry = PackRegistry.loadFromDir();
 export const [auditor, reviewer, approver, admin, viewer] = DEV_USERS;
 

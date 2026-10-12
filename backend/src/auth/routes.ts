@@ -1,4 +1,4 @@
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import type { Transaction } from 'kysely';
 import { z } from 'zod';
 import type { Db } from '../db';
@@ -9,6 +9,7 @@ import type { AuthConfig } from './config';
 import { DEV_ISSUER, DEV_USERS } from './dev-users';
 import { clearSessionCookie, requireUser, SESSION_COOKIE, setSessionCookie } from './http';
 import { recordIdentityEvent } from './identity-trail';
+import { page } from './page';
 import { createSession, revokeSession } from './session-repo';
 import type { OidcChecks, OidcClient } from './oidc';
 import { roleFromGroups } from './oidc';
@@ -22,21 +23,6 @@ export interface AuthDeps {
 
 const LOGIN_COOKIE = 'audit_oidc';
 const LOGIN_COOKIE_MAX_AGE_MS = 10 * 60_000;
-
-const escapeHtml = (s: string) =>
-  s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-
-/** A tiny HTML page. Redirecting from our own page keeps the SameSite=Strict session cookie on the next request. */
-function page(res: Response, status: number, title: string, message: string, next?: string) {
-  const go = next ? escapeHtml(next) : null;
-  res
-    .status(status)
-    .type('html')
-    .send(
-      `<!doctype html><meta charset="utf-8">${go ? `<meta http-equiv="refresh" content="0;url=${go}">` : ''}` +
-        `<title>${escapeHtml(title)}</title><p>${escapeHtml(message)}</p>${go ? `<p><a href="${go}">Continue</a></p>` : ''}`,
-    );
-}
 
 /** Creates the session and trails the login inside the caller's transaction; returns the cookie token. */
 async function openSession(trx: Transaction<DB>, user: UserRecord, method: string, details: object): Promise<string> {
@@ -54,7 +40,12 @@ export async function startSession(db: Db, res: Response, cfg: AuthConfig, user:
   setSessionCookie(res, token, cfg);
 }
 
-export function authRoutes(db: Db, auth: AuthDeps): Router {
+export interface AuthHooks {
+  /** Gets the IdP callback first; returns true when it handled the response (e.g. a signing re-authentication). */
+  idpCallback?: (req: Request, res: Response) => Promise<boolean>;
+}
+
+export function authRoutes(db: Db, auth: AuthDeps, hooks: AuthHooks = {}): Router {
   const cfg = auth.config;
   const r = Router();
 
@@ -83,6 +74,7 @@ export function authRoutes(db: Db, auth: AuthDeps): Router {
     }));
 
     r.get('/auth/callback', wrap(async (req, res) => {
+      if (hooks.idpCallback && (await hooks.idpCallback(req, res))) return;
       const home = `${cfg.publicUrl}/`;
       const raw: unknown = req.cookies?.[LOGIN_COOKIE];
       res.clearCookie(LOGIN_COOKIE, { path: '/auth' });

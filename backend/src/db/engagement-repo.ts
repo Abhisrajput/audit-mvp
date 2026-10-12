@@ -2,6 +2,7 @@ import { sql } from 'kysely';
 import { canonicalJson } from '../engine/trail';
 import type { Engagement, Finding } from '../engine/types';
 import { AppError } from '../errors';
+import { recordRevision } from './revision-repo';
 import type { Executor } from './trail-repo';
 
 // Engagements are stored as a header row (with an optimistic version), one
@@ -37,6 +38,7 @@ export async function insertFinding(db: Executor, engagementId: string, f: Findi
     .insertInto('findings')
     .values({ engagement_id: engagementId, id: f.id, row_id: f.rowId, control_id: f.controlId, status: f.status, rating: f.rating, data: json(f) })
     .execute();
+  await recordRevision(db, engagementId, f);
 }
 
 export async function insertEngagement(db: Executor, e: Engagement): Promise<void> {
@@ -124,6 +126,7 @@ export async function saveEngagement(db: Executor, loaded: LoadedEngagement): Pr
         .where('id', '=', f.id)
         .where('superseded_at', 'is', null)
         .execute();
+      await recordRevision(db, e.id, f);
     }
   }
   for (const id of loaded.findingSnapshots.keys()) {

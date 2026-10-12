@@ -1,9 +1,15 @@
 import crypto from 'node:crypto';
+import type { Transaction } from 'kysely';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
+import type { DB } from './db/schema';
+import { insertSignature, listSignatures } from './db/signature-repo';
+import { findingContentHash, signatureState, withSignatureStatus } from './signing/content-hash';
+import { finishIntent } from './signing/intent-repo';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
 } from './db/engagement-repo';
+import { lastRevisionTimes } from './db/revision-repo';
 import { getEvalRun, latestEvalRun, listEvalRuns, saveEvalRun } from './db/eval-repo';
 import { appendTrail, readTrail, type UnsealedBundle } from './db/trail-repo';
 import { Bm25Index, clauseText, controlText } from './engine/grounding';
@@ -38,7 +44,29 @@ export interface MutationOptions {
   expectedVersion?: number;
 }
 
+export type SignAction = 'review' | 'approve' | 'reject';
+
+/** Proof that the signer re-authenticated for this exact content (plan 1C). */
+export interface SignatureContext {
+  /** Content hash captured when the signing request was made; the signature is refused if the finding changed since. */
+  contentHash: string;
+  reauthMethod: 'oidc' | 'dev';
+  /** When the signer re-authenticated (ISO). */
+  reauthAt: string;
+  intentId: string;
+}
+
+/** Server-side signing with nobody to re-authenticate (seed data, tests). Recorded as not re-authenticated. */
+export interface UnattendedSigning {
+  unattended: 'seed' | 'test';
+}
+
 type Emit = (bundle: UnsealedBundle) => void;
+
+/** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
+class NoChange {
+  constructor(readonly finding: Finding) {}
+}
 
 export class AuditService {
   readonly grounding: Grounding;
@@ -64,6 +92,12 @@ export class AuditService {
     return loaded.engagement;
   }
 
+  /** The engagement for display: each sign-off checked against the append-only signatures table (broken / legacy). */
+  async engagementWithSignatureStatus(id: string): Promise<Engagement> {
+    const e = await this.engagement(id);
+    return withSignatureStatus(e, await listSignatures(this.db.kysely, id), await lastRevisionTimes(this.db.kysely, id));
+  }
+
   listEngagements(): Promise<EngagementSummary[]> {
     return listEngagements(this.db.kysely);
   }
@@ -76,7 +110,7 @@ export class AuditService {
   private async mutate<T>(
     engagementId: string,
     opts: MutationOptions,
-    fn: (e: Engagement, emit: Emit) => Promise<T> | T,
+    fn: (e: Engagement, emit: Emit, trx: Transaction<DB>) => Promise<T> | T,
   ): Promise<{ result: T; sealed: TrailBundle[] }> {
     return this.db.kysely.transaction().execute(async (trx) => {
       const loaded = await loadEngagement(trx, engagementId, { forUpdate: true });
@@ -89,7 +123,7 @@ export class AuditService {
         );
       }
       const pending: UnsealedBundle[] = [];
-      const result = await fn(loaded.engagement, (b) => pending.push(b));
+      const result = await fn(loaded.engagement, (b) => pending.push(b), trx);
       await saveEngagement(trx, loaded);
       const sealed: TrailBundle[] = [];
       for (const b of pending) sealed.push(await appendTrail(trx, b));
@@ -135,12 +169,16 @@ export class AuditService {
       }
     })();
 
-    const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit) => {
+    const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const blocker = mod.precondition(e);
       if (blocker) throw new AppError(409, blocker);
 
       const startedAt = new Date().toISOString();
-      const ctx = new ModuleContext(e, this.registry, this.grounding, this.llm, actor, input);
+      // Report Writer prints each signature with its status, which only the signatures table can tell, so it reads
+      // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
+      // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
+      const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id), await lastRevisionTimes(trx, e.id)) : e;
+      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input);
       ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
       const output = await mod.run(ctx);
       ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
@@ -210,13 +248,32 @@ export class AuditService {
     opts: MutationOptions = {},
   ) {
     this.require(actor, PREPARER_ROLES, 'edit findings');
+    try {
+      return await this.applyFindingEdit(engagementId, findingId, patch, actor, opts);
+    } catch (err) {
+      if (err instanceof NoChange) return err.finding;
+      throw err;
+    }
+  }
+
+  private async applyFindingEdit(
+    engagementId: string,
+    findingId: string,
+    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    actor: User,
+    opts: MutationOptions,
+  ) {
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
       const idx = e.findings.findIndex((f) => f.id === findingId);
       if (idx < 0) throw new AppError(404, `Finding ${findingId} not found`);
       if (e.findings[idx].status === 'approved') throw new AppError(409, 'Approved findings are locked', 'FINDING_LOCKED');
 
-      const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const previous = e.findings[idx];
+      // A save that leaves the content as it was is not an edit: status, sign-offs and preparers stay, and nothing is
+      // written (throwing rolls back this transaction, which has written nothing yet).
+      if (findingContentHash({ ...previous, ...patch }) === findingContentHash(previous)) throw new NoChange(previous);
+
+      const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed);
@@ -227,37 +284,78 @@ export class AuditService {
     return result;
   }
 
-  async signOff(engagementId: string, findingId: string, action: 'review' | 'approve' | 'reject', comment: string, actor: User, opts: MutationOptions = {}) {
-    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+  /** Who may sign what, and what signing does. The same checks guard the signing request and the signature itself. */
+  private signOffGuard(f: Finding, action: SignAction, actor: User): { meaning: SignOff['meaning']; status: Finding['status'] } {
+    if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
+    const preparedBy = f.preparedBy ?? [];
+    if (action === 'review') {
+      this.require(actor, REVIEWER_ROLES, 'review findings');
+      if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
+      if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
+      return { meaning: 'Reviewed', status: 'reviewed' };
+    }
+    this.require(actor, APPROVER_ROLES, `${action} findings`);
+    if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
+    if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
+    if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
+    return action === 'approve' ? { meaning: 'Approved', status: 'approved' } : { meaning: 'Rejected', status: 'rejected' };
+  }
+
+  /** Checks a signature would be allowed, before the signer is asked to re-authenticate; returns the content to bind. */
+  async checkSignOff(engagementId: string, findingId: string, action: SignAction, actor: User): Promise<{ contentHash: string }> {
+    const e = await this.engagement(engagementId);
+    const f = e.findings.find((x) => x.id === findingId);
+    if (!f) throw new AppError(404, `Finding ${findingId} not found`);
+    this.signOffGuard(f, action, actor);
+    return { contentHash: findingContentHash(f) };
+  }
+
+  /**
+   * Signs a finding. `signature` is required: proof of re-authentication from a signing request, or an explicit
+   * unattended marker for seed data and tests. Anything else fails closed (428 REAUTH_REQUIRED).
+   */
+  async signOff(
+    engagementId: string, findingId: string, action: SignAction, comment: string, actor: User,
+    opts: MutationOptions, signature: SignatureContext | UnattendedSigning,
+  ) {
+    const unattended = signature && 'unattended' in signature && (signature.unattended === 'seed' || signature.unattended === 'test') ? signature.unattended : null;
+    const reauthed = signature && !unattended && 'contentHash' in signature && signature.intentId ? (signature as SignatureContext) : null;
+    if (!unattended && !reauthed) {
+      throw new AppError(428, 'Signing needs re-authentication: start a signing request instead', 'REAUTH_REQUIRED');
+    }
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const f = e.findings.find((x) => x.id === findingId);
       if (!f) throw new AppError(404, `Finding ${findingId} not found`);
-      if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
-
-      const preparedBy = f.preparedBy ?? [];
-      let meaning: SignOff['meaning'];
-      if (action === 'review') {
-        this.require(actor, REVIEWER_ROLES, 'review findings');
-        if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
-        if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
-        f.status = 'reviewed';
-        meaning = 'Reviewed';
-      } else {
-        this.require(actor, APPROVER_ROLES, `${action} findings`);
-        if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
-        if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
-        if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
-        f.status = action === 'approve' ? 'approved' : 'rejected';
-        meaning = action === 'approve' ? 'Approved' : 'Rejected';
+      const contentHash = findingContentHash(f);
+      if (reauthed && reauthed.contentHash !== contentHash) {
+        throw new AppError(409, 'The finding changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
       }
-      // Signature manifestation: who, in what role, what it means, and when.
-      const sig: SignOff = { userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at: new Date().toISOString() };
+      const { meaning, status } = this.signOffGuard(f, action, actor);
+      f.status = status;
+
+      // Signature manifestation (§11.50) bound to the signed content (§11.70).
+      const at = new Date().toISOString();
+      const reauth: NonNullable<SignOff['reauth']> = reauthed ? { method: reauthed.reauthMethod, at: reauthed.reauthAt } : { method: 'none', at: null };
+      const sig: SignOff = {
+        userId: actor.id, userName: actor.name, role: actor.role, meaning, comment, at,
+        signatureId: `SIG-${crypto.randomBytes(6).toString('hex')}`, contentHash, reauth,
+      };
       f.signOffs.push(sig);
-      emit(this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment }, sig));
+      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig);
+      emit(bundle);
+      await insertSignature(trx, {
+        id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
+        contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
+      });
+      // The signing request is marked signed in this same transaction, so it is never left 'claimed' after a signature commits.
+      // A request this attempt does not hold (pending, failed, signed or unknown) rolls back the whole signature.
+      if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
+        throw new AppError(409, 'This signing request is no longer valid', 'INTENT_EXPIRED');
+      }
       return f;
     });
     return result;
   }
-
   // ---------- Trail ----------
 
   private humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
@@ -311,15 +409,22 @@ export class AuditService {
 
   /** Flat export for write-back into the client's QMS / GRC system of record. */
   async findingsCsv(engagementId: string): Promise<string> {
-    const e = await this.engagement(engagementId);
-    const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'approvedBy', 'bundleId'];
+    const e = await this.engagementWithSignatureStatus(engagementId);
+    const cols = ['id', 'status', 'rating', 'controlId', 'title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'citations', 'evidenceRefs', 'signatures', 'signature_issues', 'bundleId'];
+    // Every sign-off: meaning|name|role|time|re-authentication method|signature id|valid, broken or legacy.
+    // A legacy sign-off (no signature record) is never shown as re-authenticated.
+    const signature = (s: SignOff) => {
+      const state = signatureState(s);
+      return [s.meaning, s.userName, s.role, s.at, state === 'legacy' ? 'none' : (s.reauth?.method ?? 'none'), s.signatureId ?? '', state].join('|');
+    };
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const rows = e.findings.map((f) =>
       [
         f.id, f.status, f.rating, f.controlId, f.title, f.condition, f.criteria, f.cause, f.effect, f.recommendation,
         f.citations.map((c) => `${c.regulation} ${c.ref}`).join('; '),
         f.evidenceRefs.join('; '),
-        f.signOffs.filter((s) => s.meaning === 'Approved').map((s) => `${s.userName} ${s.at}`).join('; '),
+        f.signOffs.map(signature).join('; '),
+        (f.signatureIssues ?? []).join('; '),
         f.bundleId,
       ].map((v) => esc(String(v))).join(','),
     );

@@ -38,9 +38,9 @@ export function ActionButton({ action, children, ...props }: { action: () => Pro
     <>
       <Button
         variant="contained"
+        {...props}
         disabled={busy || props.disabled}
         startIcon={busy ? <CircularProgress size={16} /> : props.startIcon}
-        {...props}
         onClick={async () => {
           setBusy(true);
           try {

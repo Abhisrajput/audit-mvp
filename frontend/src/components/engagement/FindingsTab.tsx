@@ -1,16 +1,30 @@
 import { PlayArrow as PlayArrowIcon } from '@mui/icons-material';
 import {
-  Alert, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
+  Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
 } from '@mui/material';
 import { useState } from 'react';
 import { api } from '../../api';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
+import { openSigningWindow, signWithReauth } from '../../signing';
 import { useSession } from '../../session';
-import type { Engagement, Finding } from '../../types';
+import type { Engagement, Finding, SignOff } from '../../types';
 import { ActionButton, Citations, RiskChip, StatusChip } from '../common';
 
 const FIELDS = ['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const;
+
+/** 'YYYY-MM-DD HH:MM UTC', as in the report and the CSV. */
+const utc = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 16)} UTC`;
+};
+
+/** How the signer proved who they were. A legacy sign-off (no signature record) is never shown as re-authenticated. */
+function howSigned(s: SignOff): string {
+  if (s.legacy || !s.signatureId) return ' · legacy signature (before Part 11)';
+  if (!s.reauth || s.reauth.method === 'none') return ' · not re-authenticated';
+  return ` · re-authenticated ${s.reauth.method === 'oidc' ? 'with the identity provider' : 'by demo confirmation'}`;
+}
 
 interface CardContext {
   engagementId: string;
@@ -66,10 +80,20 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
   const { user } = useSession();
   const [comment, setComment] = useState('');
   const [editing, setEditing] = useState(false);
-  const sign = (action: string) => async () => {
-    await api(`/engagements/${ctx.engagementId}/findings/${f.id}/signoff`, { method: 'POST', ifMatch: ctx.version, body: { action, comment } });
-    setComment('');
-    await ctx.reload();
+  const [waiting, setWaiting] = useState<AbortController | null>(null);
+  const sign = (action: 'review' | 'approve' | 'reject') => async () => {
+    // Open the window first, synchronously in the click, or the browser blocks it as a pop-up.
+    const popup = openSigningWindow();
+    const controller = new AbortController();
+    setWaiting(controller);
+    try {
+      await signWithReauth(ctx.engagementId, f.id, action, comment, popup, { signal: controller.signal });
+      setComment('');
+    } finally {
+      setWaiting(null);
+      // Show what the server recorded, whatever happened here.
+      await ctx.reload().catch(() => undefined);
+    }
   };
   const role = user?.role;
   const preparedByMe = !!user && (f.preparedBy ?? []).includes(user.id);
@@ -117,14 +141,35 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
         {f.signOffs.length > 0 && (
           <Stack sx={{ mt: 1.5 }}>
             {f.signOffs.map((s, i) => (
-              <Typography key={i} variant="body2" color="text.secondary">
-                ✍ {s.meaning} by {s.userName} ({s.role}) at {new Date(s.at).toLocaleString()}
+              <Typography key={i} component="div" variant="body2" color="text.secondary">
+                ✍ {s.meaning} by {s.userName} ({s.role}) at {utc(s.at)}
+                {howSigned(s)}
+                {s.signatureId && ` · ${s.signatureId}`}
                 {s.comment && ` — "${s.comment}"`}
+                {s.broken && <Chip size="small" color="error" label="Signature broken: does not match its signature record" sx={{ ml: 1 }} />}
               </Typography>
             ))}
           </Stack>
         )}
+        {!!f.signatureIssues?.length && (
+          <Alert severity="error" sx={{ mt: 1.5 }}>
+            Signature records disagree with this finding: {f.signatureIssues.join('; ')}
+          </Alert>
+        )}
         <Divider sx={{ my: 1.5 }} />
+        {waiting && (
+          <Alert
+            severity="info"
+            sx={{ mb: 1.5 }}
+            action={
+              <Button color="inherit" size="small" onClick={() => waiting.abort()}>
+                Cancel
+              </Button>
+            }
+          >
+            Waiting for you to confirm your identity in the sign-in window…
+          </Alert>
+        )}
         <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
           {canPrepare(role) && f.status !== 'approved' && (
             <Button size="small" onClick={() => setEditing(true)}>
@@ -134,17 +179,20 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
           {(canReview || canApprove) && !blockedBySod && (
             <>
               <TextField size="small" placeholder="Sign-off comment" value={comment} onChange={(e) => setComment(e.target.value)} sx={{ minWidth: 280 }} />
+              <Typography variant="caption" color="text.secondary">
+                Signing opens a window where you confirm your identity again.
+              </Typography>
               {canReview && (
-                <ActionButton size="small" action={sign('review')}>
+                <ActionButton size="small" disabled={!!waiting} action={sign('review')}>
                   Sign as reviewed
                 </ActionButton>
               )}
               {canApprove && (
                 <>
-                  <ActionButton size="small" color="success" action={sign('approve')}>
+                  <ActionButton size="small" color="success" disabled={!!waiting} action={sign('approve')}>
                     Approve
                   </ActionButton>
-                  <ActionButton size="small" color="warning" variant="outlined" action={sign('reject')}>
+                  <ActionButton size="small" color="warning" variant="outlined" disabled={!!waiting} action={sign('reject')}>
                     Reject
                   </ActionButton>
                 </>

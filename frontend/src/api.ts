@@ -9,6 +9,8 @@ export class ApiError extends Error {
 const FRIENDLY: Record<string, string> = {
   VERSION_CONFLICT: 'Someone else changed this engagement while you were working. Reload the page to see their changes, then try again.',
   CSRF_FAILED: 'Your session security token is out of date. Reload the page and try again.',
+  REAUTH_REQUIRED: 'Signing needs you to confirm your identity again. Use the Sign buttons, which open the confirmation window.',
+  CONTENT_CHANGED: 'The finding changed after you started signing. Review it again, then sign.',
   PENDING_ACCESS: 'Your account is waiting for an administrator to assign a role.',
 };
 

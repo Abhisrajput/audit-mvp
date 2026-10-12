@@ -141,6 +141,16 @@ export interface SignOff {
   meaning: 'Reviewed' | 'Approved' | 'Rejected';
   comment: string;
   at: string;
+  /** Signatures captured since Part 11 signing (plan 1C) carry these. */
+  signatureId?: string;
+  /** SHA-256 of the finding content this signature vouches for. */
+  contentHash?: string;
+  /** How the signer proved who they were at the moment of signing; 'none' for server-side signing (seed, tests). */
+  reauth?: { method: 'oidc' | 'dev' | 'none'; at: string | null };
+  /** Set only in API responses and exports: the signature record is missing, or the sign-off or content no longer matches it. */
+  broken?: boolean;
+  /** Set only in API responses and exports: no signature record (signed before Part 11 signing, or imported). */
+  legacy?: boolean;
 }
 
 /** A finding with triple citation: regulation clause + control + evidence. */
@@ -163,6 +173,11 @@ export interface Finding {
   bundleId: string;
   /** Users who drafted or edited this finding since it was last reset; none of them may sign it. */
   preparedBy?: string[];
+  /**
+   * Set only in API responses and exports, never stored: problems found by checking the finding against the
+   * append-only signature records, e.g. a recorded signature that is missing from the finding.
+   */
+  signatureIssues?: string[];
 }
 
 export interface AuditReport {

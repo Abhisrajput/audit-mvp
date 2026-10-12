@@ -35,8 +35,8 @@ async function main() {
       await svc.runModule(e.id, 'testing', auditor);
       await svc.runModule(e.id, 'gaps', auditor);
       const ready = (await svc.engagement(e.id)).findings.filter((f) => f.status === 'draft');
-      for (const f of ready.slice(0, approveFirst + 1)) await svc.signOff(e.id, f.id, 'review', 'Condition and criteria agreed to workpapers.', reviewer);
-      for (const f of ready.slice(0, approveFirst)) await svc.signOff(e.id, f.id, 'approve', 'Agreed with management at exit meeting.', approver);
+      for (const f of ready.slice(0, approveFirst + 1)) await svc.signOff(e.id, f.id, 'review', 'Condition and criteria agreed to workpapers.', reviewer, {}, { unattended: 'seed' });
+      for (const f of ready.slice(0, approveFirst)) await svc.signOff(e.id, f.id, 'approve', 'Agreed with management at exit meeting.', approver, {}, { unattended: 'seed' });
       await svc.runModule(e.id, 'report', auditor);
       return svc.engagement(e.id);
     }

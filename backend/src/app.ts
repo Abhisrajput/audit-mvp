@@ -5,6 +5,7 @@ import { adminRoutes } from './auth/admin-routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
+import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { wrap } from './http-util';
 import { AppError, AuditService, type MutationOptions } from './service';
@@ -62,13 +63,15 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
 
   // ----- Public -----
   app.get('/api/health', (_req, res) => res.json({ ok: true, provider: svc.providerInfo }));
-  app.use(authRoutes(svc.db, auth));
+  const signing = signingRoutes(svc, auth);
+  app.use(authRoutes(svc.db, auth, { idpCallback: signing.handleIdpCallback }));
 
   // ----- Everything below needs a signed-in user with a role (and CSRF on changes) -----
   app.use('/api', requireUser());
   const readers = requireRole(READ_ROLES);
   const evaluators = requireRole([...PREPARER_ROLES, 'cae']);
   app.use(adminRoutes(svc.db, auth.config));
+  app.use(signing.router);
 
   app.get('/api/modules', readers, (_req, res) => res.json(svc.modules()));
 
@@ -96,7 +99,7 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
     res.status(201).json(await svc.createEngagement(body, actorOf(req)));
   }));
   app.get('/api/engagements/:id', readers, wrap(async (req, res) => {
-    const e = await svc.engagement(param(req, 'id'));
+    const e = await svc.engagementWithSignatureStatus(param(req, 'id'));
     res.set('ETag', `"${e.version}"`).json(e);
   }));
 
@@ -118,10 +121,9 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
     res.json(await svc.editFinding(param(req, 'id'), param(req, 'fid'), FindingPatchSchema.parse(req.body), actorOf(req), mutation(req)));
   }));
 
-  app.post('/api/engagements/:id/findings/:fid/signoff', readers, wrap(async (req, res) => {
-    const body = z.object({ action: z.enum(['review', 'approve', 'reject']), comment: z.string().default('') }).parse(req.body);
-    res.json(await svc.signOff(param(req, 'id'), param(req, 'fid'), body.action, body.comment, actorOf(req), mutation(req)));
-  }));
+  app.post('/api/engagements/:id/findings/:fid/signoff', readers, () => {
+    throw new AppError(428, 'Signing needs re-authentication: start a signing request (POST …/sign-intents) instead', 'REAUTH_REQUIRED');
+  });
 
   app.get('/api/engagements/:id/report.md', readers, wrap(async (req, res) => {
     const e = await svc.engagement(param(req, 'id'));
