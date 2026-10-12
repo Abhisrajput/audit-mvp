@@ -1,5 +1,5 @@
 import type { GenerateRequest, GenerateResult, LlmProvider } from '../src/engine/llm/provider';
-import { PackRegistry } from '../src/engine/packs';
+import { registryFromBundles } from '../src/knowledge/packs';
 import { DEV_USERS } from '../src/auth/dev-users';
 import { AuditService } from '../src/service';
 import { testDb } from './db';
@@ -7,7 +7,7 @@ import { testDb } from './db';
 /** Server-side signing in tests: no person re-authenticates, and the signature records that. */
 export const unattended = { unattended: 'test' } as const;
 
-export const registry = PackRegistry.loadFromDir();
+export const registry = registryFromBundles();
 export const [auditor, reviewer, approver, admin, viewer] = DEV_USERS;
 
 /** A service on its own fresh database. */

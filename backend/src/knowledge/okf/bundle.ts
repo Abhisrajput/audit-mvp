@@ -136,8 +136,6 @@ export function loadBundle(packsDir: string, packId: string): Bundle {
       files.push({ rel: 'pack.md', type: 'pack' });
       continue;
     }
-    // pack.json is the pre-OKF format: tolerated beside a bundle until Task 3 deletes it.
-    if (entry.isFile() && entry.name === 'pack.json') continue;
     const type = entry.isDirectory() ? CONCEPT_DIRS[entry.name as keyof typeof CONCEPT_DIRS] : undefined;
     if (!type) throw new BundleError(`${packId}/${entry.name}: not part of an OKF bundle (expected pack.md and the folders ${Object.keys(CONCEPT_DIRS).join(', ')})`);
     for (const f of fs.readdirSync(path.join(root, entry.name), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {

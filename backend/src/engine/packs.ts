@@ -1,12 +1,7 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { LegacyPackSchema } from '../knowledge/okf/migrate-json';
 import type { Clause, ContentPack, Control } from './types';
 
-// Content packs are data, not code: a new vertical or regulation set is added by
-// dropping a pack.json into packs/<id>/. LegacyPackSchema (knowledge/okf/migrate-json.ts) is the contract.
-
-export const DEFAULT_PACKS_DIR = path.resolve(__dirname, '../../packs');
+// The loaded content packs, indexed for the engine. Packs are OKF bundles compiled into the
+// knowledge graph (src/knowledge); this class only indexes them and checks cross-references.
 
 export class PackRegistry {
   readonly packs = new Map<string, ContentPack>();
@@ -16,20 +11,6 @@ export class PackRegistry {
   constructor(packs: ContentPack[]) {
     for (const pack of packs) this.add(pack);
     this.checkReferences();
-  }
-
-  static loadFromDir(dir = DEFAULT_PACKS_DIR): PackRegistry {
-    const packs: ContentPack[] = [];
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const file = path.join(dir, entry.name, 'pack.json');
-      if (!entry.isDirectory() || !fs.existsSync(file)) continue;
-      const parsed = LegacyPackSchema.safeParse(JSON.parse(fs.readFileSync(file, 'utf8')));
-      if (!parsed.success) {
-        throw new Error(`Invalid content pack ${file}: ${parsed.error.message}`);
-      }
-      packs.push(parsed.data as ContentPack);
-    }
-    return new PackRegistry(packs);
   }
 
   private add(pack: ContentPack) {

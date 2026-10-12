@@ -196,7 +196,7 @@ describe('audit trail', () => {
     expect(gaps.retrievalSet.length).toBeGreaterThan(0);
     expect(gaps.executionLog.length).toBeGreaterThan(0);
     expect(gaps.qaActions.length).toBeGreaterThan(0);
-    expect(gaps.packVersions).toEqual({ food: '0.1.0', common: '0.1.0' });
+    expect(gaps.packVersions).toEqual({ food: '0.2.0', common: '0.2.0' });
     expect(gaps.provider.id).toBe('offline');
     expect(gaps.actor).toBe('auditor');
     expect(e.findings[0].bundleId).toBe(gaps.id);

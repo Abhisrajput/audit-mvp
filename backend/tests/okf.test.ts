@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PACKS_DIR, loadBundle, loadBundles } from '../src/knowledge/okf/bundle';
+import { loadBundle, loadBundles } from '../src/knowledge/okf/bundle';
 import { parseControlBody, renderControlBody } from '../src/knowledge/okf/control-body';
 import { parseMarkdown, renderMarkdown } from '../src/knowledge/okf/frontmatter';
-import { loadLegacyPack, packToFiles } from '../src/knowledge/okf/migrate-json';
+import { packToFiles } from '../src/knowledge/okf/migrate-json';
 import { slugOf } from '../src/knowledge/okf/schema';
 import { bundleToContentPack } from '../src/knowledge/okf/to-pack';
+import { registryFromBundles } from '../src/knowledge/packs';
 import { demoRoot, expectedAfterMigration, FIXTURE, tmpRoot, withoutTrust, writeBundle } from './okf-fixtures';
 
 describe('OKF frontmatter', () => {
@@ -115,15 +116,24 @@ describe('OKF bundles', () => {
   });
 });
 
-describe('the migrated MVP packs', () => {
-  for (const id of ['common', 'food', 'pharma']) {
-    it(`${id}: pack.json converts losslessly and matches the committed bundle`, () => {
-      const legacy = loadLegacyPack(path.join(DEFAULT_PACKS_DIR, id, 'pack.json'));
-      const files = packToFiles(legacy);
-      const root = tmpRoot();
-      writeBundle(root, id, files);
-      expect(withoutTrust(bundleToContentPack(loadBundle(root, id)))).toEqual(expectedAfterMigration(legacy));
-      for (const [rel, text] of files) expect(fs.readFileSync(path.join(DEFAULT_PACKS_DIR, id, rel), 'utf8'), rel).toBe(text);
-    });
-  }
+describe('the committed MVP bundles', () => {
+  const COUNTS = { common: [10, 10, 7], food: [33, 12, 9], pharma: [25, 13, 9] } as const;
+
+  it('load into a registry with every concept, all unverified and due for re-review on 2027-10-11', () => {
+    const registry = registryFromBundles();
+    expect(registry.list().map((p) => `${p.id}@${p.version}`)).toEqual(['common@0.2.0', 'food@0.2.0', 'pharma@0.2.0']);
+    for (const p of registry.list()) {
+      expect([p.clauses.length, p.controls.length, p.evalCases.length], p.id).toEqual(COUNTS[p.id as keyof typeof COUNTS]);
+      for (const c of [...p.clauses, ...p.controls]) {
+        expect(c.trust, c.id).toMatchObject({ verifiedBy: null, status: 'active', staleAfter: '2027-10-11' });
+        expect(c.trust!.sourcePath.startsWith(`${p.id}/`)).toBe(true);
+      }
+      expect(p.clauses.every((c) => c.reviewStatus === 'draft')).toBe(true);
+    }
+  });
+
+  it('refuses a stray pack.json inside a bundle', () => {
+    const root = demoRoot((f) => f.set('pack.json', '{}'));
+    expect(() => loadBundle(root, 'demo')).toThrow(/demo\/pack\.json: not part of an OKF bundle/);
+  });
 });

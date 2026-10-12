@@ -7,7 +7,7 @@ import { loadConfig, loadDotEnv } from './config';
 import { connectPg } from './db';
 import { pendingMigrations } from './db/migrate';
 import { createProvider } from './engine/llm/router';
-import { PackRegistry } from './engine/packs';
+import { registryFromBundles } from './knowledge/packs';
 import { AuditService } from './service';
 
 async function main() {
@@ -38,7 +38,7 @@ async function main() {
   }
   const oidc = auth.oidc ? await createOidcClient(auth.oidc) : null;
   if (oidc) console.log(`Sign-in via ${auth.oidc!.issuer}`);
-  const registry = PackRegistry.loadFromDir(config.packsDir);
+  const registry = registryFromBundles(config.packsDir);
   const svc = new AuditService(db, registry, createProvider());
   createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }).listen(config.port, () => {
     console.log(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);

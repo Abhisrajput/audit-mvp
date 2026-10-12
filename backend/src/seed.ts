@@ -2,7 +2,7 @@ import { loadConfig, loadDotEnv } from './config';
 import { connectPg } from './db';
 import { listEngagements } from './db/engagement-repo';
 import { createProvider } from './engine/llm/router';
-import { PackRegistry } from './engine/packs';
+import { registryFromBundles } from './knowledge/packs';
 import { DEV_USERS } from './auth/dev-users';
 import { AuditService } from './service';
 
@@ -19,7 +19,7 @@ async function main() {
     if ((await listEngagements(db.kysely)).length) {
       throw new Error('Database already has engagements. Seed only an empty database (locally: docker compose down -v, then migrate).');
     }
-    const svc = new AuditService(db, PackRegistry.loadFromDir(), createProvider());
+    const svc = new AuditService(db, registryFromBundles(), createProvider());
     const [auditor, reviewer, approver] = DEV_USERS;
 
     async function build(meta: Parameters<AuditService['createEngagement']>[0], fields: Field[], approveFirst: number) {
