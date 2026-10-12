@@ -15,6 +15,8 @@ export interface GenerateResult<T> {
   output: T;
   /** Model that actually served the request (may differ after a fallback). */
   servedModel: string;
+  /** Tokens the call used, when the provider reports them (metrics only). */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface LlmProvider {

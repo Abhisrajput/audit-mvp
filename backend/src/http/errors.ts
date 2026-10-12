@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppError, type ErrorCode } from '../errors';
 import { UPLOAD_PATH } from '../knowledge/routes';
 import { logger } from '../observability/log';
+import { httpErrors } from '../observability/metrics';
 
 type PgResponse = { status: number; code: ErrorCode; message: string };
 
@@ -34,20 +35,32 @@ export function pgErrorResponse(err: unknown): PgResponse | null {
 export function errorHandler(): ErrorRequestHandler {
   return (err, req, res, _next) => {
     const requestId = req.requestId;
-    if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code, requestId });
-    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', code: 'VALIDATION', requestId, issues: err.issues });
+    if (err instanceof AppError) {
+      httpErrors.inc({ code: err.code });
+      return res.status(err.status).json({ error: err.message, code: err.code, requestId });
+    }
+    if (err instanceof z.ZodError) {
+      httpErrors.inc({ code: 'VALIDATION' });
+      return res.status(400).json({ error: 'Invalid request', code: 'VALIDATION', requestId, issues: err.issues });
+    }
     const type = (err as { type?: string } | null)?.type;
     if (type === 'entity.too.large') {
+      httpErrors.inc({ code: 'VALIDATION' });
       const upload = req.path.toLowerCase().startsWith(UPLOAD_PATH);
       return res.status(413).json({ error: upload ? 'The file is larger than the upload limit' : 'The request body is larger than the limit', code: 'VALIDATION', requestId });
     }
-    if (type === 'entity.parse.failed') return res.status(400).json({ error: 'The request body is not valid JSON', code: 'VALIDATION', requestId });
+    if (type === 'entity.parse.failed') {
+      httpErrors.inc({ code: 'VALIDATION' });
+      return res.status(400).json({ error: 'The request body is not valid JSON', code: 'VALIDATION', requestId });
+    }
     const pg = pgErrorResponse(err);
     if (pg) {
+      httpErrors.inc({ code: pg.code });
       const e = err as { code: string; detail?: string; constraint?: string; table?: string; message: string };
       logger.warn({ requestId, pg: { code: e.code, message: e.message, detail: e.detail, constraint: e.constraint, table: e.table } }, 'database refused the request');
       return res.status(pg.status).json({ error: pg.message, code: pg.code, requestId });
     }
+    httpErrors.inc({ code: 'INTERNAL' });
     logger.error({ requestId, err }, 'unexpected error');
     res.status(500).json({ code: 'INTERNAL', requestId });
   };

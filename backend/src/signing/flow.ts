@@ -3,6 +3,7 @@ import { recordIdentityEvent } from '../auth/identity-trail';
 import type { DB } from '../db/schema';
 import type { User } from '../engine/types';
 import { AppError, type ErrorCode } from '../errors';
+import { signatureFailures } from '../observability/metrics';
 import type { AuditService } from '../service';
 import { claimIntent, finishIntent, getIntent, type SignIntent } from './intent-repo';
 
@@ -42,6 +43,7 @@ export async function failIntent(
       await recordReplay(trx, intent, actor, code, message);
     }
   });
+  signatureFailures.inc({ code });
   return { ok: false, code, message };
 }
 

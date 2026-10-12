@@ -6,6 +6,7 @@ import { loadServerConfig, prepareEnv } from './config';
 import { connectPg } from './db';
 import { pendingMigrations } from './db/migrate';
 import { createProvider } from './engine/llm/router';
+import { instrumentProvider } from './observability/llm';
 import { loadBundles } from './knowledge/okf/bundle';
 import { prepareRegistry } from './knowledge/packs';
 import { logger, setLogLevel } from './observability/log';
@@ -48,8 +49,9 @@ async function main() {
   if (citationPolicy.allowUnverified) {
     logger.warn('ALLOW_UNVERIFIED_CITATIONS is on: findings may cite knowledge no reviewer has verified (flagged, not blocked). Never use this in production.');
   }
-  const svc = new AuditService(db, registry, createProvider(), { citationPolicy });
-  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }, { trustProxy: config.trustProxy }).listen(config.port, () => {
+  if (!config.metricsToken) logger.warn('METRICS_TOKEN is not set: /metrics is open. Set it outside local development.');
+  const svc = new AuditService(db, registry, instrumentProvider(createProvider()), { citationPolicy });
+  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }, { trustProxy: config.trustProxy, metricsToken: config.metricsToken }).listen(config.port, () => {
     logger.info(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);
   });
 }

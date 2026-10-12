@@ -64,6 +64,10 @@ services:
     # Bound to this machine only: demo sign-in (DEV_AUTH=true) must never be reachable by others.
     ports:
       - '127.0.0.1:3002:3002'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO', '/dev/null', 'http://127.0.0.1:3002/readyz']
+      interval: 5s
+      retries: 30
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -77,7 +81,8 @@ services:
     ports:
       - '127.0.0.1:8080:80'
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   # Local OpenID provider for testing real sign-in: docker compose --profile sso up -d keycloak
   # Run the API on the host (npm run dev) so the browser and the API see the same issuer URL.

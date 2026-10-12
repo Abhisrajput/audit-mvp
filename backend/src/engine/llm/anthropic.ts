@@ -34,6 +34,10 @@ export class AnthropicProvider implements LlmProvider {
     if (response.parsed_output == null) {
       throw new ProviderError('Model output did not match the required schema.');
     }
-    return { output: response.parsed_output as T, servedModel: response.model };
+    return {
+      output: response.parsed_output as T,
+      servedModel: response.model,
+      usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
+    };
   }
 }

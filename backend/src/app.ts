@@ -10,6 +10,8 @@ import { DEFAULT_RATE_LIMITS, rateLimiters, securityHeaders, type RateLimits } f
 import { documentRoutes, UPLOAD_PATH, type StorageDeps } from './knowledge/routes';
 import { requestContext } from './observability/context';
 import { accessLog } from './observability/log';
+import { httpMetrics } from './observability/metrics';
+import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { wrap } from './http-util';
@@ -51,12 +53,16 @@ const FindingPatchSchema = z
 /** Routes that parse their own bodies (see documentRoutes). */
 const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
 
-/** Operational settings; Task 4 adds metrics. */
+/** Operational settings. */
 export interface OpsOptions {
   /** Proxy hops to trust (TRUST_PROXY); above 0, a forwarded X-Request-Id is reused. */
   trustProxy?: number;
   /** Per-client request limits; tests lower them. */
   rateLimits?: RateLimits;
+  /** Bearer token for /metrics; null leaves it open (local development). */
+  metricsToken?: string | null;
+  /** Per-check readiness timeout in ms (default 2000); tests lower it. */
+  probeTimeoutMs?: number;
 }
 
 export function createApp(
@@ -70,7 +76,9 @@ export function createApp(
   app.set('trust proxy', ops.trustProxy ?? 0);
   app.use(requestContext({ trustProxy: ops.trustProxy ?? 0 }));
   app.use(accessLog());
+  app.use(httpMetrics());
   app.use(securityHeaders());
+  app.use(probeRoutes({ db: svc.db, blobs: storage.blobs, metricsToken: ops.metricsToken ?? null, timeoutMs: ops.probeTimeoutMs }));
   const limits = rateLimiters(ops.rateLimits ?? DEFAULT_RATE_LIMITS);
   app.use('/auth', limits.auth);
   app.use('/auth/sign', limits.signing);

@@ -1,6 +1,7 @@
 import type { RequestHandler } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import { httpErrors } from '../observability/metrics';
 
 // Spec §7.6. The API answers JSON and a few tiny HTML pages (sign-in and signing pop-ups), so its policy
 // allows nothing by default; those pages replace it with a per-response script nonce (auth/page.ts).
@@ -39,6 +40,7 @@ export function rateLimiters(limits: RateLimits) {
       // A forwarded header without a trusted proxy is ignored on purpose (the socket address is used); don't warn about it.
       validate: { xForwardedForHeader: false },
       handler: (req, res) => {
+        httpErrors.inc({ code: 'RATE_LIMITED' });
         res.status(429).json({ error: 'Too many requests; wait a minute and try again', code: 'RATE_LIMITED', requestId: req.requestId });
       },
     });
