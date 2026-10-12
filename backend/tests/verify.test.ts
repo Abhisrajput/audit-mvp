@@ -76,6 +76,23 @@ describe('verify', () => {
     ]));
   });
 
+  it('reports signature rows deleted behind the application, even when the engagement has none left [REQ-24]', async () => {
+    const s = await restoredSystem();
+    const k = s.db.kysely;
+    const rows = await k.selectFrom('signatures').select(['id', 'trail_bundle_id']).execute();
+    expect(rows).toHaveLength(2);
+    await sql`ALTER TABLE signatures DISABLE TRIGGER signatures_append_only`.execute(k);
+    await sql`DELETE FROM signatures`.execute(k);
+
+    const report = await verifyIntegrity(k, s.blobs);
+    expect(report.ok).toBe(false);
+    expect(report.signatures.checked).toBe(0);
+    expect(report.signatures.problems).toEqual(expect.arrayContaining([
+      ...rows.map((r) => `Trail entry ${r.trail_bundle_id} records signature ${r.id} (finding ${s.fid}), but the signature row is missing`),
+      expect.stringMatching(new RegExp(`^Finding ${s.fid} in ${s.engagementId}: `)),
+    ]));
+  });
+
   it('prints one JSON report and exits 1 when anything is wrong [REQ-24]', async () => {
     const s = await restoredSystem();
     const run = () => spawnSync('npx', ['tsx', 'src/db/cli.ts', 'verify'], {

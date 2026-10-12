@@ -54,12 +54,17 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
       out?.contentHash !== s.content_hash || out?.userId !== s.user_id || out?.meaning !== s.meaning
     ) problems.push(`${label}: does not match its trail entry`);
   }
-  for (const engagementId of new Set(rows.map((r) => r.engagement_id))) {
-    const loaded = await loadEngagement(db, engagementId);
-    if (!loaded) {
-      problems.push(`Engagement ${engagementId} has signatures but no longer exists`);
-      continue;
+  const rowIds = new Set(rows.map((r) => r.id));
+  for (const b of trail) {
+    const out = b.output as Partial<SignOff> | undefined;
+    if (b.moduleId === 'human:sign-off' && out?.signatureId && !rowIds.has(out.signatureId)) {
+      problems.push(`Trail entry ${b.id} records signature ${out.signatureId} (finding ${(b.inputs as { findingId?: string } | null)?.findingId ?? 'unknown'}), but the signature row is missing`);
     }
+  }
+  const engagementIds = (await db.selectFrom('engagements').select('id').orderBy('id').execute()).map((r) => r.id);
+  for (const engagementId of engagementIds) {
+    const loaded = await loadEngagement(db, engagementId);
+    if (!loaded) continue;
     const shown = withSignatureStatus(loaded.engagement, await listSignatures(db, engagementId), await lastRevisionTimes(db, engagementId));
     for (const f of shown.findings) {
       for (const so of f.signOffs) {
