@@ -1,63 +1,7 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { z } from 'zod';
 import type { Clause, ContentPack, Control } from './types';
 
-// Content packs are data, not code: a new vertical or regulation set is added by
-// dropping a pack.json into packs/<id>/. The schema below is the contract.
-
-const ClauseSchema = z.object({
-  id: z.string().min(1),
-  regulation: z.string().min(1),
-  ref: z.string().min(1),
-  title: z.string().min(1),
-  summary: z.string().min(1),
-  tags: z.array(z.string()),
-  reviewStatus: z.enum(['draft', 'expert-reviewed']),
-  sourceUrl: z.string().optional(),
-});
-
-const ControlSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  processArea: z.string().min(1),
-  objective: z.string().min(1),
-  risk: z.string().min(1),
-  riskRating: z.enum(['High', 'Medium', 'Low']),
-  type: z.enum(['Preventive', 'Detective']),
-  nature: z.enum(['Manual', 'Automated', 'IT-dependent manual']),
-  frequency: z.enum(['Annual', 'Quarterly', 'Monthly', 'Weekly', 'Daily', 'Per event', 'Per batch']),
-  clauseRefs: z.array(z.string()).min(1),
-  testOfDesign: z.array(z.string()).min(1),
-  testOfEffectiveness: z.array(z.string()).min(1),
-  evidenceExpected: z.array(z.string()).min(1),
-  checklist: z.array(z.string()),
-  recommendation: z.string().min(1),
-  keywords: z.array(z.string()),
-});
-
-const EvalCaseSchema = z.object({
-  id: z.string(),
-  kind: z.enum(['retrieval', 'testing', 'gaps']),
-  description: z.string(),
-  input: z.record(z.string(), z.unknown()),
-  expected: z.record(z.string(), z.unknown()),
-});
-
-const PackSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  version: z.string().min(1),
-  vertical: z.string().min(1),
-  description: z.string(),
-  disclaimer: z.string(),
-  sources: z.record(z.string(), z.string()).default({}),
-  clauses: z.array(ClauseSchema),
-  controls: z.array(ControlSchema),
-  evalCases: z.array(EvalCaseSchema).default([]),
-});
-
-export const DEFAULT_PACKS_DIR = path.resolve(__dirname, '../../packs');
+// The loaded content packs, indexed for the engine. Packs are OKF bundles compiled into the
+// knowledge graph (src/knowledge); this class only indexes them and checks cross-references.
 
 export class PackRegistry {
   readonly packs = new Map<string, ContentPack>();
@@ -67,20 +11,6 @@ export class PackRegistry {
   constructor(packs: ContentPack[]) {
     for (const pack of packs) this.add(pack);
     this.checkReferences();
-  }
-
-  static loadFromDir(dir = DEFAULT_PACKS_DIR): PackRegistry {
-    const packs: ContentPack[] = [];
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const file = path.join(dir, entry.name, 'pack.json');
-      if (!entry.isDirectory() || !fs.existsSync(file)) continue;
-      const parsed = PackSchema.safeParse(JSON.parse(fs.readFileSync(file, 'utf8')));
-      if (!parsed.success) {
-        throw new Error(`Invalid content pack ${file}: ${parsed.error.message}`);
-      }
-      packs.push(parsed.data as ContentPack);
-    }
-    return new PackRegistry(packs);
   }
 
   private add(pack: ContentPack) {

@@ -57,6 +57,7 @@ cd backend
 cp .env.example .env   # then set DATABASE_URL to use your POSTGRES_PASSWORD
 npm install
 npm run migrate     # apply SQL migrations; the API never migrates by itself
+npm run packs:compile  # compile the content packs into the knowledge graph (dev also compiles at API start-up)
 npm run seed        # two demo engagements (empty database only): food+treasury, and pharma GMP
 npm run dev
 
@@ -67,7 +68,7 @@ npm run dev         # open http://localhost:5174
 ```
 
 Or run everything with Docker: `cp .env.example .env` (then set `POSTGRES_PASSWORD`, `S3_ROOT_ACCESS_KEY` and `S3_ROOT_SECRET_KEY`), then `docker compose up --build` from the repo root.
-Compose starts Postgres and the object store (SeaweedFS, S3-compatible), runs migrations and creates the storage bucket once
+Compose starts Postgres and the object store (SeaweedFS, S3-compatible), runs migrations and compiles the content packs into the knowledge graph (`migrate`), and creates the storage bucket once
 (`objectstore-init`), then starts the API and the UI on
 http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
 To reset the local database and stored files: `docker compose down -v`.
@@ -239,25 +240,64 @@ Microsoft-first clients, add a provider for Azure OpenAI, or for Claude on
 Microsoft Foundry, behind the same `LlmProvider` interface in
 `backend/src/engine/llm/provider.ts`.
 
-## Adding a sector or regulation
+## Content packs and the knowledge graph
 
-Create `backend/packs/<id>/pack.json` with:
+A pack is an OKF Markdown bundle under `backend/packs/<id>/`: `pack.md`, `clauses/`,
+`controls/`, `eval/` (and optionally `regulations/`, `risks/`). Each file starts with YAML
+frontmatter; the audit-specific fields sit under one `x_audit` key. No engine code changes
+are needed to add a sector or regulation. A trimmed control:
 
-- `clauses`: id, regulation, ref, title, paraphrased summary, tags and `reviewStatus`.
-- `controls`: risk, objective, frequency, `clauseRefs`, TOD/TOE steps, evidence,
-  checklist and recommendation.
-- `evalCases`: expected retrieval hits, test conclusions and finding citations.
-- `sources`: short citation prefixes.
+```markdown
+---
+type: control
+title: Audit and control deficiencies tracked to closure
+sources:
+  - ref: /clauses/coso-p17.md
+verified: null
+status: active
+stale_after: 2027-10-11
+x_audit:
+  id: CMN-GOV-01
+  risk_rating: Medium
+  frequency: Quarterly
+  clause_refs: [COSO-P17]
+---
+## Objective
+Agreed management actions are tracked, validated and closed on time.
+```
 
-The pack is schema-validated on load, and a control that cites an unknown clause is
-rejected. No engine code changes are needed.
+- **Ids and file names.** The concept id is `x_audit.id`, and the file is `<slug>.md` where
+  the slug is the lower-cased id with other characters as hyphens (`CMN-GOV-01` is
+  `cmn-gov-01.md`). Links between concepts are pack-relative (`/clauses/<slug>.md`) and must
+  resolve inside the same pack. A control's `x_audit.clause_refs` must match its `sources`.
+- **Change control.** Edit the Markdown in a pull request and bump `x_audit.version` in
+  `pack.md` with every change; compile refuses changed content under an old version.
+  `npm run packs:compile` (in the container: `node dist/knowledge/packs-cli.js compile`) is a
+  release step like `migrate`. Production never compiles at start-up, and refuses to start
+  when the graph doesn't match the bundles in the release.
+- **Verification.** A reviewer sets `verified: { by, role, at }` and a `stale_after` date.
+  Only verified, active and current concepts are citable: an unverified source blocks a
+  finding, a stale one is flagged. `ALLOW_UNVERIFIED_CITATIONS=true` flags instead of
+  blocking, outside production only (start-up refuses it in production). It is on in Compose
+  and `backend/.env.example`, because the MVP packs are unreviewed drafts; expert review of the
+  target pack is a pilot prerequisite. The admin page lists what is due for re-review, and
+  the library shows each concept's verification, re-review date and bundle file.
+- **History.** Every compile is written to the audit trail (`knowledge:compile`), and every
+  compiled version of every concept is kept in `kg_node_versions`.
+- **Legacy packs.** `npm run packs:migrate` converted the MVP `pack.json` files once, and is
+  kept for anyone holding packs in that format.
+- **Search.** `GET /api/knowledge/search` returns documents and library concepts together.
+  Each concept hit carries its bundle file and whether it is citable. Recording each search
+  in the audit trail (spec §6.5) is deferred to a later sub-project.
 
 ## Checks
 
 ```bash
 cd backend
 npm test              # needs Docker: tests run against a real Postgres (Testcontainers)
-npm run eval          # 25/25 eval cases (offline), on a throwaway in-process database
+npm run eval          # 25/25 eval cases (offline), on a throwaway in-process database;
+                      # needs ALLOW_UNVERIFIED_CITATIONS=true until the packs are verified (the report header records it)
+npm run packs:compile # compile the OKF bundles into the knowledge graph (a release step)
 npm run traceability  # requirements traceability matrix -> validation-output/traceability.md
 npm run verify        # recompute the audit-trail hash chain in the configured database
 npm run typecheck

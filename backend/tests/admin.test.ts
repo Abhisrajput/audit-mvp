@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { getUser } from '../src/auth/user-repo';
 import { readTrail } from '../src/db/trail-repo';
+import { compilePacks } from '../src/knowledge/graph/compile';
+import { loadBundle } from '../src/knowledge/okf/bundle';
 import { appWithDevUsers, failTrailWrites, signIn } from './http';
+import { demoRoot } from './okf-fixtures';
 
 describe('administration', () => {
   it('is for admins only', async () => {
@@ -123,5 +126,34 @@ describe('administration', () => {
     expect((await admin.post('/api/admin/users/auditor/revoke-sessions')).status).toBe(500);
     await auditor.get('/api/me').expect(200);
     expect((await readTrail(svc.db.kysely)).map((b) => b.moduleId)).toEqual(['identity:login', 'identity:login']);
+  });
+});
+
+describe('knowledge due for re-review', () => {
+  it('lists unverified and stale concepts for admins, metadata only [REQ-22]', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const verify = (text: string, staleAfter: string) =>
+      text.replace('verified: null', 'verified:\n  by: Dr Rao\n  role: QA SME\n  at: 2026-10-01').replace(/stale_after: .*/, `stale_after: ${staleAfter}`);
+    const root = demoRoot((f) => {
+      f.set('clauses/ds-1.md', verify(f.get('clauses/ds-1.md')!, '2099-01-01'));
+      f.set('clauses/ds-2.md', verify(f.get('clauses/ds-2.md')!, yesterday));
+      // Far-future re-review date, so this row stays "unverified only" whatever the wall clock says.
+      f.set('controls/dm-01.md', f.get('controls/dm-01.md')!.replace(/stale_after: .*/, 'stale_after: 2099-06-30'));
+    });
+    await compilePacks(svc.db, [loadBundle(root, 'demo')]);
+
+    for (const id of ['auditor', 'reviewer', 'approver', 'viewer']) {
+      expect((await (await signIn(app, id)).get('/api/admin/knowledge/due')).status).toBe(403);
+    }
+    const due = (await (await signIn(app, 'admin')).get('/api/admin/knowledge/due').expect(200)).body;
+    expect(due).toEqual([
+      { nodeId: 'demo/clause/ds-2', conceptId: 'DS-2', type: 'clause', packId: 'demo', packVersion: '0.2.0', title: 'Records',
+        sourcePath: 'demo/clauses/ds-2.md', verifiedBy: 'Dr Rao', verifiedAt: '2026-10-01', staleAfter: yesterday, reasons: ['stale'] },
+      { nodeId: 'demo/control/dm-01', conceptId: 'DM-01', type: 'control', packId: 'demo', packVersion: '0.2.0', title: 'Records are reviewed',
+        sourcePath: 'demo/controls/dm-01.md', verifiedBy: null, verifiedAt: null, staleAfter: '2099-06-30', reasons: ['unverified'] },
+    ]);
+    // Admins manage access, not audit content: no bodies, descriptions or attributes.
+    expect(Object.keys(due[0]).sort()).toEqual(['conceptId', 'nodeId', 'packId', 'packVersion', 'reasons', 'sourcePath', 'staleAfter', 'title', 'type', 'verifiedAt', 'verifiedBy']);
   });
 });

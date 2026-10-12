@@ -19,6 +19,7 @@ import { ModuleContext, type Grounding } from './engine/module';
 import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
+import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
@@ -63,6 +64,11 @@ export interface UnattendedSigning {
 
 type Emit = (bundle: UnsealedBundle) => void;
 
+export interface ServiceOptions {
+  /** Defaults to STRICT_CITATIONS: unverified knowledge blocks release. */
+  citationPolicy?: CitationPolicy;
+}
+
 /** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
 class NoChange {
   constructor(readonly finding: Finding) {}
@@ -70,8 +76,10 @@ class NoChange {
 
 export class AuditService {
   readonly grounding: Grounding;
+  readonly citationPolicy: CitationPolicy;
 
-  constructor(readonly db: Db, readonly registry: PackRegistry, readonly llm: LlmProvider | null) {
+  constructor(readonly db: Db, readonly registry: PackRegistry, readonly llm: LlmProvider | null, opts: ServiceOptions = {}) {
+    this.citationPolicy = opts.citationPolicy ?? STRICT_CITATIONS;
     this.grounding = {
       clauses: new Bm25Index([...registry.clauses.values()].map((c) => ({ id: c.id, text: clauseText(c) }))),
       controls: new Bm25Index([...registry.controls.values()].map((c) => ({ id: c.id, text: controlText(c) }))),
@@ -178,7 +186,7 @@ export class AuditService {
       // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
       // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
       const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id), await lastRevisionTimes(trx, e.id)) : e;
-      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input);
+      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
       ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
       const output = await mod.run(ctx);
       ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
@@ -276,7 +284,7 @@ export class AuditService {
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
-      const { finding, actions } = findingCitationGate(this.registry, edited, allowed);
+      const { finding, actions } = findingCitationGate(this.registry, edited, allowed, this.citationPolicy);
       e.findings[idx] = finding;
       emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));
       return finding;
@@ -285,20 +293,35 @@ export class AuditService {
   }
 
   /** Who may sign what, and what signing does. The same checks guard the signing request and the signature itself. */
-  private signOffGuard(f: Finding, action: SignAction, actor: User): { meaning: SignOff['meaning']; status: Finding['status'] } {
+  private signOffGuard(f: Finding, action: SignAction, actor: User): { meaning: SignOff['meaning']; status: Finding['status']; trust: QaAction[] } {
     if (f.status === 'blocked') throw new AppError(409, `Finding is blocked by QA gates: ${f.blockedReasons.join('; ')}`, 'FINDING_BLOCKED');
     const preparedBy = f.preparedBy ?? [];
     if (action === 'review') {
       this.require(actor, REVIEWER_ROLES, 'review findings');
       if (f.status !== 'draft') throw new AppError(409, `Only draft findings can be reviewed (status ${f.status})`);
       if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must review it', 'SOD_VIOLATION');
-      return { meaning: 'Reviewed', status: 'reviewed' };
+      return { meaning: 'Reviewed', status: 'reviewed', trust: [] };
     }
     this.require(actor, APPROVER_ROLES, `${action} findings`);
     if (f.status !== 'reviewed') throw new AppError(409, 'Finding must be reviewed before approval or rejection');
     if (preparedBy.includes(actor.id)) throw new AppError(403, 'You prepared this finding, so someone else must approve it', 'SOD_VIOLATION');
     if (f.signOffs.some((s) => s.userId === actor.id)) throw new AppError(403, 'Approver must differ from reviewer', 'SOD_VIOLATION');
-    return action === 'approve' ? { meaning: 'Approved', status: 'approved' } : { meaning: 'Rejected', status: 'rejected' };
+    if (action === 'reject') return { meaning: 'Rejected', status: 'rejected', trust: [] };
+    // Approval is the release (REQ-22): trust is checked again against today's library and policy.
+    const trust = this.approvalTrust(f);
+    const blocked = trust.filter((a) => a.action === 'blocked');
+    if (blocked.length) throw new AppError(409, `Finding is blocked by QA gates: ${blocked.map((a) => a.detail).join('; ')}`, 'FINDING_BLOCKED');
+    return { meaning: 'Approved', status: 'approved', trust };
+  }
+
+  /** Trust gate actions for a finding's clauses and control; a concept no longer in the library counts as unverified. */
+  private approvalTrust(f: Finding): QaAction[] {
+    const clauseIds = f.citations.map((c) => c.clauseId);
+    const current = {
+      clauses: new Map(clauseIds.map((id) => [id, this.registry.clauses.get(id) ?? { id }])),
+      controls: new Map([[f.controlId, this.registry.controls.get(f.controlId) ?? { id: f.controlId }]]),
+    } as unknown as PackRegistry;
+    return trustActions(current, f.id, { clauseIds, controlId: f.controlId }, this.citationPolicy);
   }
 
   /** Checks a signature would be allowed, before the signer is asked to re-authenticate; returns the content to bind. */
@@ -330,7 +353,7 @@ export class AuditService {
       if (reauthed && reauthed.contentHash !== contentHash) {
         throw new AppError(409, 'The finding changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
       }
-      const { meaning, status } = this.signOffGuard(f, action, actor);
+      const { meaning, status, trust } = this.signOffGuard(f, action, actor);
       f.status = status;
 
       // Signature manifestation (§11.50) bound to the signed content (§11.70).
@@ -341,7 +364,7 @@ export class AuditService {
         signatureId: `SIG-${crypto.randomBytes(6).toString('hex')}`, contentHash, reauth,
       };
       f.signOffs.push(sig);
-      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig);
+      const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig, trust);
       emit(bundle);
       await insertSignature(trx, {
         id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,

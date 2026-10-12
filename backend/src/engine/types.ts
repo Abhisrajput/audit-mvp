@@ -5,6 +5,21 @@
 export type RiskRating = 'High' | 'Medium' | 'Low';
 export type ReviewStatus = 'draft' | 'expert-reviewed';
 
+/** Where a library concept came from and whether a person has verified it (plan 1E, spec §6.4). */
+export interface ConceptTrust {
+  /** Knowledge-graph node id, e.g. "pharma/clause/21cfr211-22". */
+  nodeId: string;
+  verifiedBy: string | null;
+  verifiedRole: string | null;
+  /** 'YYYY-MM-DD' */
+  verifiedAt: string | null;
+  status: 'active' | 'deprecated';
+  /** 'YYYY-MM-DD': on and after this date the concept is due for re-review and no longer citable. */
+  staleAfter: string | null;
+  /** Bundle file relative to the packs directory, e.g. "pharma/clauses/21cfr211-22.md". */
+  sourcePath: string;
+}
+
 /** One clause of a regulation or standard, indexed for grounding and citation. */
 export interface Clause {
   id: string; // globally unique, e.g. "21CFR211.192"
@@ -15,6 +30,7 @@ export interface Clause {
   tags: string[];
   reviewStatus: ReviewStatus;
   sourceUrl?: string;
+  trust?: ConceptTrust;
 }
 
 export interface Control {
@@ -34,6 +50,7 @@ export interface Control {
   checklist: string[];
   recommendation: string;
   keywords: string[];
+  trust?: ConceptTrust;
 }
 
 export type Frequency =

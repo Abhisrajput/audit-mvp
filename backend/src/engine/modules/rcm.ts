@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { rcmCitationGate, toCitation } from '../qa';
+import { trustActions } from '../trust';
 import type { Citation, Frequency, RcmRow, RiskRating } from '../types';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
@@ -92,6 +93,7 @@ export const rcmModule: AuditModule<RcmRow[]> = {
     for (const r of rows) {
       const action = rcmCitationGate(ctx.registry, r);
       ctx.gate(action);
+      ctx.gate(...trustActions(ctx.registry, r.id, { clauseIds: r.citations.map((c) => c.clauseId), controlId: r.controlId }, ctx.policy));
       if (action.action !== 'blocked') released.push(r);
     }
     return released;

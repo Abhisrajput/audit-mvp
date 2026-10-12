@@ -15,10 +15,11 @@ services:
       retries: 30
 
   # Migrations are a separate one-shot step; the API never migrates on start-up.
+  # Release steps: apply migrations, then compile the content packs into the knowledge graph.
   migrate:
     image: audit-platform-backend:local
     build: ./backend
-    command: ['node', 'dist/db/cli.js', 'migrate']
+    command: ['sh', '-c', 'node dist/db/cli.js migrate && node dist/knowledge/packs-cli.js compile']
     environment:
       DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
     depends_on:
@@ -32,9 +33,11 @@ services:
     environment:
       PORT: '3002'
       DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
-      # Local demo defaults. A real deployment sets NODE_ENV=production, DEV_AUTH=false and the OIDC_* settings.
+      # Local demo defaults. A real deployment sets NODE_ENV=production, DEV_AUTH=false, ALLOW_UNVERIFIED_CITATIONS=false (start-up refuses true in production) and the OIDC_* settings.
       NODE_ENV: ${NODE_ENV:-development}
       DEV_AUTH: ${DEV_AUTH:-true}
+      # Demo only: the packs are unreviewed drafts (refused when NODE_ENV=production)
+      ALLOW_UNVERIFIED_CITATIONS: ${ALLOW_UNVERIFIED_CITATIONS:-true}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}

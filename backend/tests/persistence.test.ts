@@ -9,7 +9,7 @@ import { readTrail } from '../src/db/trail-repo';
 import { verifyChain } from '../src/engine/trail';
 import { AuditService } from '../src/service';
 import { emptyDb, testDb } from './db';
-import { auditor, engagementWithFailedControl, newService, registry, reviewer, unattended } from './helpers';
+import { auditor, engagementWithFailedControl, LENIENT, newService, registry, reviewer, unattended } from './helpers';
 
 /** Builds an MVP-format db.json (engagements + trail + evalRuns) from a real run. */
 async function mvpExport() {
@@ -35,7 +35,7 @@ describe('import-json', () => {
     expect(verifyChain(imported).valid).toBe(true);
 
     // The imported engagement is live: work continues on top of the imported chain.
-    const svc = new AuditService(target, registry, null);
+    const svc = new AuditService(target, registry, null, LENIENT);
     await svc.setScope(data.engagements[0].id, [{ controlId: 'FD-HACCP-03', included: true }], auditor);
     expect((await svc.verifyTrail()).valid).toBe(true);
   });

@@ -199,10 +199,16 @@ describe('document registry', () => {
       await expect(sql`TRUNCATE ${sql.table(table)} CASCADE`.execute(db)).rejects.toThrow(/append-only: TRUNCATE/);
     }
 
-    // Knowledge-graph chunks (plan 1E) are not document chunks and stay editable for now.
-    await db.insertInto('chunks').values({ id: 'KG-1:0', document_id: null, kg_node_id: 'KG-1', ordinal: 0, page: null, text: 'node', classification: 'internal', engagement_id: null }).execute();
-    await db.updateTable('chunks').set({ text: 'node v2' }).where('id', '=', 'KG-1:0').execute();
-    await db.deleteFrom('chunks').where('id', '=', 'KG-1:0').execute();
+    // Knowledge-graph chunks are not document chunks: compile rewrites them (plan 1E).
+    await db.insertInto('kg_nodes').values({
+      id: 'p/clause/kg-1', type: 'clause', pack_id: 'p', pack_version: '0.2.0', concept_id: 'KG-1', title: 'T',
+      description: null, body: '', tags: '[]', attrs: '{}', generated: null, verified_by: null, verified_role: null,
+      verified_at: null, status: 'active', stale_after: null, source_path: 'p/clauses/kg-1.md',
+      source_sha256: 'c'.repeat(64), classification: 'internal',
+    }).execute();
+    await db.insertInto('chunks').values({ id: 'KG:p/clause/kg-1:0', document_id: null, kg_node_id: 'p/clause/kg-1', ordinal: 0, page: null, text: 'node', classification: 'internal', engagement_id: null }).execute();
+    await db.updateTable('chunks').set({ text: 'node v2' }).where('id', '=', 'KG:p/clause/kg-1:0').execute();
+    await db.deleteFrom('chunks').where('id', '=', 'KG:p/clause/kg-1:0').execute();
   });
 
   it('runs the same migrations on the in-process database used by eval', async () => {

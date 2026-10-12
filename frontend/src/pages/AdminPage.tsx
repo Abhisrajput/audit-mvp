@@ -26,18 +26,37 @@ interface AdminSettings {
   session: { idleMinutes: number; maxHours: number };
 }
 
+interface DueConcept {
+  nodeId: string;
+  conceptId: string;
+  type: string;
+  packId: string;
+  packVersion: string;
+  title: string;
+  sourcePath: string;
+  verifiedBy: string | null;
+  verifiedAt: string | null;
+  staleAfter: string | null;
+  reasons: ('unverified' | 'stale')[];
+}
+
 const ROLE_OPTIONS: Role[] = ['auditor', 'audit_manager', 'cae', 'admin', 'viewer'];
 
 export default function AdminPage() {
   const { user } = useSession();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [settings, setSettings] = useState<AdminSettings | null>(null);
+  // null until loaded: a failed request must never read as "everything is verified".
+  const [due, setDue] = useState<DueConcept[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => api<AdminUser[]>('/admin/users').then(setUsers), []);
   useEffect(() => {
     load();
     api<AdminSettings>('/admin/settings').then(setSettings);
+    api<DueConcept[]>('/admin/knowledge/due')
+      .then(setDue)
+      .catch((e) => setError(`Could not load knowledge due for re-review: ${e instanceof Error ? e.message : String(e)}`));
   }, [load]);
 
   const patch = async (id: string, body: { role?: Role | null; active?: boolean }) => {
@@ -121,6 +140,50 @@ export default function AdminPage() {
             })}
           </TableBody>
         </Table>
+      </Card>
+      <Card variant="outlined">
+        <CardContent>
+          <Typography variant="h6" fontSize={16}>
+            Knowledge due for re-review{due ? ` (${due.length})` : ''}
+          </Typography>
+          {due === null ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Not loaded.
+            </Typography>
+          ) : due.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Every library concept is verified and current.
+            </Typography>
+          ) : (
+            <Table size="small" sx={{ mt: 1 }}>
+              <TableHead>
+                <TableRow>
+                  {['ID', 'Title', 'Pack', 'Reason', 'Re-review by', 'Source file'].map((h) => (
+                    <TableCell key={h}>{h}</TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {due.map((d) => (
+                  <TableRow key={d.nodeId}>
+                    <TableCell sx={{ fontFamily: 'monospace' }}>{d.conceptId}</TableCell>
+                    <TableCell>{d.title}</TableCell>
+                    <TableCell>{d.packId}@{d.packVersion}</TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5}>
+                        {d.reasons.map((r) => (
+                          <Chip key={r} size="small" color={r === 'stale' ? 'error' : 'warning'} label={r} />
+                        ))}
+                      </Stack>
+                    </TableCell>
+                    <TableCell>{d.staleAfter ?? '—'}</TableCell>
+                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>{d.sourcePath}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
       </Card>
       {settings && (
         <Card variant="outlined">

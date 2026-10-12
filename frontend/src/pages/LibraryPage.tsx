@@ -3,7 +3,24 @@ import { Alert, Card, Chip, InputAdornment, Stack, Tab, Table, TableBody, TableC
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { RiskChip } from '../components/common';
-import type { Clause, ContentPack } from '../types';
+import type { Clause, ConceptTrust, ContentPack } from '../types';
+
+function TrustCell({ trust }: { trust?: ConceptTrust }) {
+  if (!trust) return <TableCell>—</TableCell>;
+  const today = new Date().toISOString().slice(0, 10);
+  const stale = !!trust.staleAfter && trust.staleAfter <= today;
+  return (
+    <TableCell sx={{ whiteSpace: 'nowrap' }}>
+      {trust.verifiedBy
+        ? <Chip size="small" color="success" label={`Verified by ${trust.verifiedBy}`} title={`${trust.verifiedRole ?? ''}, ${trust.verifiedAt}`} />
+        : <Chip size="small" color="warning" label="Unverified" />}
+      <Typography variant="caption" display="block" color={stale ? 'error' : 'text.secondary'}>
+        {trust.staleAfter ? `${stale ? 'Re-review overdue since' : 'Re-review by'} ${trust.staleAfter}` : 'No re-review date'}
+      </Typography>
+      <Typography variant="caption" display="block" sx={{ fontFamily: 'monospace' }} color="text.secondary">{trust.sourcePath}</Typography>
+    </TableCell>
+  );
+}
 
 export default function LibraryPage() {
   const [packs, setPacks] = useState<ContentPack[]>([]);
@@ -65,6 +82,9 @@ export default function LibraryPage() {
       {pack && (
         <>
           <Alert severity="warning">{pack.disclaimer}</Alert>
+          <Alert severity="info">
+            Only knowledge a reviewer has verified, and that is not past its re-review date, may be cited in released findings. Unverified sources are blocked in production.
+          </Alert>
           <Tabs value={view} onChange={(_, v) => setView(v)}>
             <Tab label={`Controls (${pack.controls.length})`} />
             <Tab label={`Clauses (${pack.clauses.length})`} />
@@ -81,6 +101,7 @@ export default function LibraryPage() {
                     <TableCell>Risk</TableCell>
                     <TableCell>Frequency</TableCell>
                     <TableCell>Cites</TableCell>
+                    <TableCell>Verification</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -95,6 +116,7 @@ export default function LibraryPage() {
                       <TableCell><RiskChip rating={c.riskRating} /></TableCell>
                       <TableCell>{c.frequency}</TableCell>
                       <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>{c.clauseRefs.join(', ')}</TableCell>
+                      <TrustCell trust={c.trust} />
                     </TableRow>
                   ))}
                 </TableBody>
@@ -107,7 +129,7 @@ export default function LibraryPage() {
                     <TableCell>Clause</TableCell>
                     <TableCell>Regulation / standard</TableCell>
                     <TableCell>Summary (paraphrased)</TableCell>
-                    <TableCell>Review</TableCell>
+                    <TableCell>Verification</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -116,7 +138,7 @@ export default function LibraryPage() {
                       <TableCell sx={{ whiteSpace: 'nowrap' }}><b>{c.ref}</b><Typography variant="caption" display="block" sx={{ fontFamily: 'monospace' }}>{c.id}</Typography></TableCell>
                       <TableCell>{c.regulation}</TableCell>
                       <TableCell><b>{c.title}.</b> {c.summary}</TableCell>
-                      <TableCell><Chip size="small" color={c.reviewStatus === 'draft' ? 'warning' : 'success'} label={c.reviewStatus} /></TableCell>
+                      <TrustCell trust={c.trust} />
                     </TableRow>
                   ))}
                 </TableBody>

@@ -1,4 +1,5 @@
 import type { PackRegistry } from './packs';
+import { trustActions, type CitationPolicy } from './trust';
 import type { Citation, Finding, QaAction, RcmRow, TestInput, TestResult } from './types';
 
 // Runtime QA gates. They run on every module output regardless of whether a
@@ -74,11 +75,14 @@ export function testEvidenceGate(row: RcmRow, input: TestInput, result: TestResu
  * Triple-citation gate for findings: (1) at least one regulatory clause that
  * exists and was in the grounding set given to the drafter, (2) the control it
  * tests, (3) at least one evidence reference. Missing any leg blocks release.
+ * (4) every cited clause and the control are citable under the trust rules (REQ-22); an unverified
+ * source blocks release unless the policy allows it.
  */
 export function findingCitationGate(
   registry: PackRegistry,
   finding: Finding,
   allowedClauseIds: Set<string>,
+  policy: CitationPolicy,
 ): { finding: Finding; actions: QaAction[] } {
   const reasons: string[] = [];
   const actions: QaAction[] = [];
@@ -91,9 +95,17 @@ export function findingCitationGate(
   if (!registry.controls.has(finding.controlId)) reasons.push(`Unknown control ${finding.controlId}`);
   if (finding.evidenceRefs.length === 0) reasons.push('No evidence reference');
 
+  const trust = trustActions(
+    registry,
+    finding.id,
+    { clauseIds: finding.citations.map((c) => c.clauseId), controlId: finding.controlId },
+    policy,
+  );
+  reasons.push(...trust.filter((a) => a.action === 'blocked').map((a) => a.detail));
+
   if (reasons.length) {
     actions.push({ gate: 'triple-citation', outcome: 'fail', target: finding.id, detail: reasons.join('; '), action: 'blocked' });
-    return { finding: { ...finding, status: 'blocked', blockedReasons: reasons }, actions };
+    return { finding: { ...finding, status: 'blocked', blockedReasons: reasons }, actions: [...actions, ...trust] };
   }
 
   actions.push({ gate: 'triple-citation', outcome: 'pass', target: finding.id, detail: `Clause(s) ${finding.citations.map((c) => c.ref).join(', ')} + control ${finding.controlId} + ${finding.evidenceRefs.length} evidence ref(s)`, action: 'none' });
@@ -102,5 +114,5 @@ export function findingCitationGate(
   if (unmentioned.length) {
     actions.push({ gate: 'criteria-traceability', outcome: 'warn', target: finding.id, detail: `Criteria text does not mention ${unmentioned.map((c) => c.ref).join(', ')}`, action: 'flagged' });
   }
-  return { finding: { ...finding, blockedReasons: [] }, actions };
+  return { finding: { ...finding, blockedReasons: [] }, actions: [...actions, ...trust] };
 }

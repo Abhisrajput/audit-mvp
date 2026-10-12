@@ -44,7 +44,9 @@ describe('module chain', () => {
       expect(row.citations.every((c) => registry.clauses.has(c.clauseId))).toBe(true);
     }
     const rcmRun = (await svc.trailFor(e.id)).find((b) => b.moduleId === 'rcm')!;
-    expect(rcmRun.qaActions.every((a) => a.gate === 'citation' && a.outcome === 'pass')).toBe(true);
+    const citationGates = rcmRun.qaActions.filter((a) => a.gate === 'citation');
+    expect(citationGates.length).toBe(e.rcm.length);
+    expect(citationGates.every((a) => a.outcome === 'pass')).toBe(true);
   });
 });
 
@@ -196,7 +198,7 @@ describe('audit trail', () => {
     expect(gaps.retrievalSet.length).toBeGreaterThan(0);
     expect(gaps.executionLog.length).toBeGreaterThan(0);
     expect(gaps.qaActions.length).toBeGreaterThan(0);
-    expect(gaps.packVersions).toEqual({ food: '0.1.0', common: '0.1.0' });
+    expect(gaps.packVersions).toEqual({ food: '0.2.0', common: '0.2.0' });
     expect(gaps.provider.id).toBe('offline');
     expect(gaps.actor).toBe('auditor');
     expect(e.findings[0].bundleId).toBe(gaps.id);

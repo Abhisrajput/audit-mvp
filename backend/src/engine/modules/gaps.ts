@@ -127,7 +127,7 @@ export const gapsModule: AuditModule<Finding[]> = {
     const out: Finding[] = e.findings.filter((f) => locked.has(f.rowId));
     for (const r of todo) {
       const finding: Finding = { ...drafts.get(r.id)!, id: `F-${r.id}-${crypto.randomBytes(2).toString('hex')}`, bundleId: '' };
-      const gated = findingCitationGate(ctx.registry, finding, allowed.get(r.id)!);
+      const gated = findingCitationGate(ctx.registry, finding, allowed.get(r.id)!, ctx.policy);
       ctx.gate(...gated.actions);
       out.push(gated.finding);
     }

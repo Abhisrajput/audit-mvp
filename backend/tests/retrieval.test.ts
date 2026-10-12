@@ -3,9 +3,12 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import type { Classification, DocumentKind } from '../src/knowledge/access';
 import { insertDocument, setDocumentText } from '../src/knowledge/document-repo';
+import { compilePacks } from '../src/knowledge/graph/compile';
+import { loadBundle, loadBundles } from '../src/knowledge/okf/bundle';
 import { PgFtsRetriever } from '../src/knowledge/retriever';
 import type { AuditService } from '../src/service';
-import { admin, approver, auditor, engagementWithFailedControl, newService, reviewer, viewer } from './helpers';
+import { admin, approver, auditor, engagementWithFailedControl, newService, registry, reviewer, viewer } from './helpers';
+import { demoRoot } from './okf-fixtures';
 
 describe('permission-filtered retrieval', () => {
   let svc: AuditService;
@@ -37,7 +40,9 @@ describe('permission-filtered retrieval', () => {
   });
 
   const docsFound = async (user: typeof auditor, opts: { engagementId?: string; kinds?: DocumentKind[] } = {}) =>
-    (await new PgFtsRetriever(svc.db.kysely).search('allergen', { user, ...opts })).map((h) => h.citation.documentId).sort();
+    (await new PgFtsRetriever(svc.db.kysely).search('allergen', { user, ...opts }))
+      .flatMap((h) => (h.kind === 'chunk' ? [h.citation.documentId] : []))
+      .sort();
 
   it('gives each role only the classifications it may read [REQ-23]', async () => {
     expect(await docsFound(viewer)).toEqual([ids.internal].sort());
@@ -103,5 +108,61 @@ describe('permission-filtered retrieval', () => {
     expect(await new PgFtsRetriever(svc.db.kysely).search('   ', { user: reviewer })).toEqual([]);
     expect((await new PgFtsRetriever(svc.db.kysely).search('allergen', { user: reviewer, limit: 2 })).length).toBe(2);
     expect((await new PgFtsRetriever(svc.db.kysely).search('allergen', { user: reviewer, limit: 10_000 })).length).toBeLessThanOrEqual(50);
+  });
+});
+
+describe('knowledge-graph hits', () => {
+  let svc: AuditService;
+  const search = (q: string, user: typeof auditor, kinds?: DocumentKind[]) => new PgFtsRetriever(svc.db.kysely).search(q, { user, kinds });
+
+  beforeAll(async () => {
+    svc = await newService();
+    await compilePacks(svc.db, loadBundles());
+  });
+
+  it('finds library concepts with a citation to the bundle file and says they are not yet citable [REQ-22]', async () => {
+    const clause = registry.clauses.get('21CFR211.22')!;
+    const hits = await search(clause.title, viewer);
+    const hit = hits.find((h) => h.kind === 'kg_node' && h.citation.conceptId === '21CFR211.22');
+    expect(hit).toMatchObject({
+      kind: 'kg_node', citable: false, trustProblems: ['UNVERIFIED_SOURCE'],
+      citation: { nodeId: 'pharma/clause/21cfr211-22', packId: 'pharma', packVersion: '0.2.0', sourcePath: 'pharma/clauses/21cfr211-22.md', chunkOrdinal: 0 },
+    });
+    expect(hit!.title).toBe(`21CFR211.22 — ${clause.title}`);
+    expect(await search(clause.title, admin)).toEqual([]);
+  });
+
+  it('selects knowledge-graph nodes with the okf_concept kind', async () => {
+    const clause = registry.clauses.get('21CFR211.22')!;
+    expect((await search(clause.title, auditor, ['sop'])).some((h) => h.kind === 'kg_node')).toBe(false);
+    const only = await search(clause.title, auditor, ['okf_concept']);
+    expect(only.length).toBeGreaterThan(0);
+    expect(only.every((h) => h.kind === 'kg_node')).toBe(true);
+  });
+
+  it('applies classification to knowledge-graph nodes too [REQ-23]', async () => {
+    const restricted = demoRoot((f) => f.set('pack.md', f.get('pack.md')!.replace('classification: internal', 'classification: restricted')));
+    await compilePacks(svc.db, [loadBundle(restricted, 'demo')]);
+    const demoHits = async (user: typeof auditor) => (await search('records policy', user)).filter((h) => h.kind === 'kg_node' && h.citation.packId === 'demo');
+    expect(await demoHits(viewer)).toEqual([]);
+    expect(await demoHits(auditor)).toEqual([]);
+    expect((await demoHits(reviewer)).length).toBeGreaterThan(0);
+  });
+
+  it('marks a verified, current concept citable and never returns deprecated ones [REQ-22]', async () => {
+    const own = await newService();
+    const v1 = demoRoot((f) => f.set('clauses/ds-1.md', f.get('clauses/ds-1.md')!.replace('verified: null', 'verified:\n  by: Dr Rao\n  role: QA SME\n  at: 2026-10-01').replace('stale_after: 2027-10-11', 'stale_after: 2999-12-31')));
+    await compilePacks(own.db, [loadBundle(v1, 'demo')]);
+    const policy = (await new PgFtsRetriever(own.db.kysely).search('records policy', { user: auditor })).find((h) => h.kind === 'kg_node' && h.citation.conceptId === 'DS-1');
+    expect(policy).toMatchObject({ citable: true, trustProblems: [] });
+
+    const v2 = demoRoot((f) => {
+      f.set('pack.md', f.get('pack.md')!.replace('version: 0.2.0', 'version: 0.3.0'));
+      f.delete('clauses/ds-1.md');
+      f.set('controls/dm-01.md', f.get('controls/dm-01.md')!.replace(/  - ref: \/clauses\/ds-1\.md\n/, '').replace(/    - DS-1\n/, ''));
+    });
+    await compilePacks(own.db, [loadBundle(v2, 'demo')]);
+    const after = await new PgFtsRetriever(own.db.kysely).search('records policy exists', { user: auditor });
+    expect(after.some((h) => h.kind === 'kg_node' && h.citation.conceptId === 'DS-1')).toBe(false);
   });
 });

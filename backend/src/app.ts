@@ -148,7 +148,7 @@ export function createApp(svc: AuditService, auth: AuthDeps, storage: StorageDep
   app.get('/api/trail/verify', readers, wrap(async (_req, res) => res.json(await svc.verifyTrail())));
 
   app.post('/api/eval/run', evaluators, wrap(async (_req, res) => {
-    const report = await runEval(svc.registry, svc.llm);
+    const report = await runEval(svc.registry, svc.llm, undefined, svc.citationPolicy);
     await svc.saveEvalRun(report);
     res.json(report);
   }));
