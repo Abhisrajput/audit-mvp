@@ -5,7 +5,7 @@ import { httpErrors } from '../observability/metrics';
 
 // Spec §7.6. The API answers JSON and a few tiny HTML pages (sign-in and signing pop-ups), so its policy
 // allows nothing by default; those pages replace it with a per-response script nonce (auth/page.ts).
-// The browser app itself is served by nginx, which sends the SPA's own policy (frontend/nginx.conf).
+// The browser app itself is served by nginx, which sends the SPA's own policy (frontend/nginx/default.conf.template).
 
 export function securityHeaders(): RequestHandler {
   return helmet({

@@ -102,6 +102,21 @@ describe('request ids and error responses', () => {
     // JSON.parse would collapse a duplicated key, so count on the raw text.
     expect(lines[0].match(/"requestId"/g)).toHaveLength(1);
     expect(JSON.parse(lines[0])).toMatchObject({ level: 30, method: 'GET', route: '/things/:id', status: 200, user: null, requestId: res.headers['x-request-id'] });
+    expect(JSON.parse(lines[0]).ip).toMatch(/127\.0\.0\.1|::1/);
+  });
+
+  it('logs the client address the API derived, so operators can check TRUST_PROXY against a real request', async () => {
+    const proxied = express();
+    proxied.set('trust proxy', 1);
+    proxied.use(requestContext({ trustProxy: 1 }));
+    proxied.use(accessLog());
+    proxied.get('/x', (_req, res) => { res.json({}); });
+    const logs = captureLogs('info');
+    await request(proxied).get('/x').set('X-Forwarded-For', '198.51.100.9, 203.0.113.7').expect(200);
+    logs.restore();
+    const line = logs.text().split('\n').find((l) => l.includes('"msg":"request"'))!;
+    // One trusted hop: the address that hop appended, not the one a client could have written before it.
+    expect(JSON.parse(line).ip).toBe('203.0.113.7');
   });
 
   it('stamps the request id into the trail bundles a request writes', async () => {

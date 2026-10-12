@@ -8,6 +8,7 @@ For the deployment itself, see [azure.md](azure.md). Inside containers, run `nod
 - `GET /readyz` checks the database (`select 1`) and file storage (a lookup of a key no upload can have), each with a 2-second timeout. It answers `200 { ok: true, checks }`, or `503 { ok: false, checks }`, where `checks` maps `database` and `storage` to `ok`, `timeout` or `error` (`not configured` for storage when no store is set, which does not fail readiness). The logs carry the detail under `readiness check failed` (or `readiness check timed out`).
 - An S3 bucket policy without `s3:ListBucket` makes the storage check fail, because a missing object reads as access denied. Grant it.
 - The probes and `/metrics` are on the API's own port; nginx does not proxy them.
+- Each request writes one access-log line (`"msg":"request"`) with `requestId`, `method`, `route`, `status`, `ms`, `user` and `ip`. `ip` is the client address the API derived under `TRUST_PROXY`, which the rate limits count; check it after any change in front of the API (see azure.md §5). If it is the same proxy address for everyone, `TRUST_PROXY` is too low.
 
 ## 2. Metrics
 

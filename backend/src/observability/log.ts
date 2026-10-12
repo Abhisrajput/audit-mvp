@@ -63,7 +63,10 @@ const userOf = (req: unknown): string | null => (req as { auth?: { user: { id: s
 
 const QUIET = new Set(['/healthz', '/readyz', '/metrics']);
 
-/** One line per request: method, matched route (never the raw URL), status, duration and user. */
+/**
+ * One line per request: method, matched route (never the raw URL), status, duration, user, and the client address
+ * as derived under TRUST_PROXY (what the rate limits count), so an operator can check the hop count on a real request.
+ */
 export function accessLog(): RequestHandler {
   return (req, res, next) => {
     const started = process.hrtime.bigint();
@@ -71,7 +74,7 @@ export function accessLog(): RequestHandler {
       const ms = Number(process.hrtime.bigint() - started) / 1e6;
       const route = req.route ? `${req.baseUrl}${req.route.path}` : 'unmatched';
       // finish may fire outside the request's async context, so the id is passed explicitly.
-      const entry = { requestId: req.requestId, method: req.method, route, status: res.statusCode, ms: Math.round(ms * 10) / 10, user: userOf(req) };
+      const entry = { requestId: req.requestId, method: req.method, route, status: res.statusCode, ms: Math.round(ms * 10) / 10, user: userOf(req), ip: req.ip };
       if (QUIET.has(req.path)) logger.debug(entry, 'request');
       else logger.info(entry, 'request');
     });

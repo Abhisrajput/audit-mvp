@@ -7,7 +7,7 @@ own infrastructure-as-code. Operating the result is covered in [operations.md](o
 
 - Two images, built from the repository root:
   - `api`, from `backend/Dockerfile` (`docker build -t api ./backend`). Runs as the non-root `node` user and contains no npm, so every command inside it is `node dist/...`.
-  - `web`, from `frontend/Dockerfile` (`docker build -f frontend/Dockerfile -t web .`). nginx 1.30.5 on Alpine, serving the UI and proxying `/api/` and `/auth/` to the API.
+  - `web`, from `frontend/Dockerfile` (`docker build -f frontend/Dockerfile -t web .`). nginx 1.30.5 on Alpine, serving the UI and proxying `/api/` and `/auth/` to the API at `API_UPSTREAM` (host:port; default `backend:3002`, the Compose service).
 - Azure Database for PostgreSQL Flexible Server, version 16, with `vector` allow-listed in the `azure.extensions` server parameter (migration 005 runs `CREATE EXTENSION vector`).
 - A storage account (evidence files) and an Entra ID app registration (sign-in).
 - Key Vault for every secret.
@@ -69,9 +69,15 @@ The `api` app:
 - Secrets from Key Vault as environment variables, or as mounted files with `<NAME>_FILE`. These names accept `_FILE`: `DATABASE_URL`, `OIDC_CLIENT_SECRET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `AZURE_STORAGE_CONNECTION_STRING`, `ANTHROPIC_API_KEY`, `METRICS_TOKEN`, `API_DB_PASSWORD`. Setting both `<NAME>` and `<NAME>_FILE` is an error.
 
 The `web` app: external ingress on port 80. nginx proxies only `/api/` and `/auth/`, so the probes and `/metrics` are not reachable from outside.
+- Set `API_UPSTREAM=<the api app's internal FQDN>:<port>`, the address the `web` app reaches the API at (shown on the `api` app's ingress page; Container Apps' internal ingress usually serves on port 80, not the container port). nginx resolves it at start-up and exits if it cannot, so a wrong value shows as a `web` revision that never becomes ready, with "host not found in upstream" in its log.
+- nginx forwards the browser's `Host`. If the `api` app's ingress answers nginx with 404 because it routes by host name, the template (`frontend/nginx/default.conf.template`) needs `proxy_set_header Host $proxy_host;`; the API does not read `Host`.
 
-Set `TRUST_PROXY=2`: the request passes the Container Apps ingress and then nginx. The setting decides which client address the rate limits count and whether the incoming `X-Request-Id` is reused.
-Too low and every client shares one address; too high and a client can forge it.
+`TRUST_PROXY` on the `api` app is the number of proxies in front of the API that append to `X-Forwarded-For`. It decides which client address the rate limits count and whether the incoming `X-Request-Id` is reused. Too low and every client shares one address (the whole organisation then shares one rate-limit bucket); too high and a client can forge its address.
+1. Count the hops: the `web` app's external ingress, nginx, and the `api` app's internal ingress if requests pass through it (they do when `API_UPSTREAM` is the internal FQDN). Set `TRUST_PROXY` to that count, then verify it.
+2. Verify it on one real request: sign in from a machine whose public address you know, then find that request's access-log line in Log Analytics (by the `X-Request-Id` response header). Its `ip` field is the address the API derived.
+   - Your public address: correct.
+   - A private or ingress address (10.x, 100.64.x, 172.16-31.x, 192.168.x): one too low; add one and check again.
+   - An address you wrote yourself into an `X-Forwarded-For` request header: too high; lower it.
 
 Container Apps has no read-only root filesystem setting. The image runs as the non-root `node` user, and the API writes nothing to disk.
 

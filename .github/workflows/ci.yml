@@ -78,7 +78,12 @@ jobs:
       - name: Build the web image
         run: docker build -f frontend/Dockerfile -t audit-platform-frontend:ci .
       - name: Check the nginx configuration
-        run: docker run --rm --add-host backend:127.0.0.1 audit-platform-frontend:ci nginx -t
+        # The entrypoint renders the template first; check API_UPSTREAM was substituted and nginx's own variables were not.
+        run: >-
+          docker run --rm --add-host backend:127.0.0.1 audit-platform-frontend:ci sh -c
+          '/docker-entrypoint.sh nginx -t
+          && grep -q "proxy_pass http://backend:3002;" /etc/nginx/conf.d/default.conf
+          && grep -q "X-Request-Id \$request_id;" /etc/nginx/conf.d/default.conf'
       - name: Scan the API image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
