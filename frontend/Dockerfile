@@ -8,6 +8,8 @@ RUN cd frontend && npm ci
 COPY frontend ./frontend
 RUN cd frontend && npm run build
 
-FROM nginx:1.27-alpine
+FROM nginx:1.30.5-alpine
+# Pick up fixed Alpine packages between nginx releases.
+RUN apk upgrade --no-cache
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /repo/frontend/dist /usr/share/nginx/html
