@@ -21,7 +21,7 @@ export default function ScopeTab({ engagement: e, setEngagement, run }: TabProps
           variant="outlined"
           disabled={!dirty}
           action={async () =>
-            setEngagement(await api<Engagement>(`/engagements/${e.id}/scope`, { method: 'PUT', body: { items: e.scope.map((s) => ({ controlId: s.controlId, included: included[s.controlId] })) } }))
+            setEngagement(await api<Engagement>(`/engagements/${e.id}/scope`, { method: 'PUT', ifMatch: e.version, body: { items: e.scope.map((s) => ({ controlId: s.controlId, included: included[s.controlId] })) } }))
           }
         >
           Save scope decisions

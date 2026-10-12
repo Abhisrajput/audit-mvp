@@ -1,10 +1,11 @@
 import type { GenerateRequest, GenerateResult, LlmProvider } from '../src/engine/llm/provider';
 import { PackRegistry } from '../src/engine/packs';
-import { AuditService, USERS } from '../src/service';
+import { DEV_USERS } from '../src/auth/dev-users';
+import { AuditService } from '../src/service';
 import { testDb } from './db';
 
 export const registry = PackRegistry.loadFromDir();
-export const [auditor, reviewer, approver] = USERS;
+export const [auditor, reviewer, approver, admin, viewer] = DEV_USERS;
 
 /** A service on its own fresh database. */
 export async function newService(llm: LlmProvider | null = null) {

@@ -5,20 +5,27 @@ import {
 import { useState } from 'react';
 import { api } from '../../api';
 import type { TabProps } from '../../pages/EngagementPage';
+import { canPrepare } from '../../roles';
 import { useSession } from '../../session';
 import type { Engagement, Finding } from '../../types';
 import { ActionButton, Citations, RiskChip, StatusChip } from '../common';
 
 const FIELDS = ['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const;
 
-function EditDialog({ finding, engagementId, onClose, onSaved }: { finding: Finding; engagementId: string; onClose: () => void; onSaved: () => Promise<void> }) {
+interface CardContext {
+  engagementId: string;
+  version: number | undefined;
+  reload: () => Promise<void>;
+}
+
+function EditDialog({ finding, ctx, onClose }: { finding: Finding; ctx: CardContext; onClose: () => void }) {
   const [f, setF] = useState({ ...finding, evidence: finding.evidenceRefs.join(', ') });
   return (
     <Dialog open onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>Edit finding {finding.id}</DialogTitle>
       <DialogContent>
         <Alert severity="info" sx={{ mb: 2 }}>
-          Saving resets sign-offs to draft and re-runs the triple-citation gate.
+          Saving resets sign-offs to draft and re-runs the triple-citation gate. Editing makes you a preparer of this finding, so you will not be able to sign it.
         </Alert>
         <Stack spacing={2}>
           <TextField label="Title" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} />
@@ -39,11 +46,12 @@ function EditDialog({ finding, engagementId, onClose, onSaved }: { finding: Find
         <Button onClick={onClose}>Cancel</Button>
         <ActionButton
           action={async () => {
-            await api(`/engagements/${engagementId}/findings/${finding.id}`, {
+            await api(`/engagements/${ctx.engagementId}/findings/${finding.id}`, {
               method: 'PUT',
+              ifMatch: ctx.version,
               body: { title: f.title, rating: f.rating, ...Object.fromEntries(FIELDS.map((k) => [k, f[k]])), evidenceRefs: f.evidence.split(',').map((s) => s.trim()).filter(Boolean) },
             });
-            await onSaved();
+            await ctx.reload();
             onClose();
           }}
         >
@@ -54,16 +62,21 @@ function EditDialog({ finding, engagementId, onClose, onSaved }: { finding: Find
   );
 }
 
-function FindingCard({ f, engagementId, reload }: { f: Finding; engagementId: string; reload: () => Promise<void> }) {
+function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
   const { user } = useSession();
   const [comment, setComment] = useState('');
   const [editing, setEditing] = useState(false);
   const sign = (action: string) => async () => {
-    await api(`/engagements/${engagementId}/findings/${f.id}/signoff`, { method: 'POST', body: { action, comment } });
+    await api(`/engagements/${ctx.engagementId}/findings/${f.id}/signoff`, { method: 'POST', ifMatch: ctx.version, body: { action, comment } });
     setComment('');
-    await reload();
+    await ctx.reload();
   };
   const role = user?.role;
+  const preparedByMe = !!user && (f.preparedBy ?? []).includes(user.id);
+  const reviewedByMe = !!user && f.signOffs.some((s) => s.userId === user.id);
+  const canReview = role === 'audit_manager' && f.status === 'draft';
+  const canApprove = role === 'cae' && f.status === 'reviewed';
+  const blockedBySod = (canReview || canApprove) && (preparedByMe || (canApprove && reviewedByMe));
 
   return (
     <Card variant="outlined" sx={{ borderLeft: 4, borderLeftColor: f.status === 'blocked' ? 'error.main' : f.status === 'approved' ? 'success.main' : 'grey.400' }}>
@@ -77,6 +90,7 @@ function FindingCard({ f, engagementId, reload }: { f: Finding; engagementId: st
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
           {f.id} · control {f.controlId} · drafted in {f.bundleId}
+          {f.preparedBy?.length ? ` · prepared by ${f.preparedBy.join(', ')}` : ''}
         </Typography>
         {f.status === 'blocked' && (
           <Alert severity="error" sx={{ mt: 1 }}>
@@ -112,20 +126,20 @@ function FindingCard({ f, engagementId, reload }: { f: Finding; engagementId: st
         )}
         <Divider sx={{ my: 1.5 }} />
         <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-          {(role === 'auditor' || role === 'reviewer') && f.status !== 'approved' && (
+          {canPrepare(role) && f.status !== 'approved' && (
             <Button size="small" onClick={() => setEditing(true)}>
               Edit
             </Button>
           )}
-          {((role === 'reviewer' && f.status === 'draft') || (role === 'approver' && f.status === 'reviewed')) && (
+          {(canReview || canApprove) && !blockedBySod && (
             <>
               <TextField size="small" placeholder="Sign-off comment" value={comment} onChange={(e) => setComment(e.target.value)} sx={{ minWidth: 280 }} />
-              {role === 'reviewer' && (
+              {canReview && (
                 <ActionButton size="small" action={sign('review')}>
                   Sign as reviewed
                 </ActionButton>
               )}
-              {role === 'approver' && (
+              {canApprove && (
                 <>
                   <ActionButton size="small" color="success" action={sign('approve')}>
                     Approve
@@ -137,17 +151,26 @@ function FindingCard({ f, engagementId, reload }: { f: Finding; engagementId: st
               )}
             </>
           )}
-          {f.status === 'draft' && role !== 'reviewer' && <Typography variant="caption" color="text.secondary">Awaiting reviewer sign-off (switch user to Reviewer).</Typography>}
-          {f.status === 'reviewed' && role !== 'approver' && <Typography variant="caption" color="text.secondary">Awaiting approver sign-off (switch user to QA Head).</Typography>}
+          {blockedBySod && (
+            <Typography variant="caption" color="text.secondary">
+              You {preparedByMe ? 'prepared' : 'reviewed'} this finding, so another person must sign it.
+            </Typography>
+          )}
+          {f.status === 'draft' && role !== 'audit_manager' && <Typography variant="caption" color="text.secondary">Awaiting review by an audit manager.</Typography>}
+          {f.status === 'reviewed' && role !== 'cae' && <Typography variant="caption" color="text.secondary">Awaiting approval by the Chief Audit Executive.</Typography>}
         </Stack>
       </CardContent>
-      {editing && <EditDialog finding={f} engagementId={engagementId} onClose={() => setEditing(false)} onSaved={reload} />}
+      {editing && <EditDialog finding={f} ctx={ctx} onClose={() => setEditing(false)} />}
     </Card>
   );
 }
 
 export default function FindingsTab({ engagement: e, setEngagement, run }: TabProps) {
-  const reload = async () => setEngagement(await api<Engagement>(`/engagements/${e.id}`));
+  const ctx: CardContext = {
+    engagementId: e.id,
+    version: e.version,
+    reload: async () => setEngagement(await api<Engagement>(`/engagements/${e.id}`)),
+  };
   return (
     <Stack spacing={2}>
       <Stack direction="row" spacing={2} alignItems="center">
@@ -155,11 +178,11 @@ export default function FindingsTab({ engagement: e, setEngagement, run }: TabPr
           Run Gap Writer
         </ActionButton>
         <Typography color="text.secondary">
-          Drafts a finding for each failed control. Approved findings are locked; others are redrafted.
+          Drafts a finding for each failed control. Approved findings are locked; others are redrafted. Whoever runs it prepares the drafts and cannot sign them.
         </Typography>
       </Stack>
       {e.findings.map((f) => (
-        <FindingCard key={f.id} f={f} engagementId={e.id} reload={reload} />
+        <FindingCard key={f.id} f={f} ctx={ctx} />
       ))}
       {!e.findings.length && <Typography color="text.secondary">No findings yet.</Typography>}
     </Stack>

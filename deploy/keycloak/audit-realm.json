@@ -1,0 +1,40 @@
+{
+  "realm": "audit",
+  "enabled": true,
+  "groups": [
+    { "name": "audit-auditors" },
+    { "name": "audit-managers" },
+    { "name": "audit-cae" },
+    { "name": "audit-admins" },
+    { "name": "audit-viewers" }
+  ],
+  "clients": [
+    {
+      "clientId": "audit-platform",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "audit-dev-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:5174/auth/callback"],
+      "webOrigins": ["http://localhost:5174"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": { "claim.name": "groups", "full.path": "false", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true" }
+        }
+      ]
+    }
+  ],
+  "users": [
+    { "username": "asha", "enabled": true, "firstName": "Asha", "lastName": "Auditor", "email": "asha@example.test", "emailVerified": true, "credentials": [{ "type": "password", "value": "demo", "temporary": false }], "groups": ["/audit-auditors"] },
+    { "username": "ravi", "enabled": true, "firstName": "Ravi", "lastName": "Reviewer", "email": "ravi@example.test", "emailVerified": true, "credentials": [{ "type": "password", "value": "demo", "temporary": false }], "groups": ["/audit-managers"] },
+    { "username": "priya", "enabled": true, "firstName": "Priya", "lastName": "QA Head", "email": "priya@example.test", "emailVerified": true, "credentials": [{ "type": "password", "value": "demo", "temporary": false }], "groups": ["/audit-cae"] },
+    { "username": "arun", "enabled": true, "firstName": "Arun", "lastName": "Admin", "email": "arun@example.test", "emailVerified": true, "credentials": [{ "type": "password", "value": "demo", "temporary": false }], "groups": ["/audit-admins"] },
+    { "username": "nina", "enabled": true, "firstName": "Nina", "lastName": "New", "email": "nina@example.test", "emailVerified": true, "credentials": [{ "type": "password", "value": "demo", "temporary": false }], "groups": [] }
+  ]
+}

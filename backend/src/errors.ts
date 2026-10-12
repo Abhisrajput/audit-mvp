@@ -7,6 +7,9 @@ export type ErrorCode =
   | 'VERSION_CONFLICT'
   | 'FINDING_BLOCKED'
   | 'FINDING_LOCKED'
+  | 'SOD_VIOLATION'
+  | 'CSRF_FAILED'
+  | 'PENDING_ACCESS'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

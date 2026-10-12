@@ -13,7 +13,9 @@
   { "id": "REQ-12", "risk": "Medium", "text": "Content packs are schema-validated on load; a control citing an unknown clause is rejected.", "evalKinds": [] },
   { "id": "REQ-13", "risk": "High", "text": "Retrieval returns the expert-expected clauses for labelled queries.", "evalKinds": ["retrieval"] },
   { "id": "REQ-14", "risk": "Medium", "text": "Model output is constrained: controls outside the library are rejected, and a failed model call falls back to deterministic rules with a QA flag.", "evalKinds": [] },
-  { "id": "REQ-15", "risk": "Medium", "text": "Actions are restricted by role (auditor, reviewer, approver).", "evalKinds": [] },
+  { "id": "REQ-15", "risk": "Medium", "text": "Actions are restricted by role (auditor, audit manager, CAE, admin, viewer); admins and viewers cannot change audit work.", "evalKinds": [] },
+  { "id": "REQ-16", "risk": "High", "text": "Users authenticate through the configured OIDC identity provider; demo sign-in is impossible in production (21 CFR Part 11 §11.10(d)).", "evalKinds": [] },
   { "id": "REQ-20", "risk": "High", "text": "Trail records cannot be updated, deleted or truncated, and approved findings cannot be changed, at the database level (21 CFR Part 11 §11.10(e), ALCOA+). Enforced against the application's code paths; separating the API's database role from the owner role is delivered in plan 1F.", "evalKinds": [] },
-  { "id": "REQ-21", "risk": "High", "text": "Concurrent conflicting edits are never silently overwritten at the API: changes serialise per engagement, a request carrying If-Match with a stale version is rejected (409 VERSION_CONFLICT), and state and its trail entries commit or roll back together. (UI use of If-Match: plan 1B.)", "evalKinds": [] }
+  { "id": "REQ-21", "risk": "High", "text": "Concurrent conflicting edits are never silently overwritten at the API: changes serialise per engagement, a request carrying If-Match with a stale version is rejected (409 VERSION_CONFLICT), and state and its trail entries commit or roll back together. (UI use of If-Match: plan 1B.)", "evalKinds": [] },
+  { "id": "REQ-17", "risk": "High", "text": "Actions are authorised by role, and the preparer, reviewer and approver of a finding are distinct people (21 CFR Part 11 §11.10(g)).", "evalKinds": [] }
 ]

@@ -49,11 +49,12 @@ Requires Node 20+ (tested on 22) and Docker.
 
 ```bash
 # Database (Postgres 16 + pgvector) on localhost:5432
+cp .env.example .env   # then set POSTGRES_PASSWORD
 docker compose up -d postgres
 
 # API (port 3002)
 cd backend
-cp .env.example .env
+cp .env.example .env   # then set DATABASE_URL to use your POSTGRES_PASSWORD
 npm install
 npm run migrate     # apply SQL migrations; the API never migrates by itself
 npm run seed        # two demo engagements (empty database only): food+treasury, and pharma GMP
@@ -65,15 +66,53 @@ npm install
 npm run dev         # open http://localhost:5174
 ```
 
-Or run everything with Docker: `docker compose up --build` from the repo root.
+Or run everything with Docker: `cp .env.example .env` (then set `POSTGRES_PASSWORD`), then `docker compose up --build` from the repo root.
 Compose starts Postgres, runs migrations once, then starts the API and the UI on
 http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
 To reset the local database: `docker compose down -v`.
+Compose binds the UI and API to localhost only; demo sign-in must be off (`DEV_AUTH=false`) on any machine others can reach.
 
 **Coming from the JSON-file MVP?** Import your old data once into an empty
 database: `npm run import-json -- data/db.json`. The trail's hash chain is
 verified before and after import. A broken chain or a non-empty database is
 refused and nothing is written.
+
+### Signing in
+
+Locally, demo sign-in is on (`DEV_AUTH=true`). The sign-in page lists five demo users, one per role:
+
+| Role | May |
+|---|---|
+| Auditor | Create engagements, run modules, record tests, edit findings |
+| Audit manager | Everything an auditor may, plus sign findings as **Reviewed** |
+| Chief Audit Executive | Sign findings as **Approved** or **Rejected** |
+| Administrator | Manage users, roles and sessions; sees no audit content |
+| Viewer | Read only |
+
+**Segregation of duties** is enforced per finding by person:
+- Whoever ran Gap Writer for a finding, or edited it, cannot sign it.
+- The reviewer cannot approve it.
+
+**Real sign-in** uses OpenID Connect against your identity provider (Entra ID, Okta, Keycloak, …):
+- Set `DEV_AUTH=false`, `NODE_ENV=production` and the `OIDC_*` settings (see `backend/.env.example`).
+- Map identity-provider groups to roles with `OIDC_ROLE_MAP`.
+- `OIDC_REDIRECT_URI` must be on the same origin as `PUBLIC_URL` (both https in production), or the sign-in cookies are not sent back.
+- `OIDC_SCOPES` (default `openid profile email`) sets the scopes requested at sign-in. Getting groups into the ID token, per provider:
+  - **Keycloak:** add a *Group Membership* mapper (claim `groups`, full path off) to the client.
+  - **Okta:** add a `groups` claim to the authorization server and request it, e.g. `OIDC_SCOPES=openid profile email groups`.
+  - **Entra ID:** enable the groups claim under *Token configuration*. Groups arrive as object IDs, so map those IDs in `OIDC_ROLE_MAP`.
+    Users in more than 200 groups get an overage claim instead of a list; they land in pending access until an admin assigns a role.
+- New people with no mapped group see "waiting for access" until an administrator assigns a role.
+
+To try real sign-in locally with Keycloak:
+
+```bash
+docker compose --profile sso up -d keycloak   # http://localhost:8081, realm "audit"
+# in backend/.env: DEV_AUTH=false and the commented OIDC_* lines
+cd backend && npm run dev                     # then cd frontend && npm run dev
+```
+
+Sign in as `asha`, `ravi`, `priya` or `arun` with the password `demo`. `nina` has no group, so she shows the pending-access page.
 
 ### Demo script (≈10 minutes)
 
@@ -86,9 +125,10 @@ refused and nothing is written.
 4. **Fieldwork & testing**: record a test with exceptions but no evidence reference,
    then run Testing and see the evidence gate downgrade it.
 5. **Findings**: findings are drafted with the 5 C's and a triple citation
-   (clause + control + evidence). Switch *Acting as* to Reviewer and sign, then to
-   QA Head and approve. A finding with no evidence reference is **blocked** and
-   cannot be signed.
+   (clause + control + evidence). Sign out, sign in as *Ravi Reviewer* (audit
+   manager) and sign as reviewed. Then sign in as *Priya QA Head* (CAE) and approve.
+   A finding with no evidence reference is **blocked** and cannot be signed.
+   Whoever drafted or edited a finding is not offered the sign buttons.
 6. **Report**: only approved findings are included. Download the `.md` report or the
    CSV for QMS/GRC write-back.
 7. **Audit trail**: open any bundle to see exactly what the module saw and decided.
@@ -157,10 +197,9 @@ npm run typecheck
 - **Real evidence ingestion:** evidence is recorded as references today. Next is
   reading SOPs, deviations and CAPAs from an eQMS (Veeva, MasterControl, TrackWise)
   and attaching documents.
-- **Identity:** the demo user switcher is a placeholder. Production needs OIDC
-  SSO (Entra ID, Okta and others) with Part 11-grade e-signatures
-  (re-authentication at signing). See
-  `docs/superpowers/specs/2026-10-11-production-foundation-design.md`.
+- **E-signatures:** sign-in is real (OIDC), but signing a finding does not yet
+  re-authenticate. Part 11 signing (re-authentication bound to the signed
+  content) is plan 1C.
 - **Deployment:** deploy into the client's tenant (e.g. Azure App Service +
   Azure AI Search).
 - **Further modules:** pharma deviation/CAPA effectiveness review, ALCOA+

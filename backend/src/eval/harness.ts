@@ -2,7 +2,8 @@ import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { PackRegistry } from '../engine/packs';
 import type { ContentPack, EvalCase } from '../engine/types';
-import { AuditService, ENGINE_VERSION, USERS } from '../service';
+import type { User } from '../engine/types';
+import { AuditService, ENGINE_VERSION } from '../service';
 
 // Evaluation harness: replays expert-labelled cases from each content pack
 // through the real modules and gates. Its report doubles as test evidence in
@@ -40,7 +41,7 @@ interface TestCaseInput {
 }
 
 async function runFieldCase(svc: AuditService, registry: PackRegistry, input: TestCaseInput, withGaps: boolean) {
-  const [auditor] = USERS;
+  const auditor: User = { id: 'eval', name: 'Evaluation harness', role: 'auditor' };
   const control = registry.controls.get(input.controlId);
   if (!control) throw new Error(`Eval case references unknown control ${input.controlId}`);
   const e = await svc.createEngagement(
