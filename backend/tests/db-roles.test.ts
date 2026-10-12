@@ -94,6 +94,17 @@ describe('the API database role', () => {
     await expect(createApiLogin(owner, 'Bad Name;', 'x'.repeat(20))).rejects.toThrow(/name/);
     await expect(createApiLogin(owner, `api_${crypto.randomBytes(4).toString('hex')}`, 'short')).rejects.toThrow(/at least 16/);
     const ownerName = (await sql<{ u: string }>`SELECT current_user AS u`.execute(owner.kysely)).rows[0].u;
-    await expect(createApiLogin(owner, ownerName, 'x'.repeat(20))).rejects.toThrow(/owns database objects or has administrative rights/);
+    await expect(createApiLogin(owner, ownerName, 'x'.repeat(20))).rejects.toThrow(/choose a new name/);
+  });
+
+  it('refuses to re-password any existing role that is not a login this tool made [REQ-20]', async () => {
+    const { owner } = await asApiRole();
+    const ownerName = (await sql<{ u: string }>`SELECT current_user AS u`.execute(owner.kysely)).rows[0].u;
+    const x = (p: string) => `${p}_${crypto.randomBytes(4).toString('hex')}`;
+    const inOwner = x('member_of_owner');
+    const plain = x('plain');
+    const repl = x('repl');
+    await owner.execScript(`CREATE ROLE ${inOwner} NOLOGIN; GRANT "${ownerName}" TO ${inOwner}; CREATE ROLE ${plain} NOLOGIN; CREATE ROLE ${repl} NOLOGIN REPLICATION;`);
+    for (const name of [inOwner, plain, repl]) await expect(createApiLogin(owner, name, 'x'.repeat(20)), name).rejects.toThrow(/choose a new name/);
   });
 });
