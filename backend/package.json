@@ -13,6 +13,7 @@
     "migrate": "tsx src/db/cli.ts migrate",
     "import-json": "tsx src/db/cli.ts import-json",
     "verify": "tsx src/db/cli.ts verify",
+    "packs:migrate": "tsx src/knowledge/packs-cli.ts migrate",
     "eval": "tsx src/eval/cli.ts",
     "traceability": "tsx src/validation/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -31,6 +32,7 @@
     "kysely": "^0.29.6",
     "openid-client": "^6.8.8",
     "pg": "^8.23.1",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
