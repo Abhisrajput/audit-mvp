@@ -153,7 +153,11 @@ scope ─QA─▶ [GATE scope] ─▶ rcm ─QA─▶ [GATE rcm] ─▶ test pla
 | report | report revision | `cae` | workpaper signature |
 
 The signer of a scope, RCM or report gate must not be the run's `started_by` user.
-That carries the distinct-people rule (REQ-17) to agent-drafted work.
+That carries the distinct-people rule (REQ-17) to agent-drafted work: agent writes
+are made on the starter's behalf (§3.3), so the starter is the accountable preparer.
+The expected pattern is that auditors start runs. When an audit manager starts one,
+the UI warns that they cannot sign its scope, RCM or report gates, and names how many
+other active users hold the signing role for each gate.
 
 ### 4.4 Gates bind content
 
