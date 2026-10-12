@@ -279,7 +279,7 @@ Agreed management actions are tracked, validated and closed on time.
   Only verified, active and current concepts are citable: an unverified source blocks a
   finding, a stale one is flagged. `ALLOW_UNVERIFIED_CITATIONS=true` flags instead of
   blocking, outside production only (start-up refuses it in production). It is on in Compose
-  and `.env.example`, because the MVP packs are unreviewed drafts; expert review of the
+  and `backend/.env.example`, because the MVP packs are unreviewed drafts; expert review of the
   target pack is a pilot prerequisite. The admin page lists what is due for re-review, and
   the library shows each concept's verification, re-review date and bundle file.
 - **History.** Every compile is written to the audit trail (`knowledge:compile`), and every

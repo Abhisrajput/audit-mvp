@@ -139,6 +139,7 @@ export function loadBundle(packsDir: string, packId: string): Bundle {
     const type = entry.isDirectory() ? CONCEPT_DIRS[entry.name as keyof typeof CONCEPT_DIRS] : undefined;
     if (!type) throw new BundleError(`${packId}/${entry.name}: not part of an OKF bundle (expected pack.md and the folders ${Object.keys(CONCEPT_DIRS).join(', ')})`);
     for (const f of fs.readdirSync(path.join(root, entry.name), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (f.name.startsWith('.')) continue; // .DS_Store and the like, as at the bundle root
       if (!f.isFile() || !f.name.endsWith('.md')) throw new BundleError(`${packId}/${entry.name}/${f.name}: only .md concept files belong in ${entry.name}/`);
       files.push({ rel: `${entry.name}/${f.name}`, type });
     }

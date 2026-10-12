@@ -132,6 +132,18 @@ describe('the committed MVP bundles', () => {
     }
   });
 
+  it('ignores dotfiles such as .DS_Store at the bundle root and inside concept folders', () => {
+    const root = demoRoot();
+    const clean = loadBundle(root, 'demo');
+    fs.writeFileSync(path.join(root, 'demo', '.DS_Store'), 'finder');
+    fs.writeFileSync(path.join(root, 'demo', 'clauses', '.DS_Store'), 'finder');
+    fs.writeFileSync(path.join(root, 'demo', 'controls', '.hidden.md'), 'not a concept');
+    expect(loadBundle(root, 'demo')).toEqual(clean);
+
+    fs.writeFileSync(path.join(root, 'demo', 'clauses', 'notes.txt'), 'x');
+    expect(() => loadBundle(root, 'demo')).toThrow(/demo\/clauses\/notes\.txt: only \.md concept files belong in clauses\//);
+  });
+
   it('refuses a stray pack.json inside a bundle', () => {
     const root = demoRoot((f) => f.set('pack.json', '{}'));
     expect(() => loadBundle(root, 'demo')).toThrow(/demo\/pack\.json: not part of an OKF bundle/);
