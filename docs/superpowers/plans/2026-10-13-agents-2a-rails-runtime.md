@@ -63,7 +63,7 @@
 3. **Waits wake on any human change.** Any human change to the engagement (any `mutate`), and any gate signature, moves a `waiting` run (except `paused_by_user`) to `runnable`. The worker re-derives the state and waits again if nothing it needs has changed. This replaces "wake only when the wait condition is met" (§6.2) with something simpler that is just as correct.
 4. **Test-plan edits are per row:** `PUT /api/engagements/:id/test-plans/:rowId`.
 5. **Rejecting a workpaper gate needs a comment.** The comment is the rework instruction.
-6. **Starting a run returns a warning for an audit manager.** `POST …/runs` answers `{ run, warnings }`; when an audit manager starts the run, `warnings` explains that they cannot sign its scope or RCM gates and counts the other active audit managers (§4.3). The UI is plan 2C.
+6. **Starting a run returns a warning for an audit manager.** `POST …/runs` answers `{ run, warnings }`; when an audit manager starts the run, `warnings` explains that they cannot sign its scope or RCM gates or review the findings it drafts, and counts the other active audit managers (§4.3). The UI is plan 2C.
 7. **Run policy.** Runs record `policy: 'rules'`. The `'llm'` value and challenge-mode QA are reserved for 2B. Token and cost counts are 0 offline; 2B attributes model usage to steps.
 8. **IDs.** Agent run IDs use the prefix `AR-`, gate IDs `GATE-`, agent trail bundles `AGT-`. `RUN-` is already used for module trail bundles.
 
@@ -1116,9 +1116,10 @@ describe('the engagement graph', () => {
     const e = engagement({ scope: [scopeItem('A')] });
     expect(types(menu(e, { qa: [qa(e, 'scope', [advisory], 60)] }))).toEqual(['open_gate', 'rework', 'escalate']);
     expect(types(menu(e, { qa: [qa(e, 'scope', [blocking], 75)] }))).toEqual(['rework', 'escalate']);
+    const basis = subjectInfo(e, 'scope')!.basis;
     const twice: RedraftRecord[] = [
-      { subjectKey: 'scope', kind: 'rework', basis: 'b', sinceGateId: null },
-      { subjectKey: 'scope', kind: 'rework', basis: 'b', sinceGateId: null },
+      { subjectKey: 'scope', kind: 'rework', basis, sinceGateId: null },
+      { subjectKey: 'scope', kind: 'rework', basis, sinceGateId: null },
     ];
     expect(types(menu(e, { qa: [qa(e, 'scope', [blocking], 75)], redrafts: twice }))).toEqual(['escalate']);
     expect(types(menu(e, { qa: [qa(e, 'scope', [advisory], 60)], redrafts: twice }))).toEqual(['open_gate', 'escalate']);
@@ -1150,6 +1151,18 @@ describe('the engagement graph', () => {
     expect(menu(edited, { gates }).actions).toEqual([{ type: 'delegate', specialist: 'rcm', subjectKey: 'rcm' }]);
     const rebuilt: RedraftRecord = { subjectKey: 'rcm', kind: 'delegate', basis: subjectInfo(edited, 'rcm')!.basis, sinceGateId: approvedRcm.id };
     expect(menu(edited, { gates, redrafts: [rebuilt] }).actions).toEqual([{ type: 'request_qa', subjectKey: 'rcm', mode: 'review' }]);
+  });
+
+  it('rebuilds a subject built on a basis that is no longer current, even before its gate is approved [REQ-26]', () => {
+    const e = engagement({ scope: [scopeItem('A'), scopeItem('B', false)], rcm: [row('A')] });
+    const builtFrom: RedraftRecord = { subjectKey: 'rcm', kind: 'delegate', basis: subjectInfo(e, 'rcm')!.basis, sinceGateId: null };
+    // The scope changed (and was approved again) after the RCM was drafted; the RCM's open gate was superseded.
+    const edited = structuredClone(e);
+    edited.scope[1].included = true;
+    const gates = [gate(edited, 'scope', 'approved')];
+    expect(menu(edited, { gates, redrafts: [builtFrom] }).actions).toEqual([{ type: 'delegate', specialist: 'rcm', subjectKey: 'rcm' }]);
+    const rebuilt: RedraftRecord = { ...builtFrom, basis: subjectInfo(edited, 'rcm')!.basis };
+    expect(menu(edited, { gates, redrafts: [builtFrom, rebuilt] }).actions).toEqual([{ type: 'request_qa', subjectKey: 'rcm', mode: 'review' }]);
   });
 
   it('drafts test plans after the RCM gate, reviews them without a gate, and waits for field work [REQ-26]', () => {
@@ -1450,6 +1463,12 @@ function rework(o: StepOptions, subjectKey: string, instruction: string): Action
   return { type: 'rework', specialist: o.specialist, subjectKey, instruction: instruction.slice(0, 2000), ...(o.rows ? { rows: o.rows } : {}) };
 }
 
+/** A fresh draft from the current basis, unless the subject may not be redrafted now (a reviewed finding). */
+function rebuild(input: GraphInput, o: StepOptions, key: string): Action {
+  if (!o.canRework) return { type: 'wait', reason: o.blockedReason ?? `${key} cannot be redrafted now` };
+  return delegate(input, o.specialist, key, o.rows);
+}
+
 const summarise = (r: QaReport) => r.issues.map((i) => `${i.criterion}: ${i.detail}`).join('; ');
 
 /** One subject: produce it, review it, gate it, and react to the gate. `passed` once its gate is approved and current. */
@@ -1463,7 +1482,12 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
   if (g?.state === 'approved') {
     if (g.subjectHash === s.hash && g.basisHash === s.basis) return { passed: true };
     // What it was built from changed: rebuild it once, then review the rebuilt version. (Edited by hand: review it.)
-    if (g.basisHash !== s.basis && !mine.some((r) => r.basis === s.basis)) return act([delegate(input, o.specialist, key, o.rows)]);
+    if (g.basisHash !== s.basis && !mine.some((r) => r.basis === s.basis)) return act([rebuild(input, o, key)]);
+  }
+  // Built on a basis that is no longer current, before any gate approved it (its upstream changed meanwhile): rebuild it once.
+  const lastBuilt = findLast(input.redrafts, (r) => r.subjectKey === key);
+  if (lastBuilt && lastBuilt.basis !== s.basis && !input.redrafts.some((r) => r.subjectKey === key && r.basis === s.basis)) {
+    return act([rebuild(input, o, key)]);
   }
   if (g?.state === 'open') {
     return act([{ type: 'wait', reason: `awaiting ${s.gateKind} gate signature${s.gateKind === 'finding' ? ` (${s.subjectId})` : ''}` }]);
@@ -3400,7 +3424,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 | Action | Step kind | Step contents | Trail entry |
 |---|---|---|---|
-| delegate / rework | `delegate` (agent `specialist:<name>`) | `DelegateRecord { action, basis, sinceGateId, bundleId }` | the specialist's own module or `agent:test-plans` bundle |
+| delegate / rework | `delegate` (agent `specialist:<name>`) | `DelegateRecord { action, basis, sinceGateId, bundleId, rowBases? }`; `rowBases` (Gap Writer only) holds each targeted row's basis, and `loadGraphInput` expands it into one redraft record per `finding:<row>` | the specialist's own module or `agent:test-plans` bundle |
 | request_qa | `qa` (agent `qa`) | the `QaReport` | `agent:qa` |
 | open_gate | `tool_call` (agent `supervisor`) | `{ tool: 'open_gate', gateId, kind, subjectId, subjectHash, attempt }` | `agent:gate-open` |
 
@@ -3648,7 +3672,7 @@ import type { Executor } from '../db/trail-repo';
 import type { Engagement } from '../engine/types';
 import { listGates, supersedeGate, type Gate } from './gate-repo';
 import { listSteps, type AgentRun } from './run-repo';
-import { subjectInfo } from './subjects';
+import { findingKey, subjectInfo } from './subjects';
 import type { Action, GraphInput, QaReport, RedraftRecord } from './types';
 
 /** What a delegate step records, so later iterations know what was redrafted, from what, and since which gate. */
@@ -3657,6 +3681,8 @@ export interface DelegateRecord {
   basis: string;
   sinceGateId: string | null;
   bundleId: string;
+  /** For a Gap Writer run: the basis each targeted row's finding was drafted from. */
+  rowBases?: Record<string, string>;
 }
 
 /** Supersedes each open gate whose subject changed, vanished or was rebuilt on a new basis since it opened. Returns how many. */
@@ -3678,9 +3704,12 @@ export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement,
   const qa = steps.filter((s) => s.kind === 'qa').map((s) => s.decision as QaReport);
   const redrafts: RedraftRecord[] = steps
     .filter((s) => s.kind === 'delegate')
-    .map((s) => {
+    .flatMap((s) => {
       const d = s.decision as DelegateRecord;
-      return { subjectKey: d.action.subjectKey, kind: d.action.type, basis: d.basis, sinceGateId: d.sinceGateId };
+      const own: RedraftRecord = { subjectKey: d.action.subjectKey, kind: d.action.type, basis: d.basis, sinceGateId: d.sinceGateId };
+      // A Gap Writer run drafted each targeted row's finding from that row's basis.
+      const findings = Object.entries(d.rowBases ?? {}).map(([rowId, basis]): RedraftRecord => ({ subjectKey: findingKey(rowId), kind: d.action.type, basis, sinceGateId: null }));
+      return [own, ...findings];
     });
   return { engagement: e, gates, qa, redrafts, qaThreshold };
 }
@@ -3702,7 +3731,7 @@ import { reviewSubject } from './qa/deterministic';
 import { appendStep, type AgentRun } from './run-repo';
 import { draftTestPlans } from './specialists/test-plan';
 import type { DelegateRecord } from './state';
-import { subjectInfo } from './subjects';
+import { rowBasis, subjectInfo } from './subjects';
 import type { Decision, Menu } from './types';
 
 // Carries out one decision (spec §5.1, step 5). Specialists go through the AgentPort; QA reviews and gates are
@@ -3741,7 +3770,8 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       const { bundle } = a.specialist === 'test-plan'
         ? await port.saveTestPlans(e.id, draftTestPlans(e), acting, { expectedVersion: e.version! })
         : await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows });
-      const record: DelegateRecord = { action: a, basis, sinceGateId, bundleId: bundle.id };
+      const rowBases = a.subjectKey === 'gaps' && a.rows ? Object.fromEntries(a.rows.map((id) => [id, rowBasis(e, id)])) : undefined;
+      const record: DelegateRecord = { action: a, basis, sinceGateId, bundleId: bundle.id, ...(rowBases ? { rowBases } : {}) };
       await appendStep(db, run.id, {
         kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: bundle.provider.model,
         durationMs: Date.now() - started, trailBundleId: bundle.id,
@@ -4320,7 +4350,7 @@ describe('agent runs over HTTP', () => {
     const { app, id } = await setup();
     const manager = await signIn(app, 'reviewer');
     const res = await manager.post(`/api/engagements/${id}/runs`, {}).expect(201);
-    expect(res.body.warnings).toEqual(['You started this run, so you cannot sign its scope or RCM gates. 0 other active audit manager(s) can.']);
+    expect(res.body.warnings).toEqual(['You started this run, so you cannot sign its scope or RCM gates or review the findings it drafts. 0 other active audit manager(s) can.']);
   });
 
   it('show their steps and gates, and can be paused, resumed and cancelled [REQ-28]', async () => {
@@ -4441,7 +4471,7 @@ async function starterWarnings(svc: AuditService, actor: User): Promise<string[]
     .where('active', '=', true)
     .where('id', '<>', actor.id)
     .executeTakeFirstOrThrow();
-  return [`You started this run, so you cannot sign its scope or RCM gates. ${Number(others.n)} other active audit manager(s) can.`];
+  return [`You started this run, so you cannot sign its scope or RCM gates or review the findings it drafts. ${Number(others.n)} other active audit manager(s) can.`];
 }
 
 export async function startRun(svc: AuditService, cfg: AgentConfig, engagementId: string, actor: User, requested?: Partial<Budget>) {
@@ -4724,8 +4754,8 @@ describe('an agent run, end to end (offline)', () => {
     expect(await state()).toMatchObject({ status: 'needs_human', statusReason: 'gate_rejected_twice: scope' });
   });
 
-  it('re-reviews a workpaper edited while a later gate is open, and supersedes that gate [REQ-26]', async () => {
-    const { svc, worker, auditor, manager, id, state, gates, openGate } = await setup();
+  it('re-reviews a workpaper edited while a later gate is open, supersedes that gate, and rebuilds what was built on it [REQ-26]', async () => {
+    const { svc, worker, auditor, manager, id, run, state, gates, openGate } = await setup();
     await worker.drain();
     await devSignGate(manager, 'reviewer', (await openGate('scope')).id, 'approve');
     await worker.drain();
@@ -4736,6 +4766,13 @@ describe('an agent run, end to end (offline)', () => {
     expect((await gates()).find((g) => g.id === rcmGate.id)!.state).toBe('superseded');
     expect(await openGate('scope')).toMatchObject({ attempt: 2 });
     expect(await state()).toMatchObject({ status: 'waiting', statusReason: 'awaiting scope gate signature' });
+
+    // Once the edited scope is approved, the RCM is drafted again from it before any RCM gate opens.
+    await devSignGate(manager, 'reviewer', (await openGate('scope')).id, 'approve');
+    await worker.drain();
+    const steps = (await auditor.get(`/api/runs/${run.id}?limit=500`).expect(200)).body.steps as { kind: string; decision: { action?: { subjectKey?: string } } }[];
+    expect(steps.filter((s) => s.kind === 'delegate' && s.decision.action?.subjectKey === 'rcm')).toHaveLength(2);
+    expect(await openGate('rcm')).toMatchObject({ attempt: 1 });
   });
 });
 ```
