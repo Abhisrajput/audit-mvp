@@ -7,7 +7,8 @@ import { loadConfig, loadDotEnv } from './config';
 import { connectPg } from './db';
 import { pendingMigrations } from './db/migrate';
 import { createProvider } from './engine/llm/router';
-import { registryFromBundles } from './knowledge/packs';
+import { loadBundles } from './knowledge/okf/bundle';
+import { prepareRegistry } from './knowledge/packs';
 import { AuditService } from './service';
 
 async function main() {
@@ -36,9 +37,15 @@ async function main() {
       );
     }
   }
+  let registry;
+  try {
+    registry = await prepareRegistry(db, loadBundles(config.packsDir), { production: process.env.NODE_ENV === 'production' });
+  } catch (err) {
+    await db.close();
+    throw err;
+  }
   const oidc = auth.oidc ? await createOidcClient(auth.oidc) : null;
   if (oidc) console.log(`Sign-in via ${auth.oidc!.issuer}`);
-  const registry = registryFromBundles(config.packsDir);
   const svc = new AuditService(db, registry, createProvider());
   createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }).listen(config.port, () => {
     console.log(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);

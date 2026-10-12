@@ -13,6 +13,7 @@
     "migrate": "tsx src/db/cli.ts migrate",
     "import-json": "tsx src/db/cli.ts import-json",
     "verify": "tsx src/db/cli.ts verify",
+    "packs:compile": "tsx src/knowledge/packs-cli.ts compile",
     "packs:migrate": "tsx src/knowledge/packs-cli.ts migrate",
     "eval": "tsx src/eval/cli.ts",
     "traceability": "tsx src/validation/cli.ts",

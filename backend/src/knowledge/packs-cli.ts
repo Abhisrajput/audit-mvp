@@ -1,12 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadConfig, loadDotEnv } from '../config';
+import { connectPg } from '../db';
+import { pendingMigrations } from '../db/migrate';
+import { compileDir } from './graph/compile';
 import { DEFAULT_PACKS_DIR } from './okf/bundle';
 import { loadLegacyPack, packToFiles } from './okf/migrate-json';
 
 // Content-pack commands. In the container: node dist/knowledge/packs-cli.js <command>
+//   compile [--dir <packs dir>]           compile the bundles into the knowledge graph (a release step, like migrate)
 //   migrate [--from <dir>] [--to <dir>]   convert <from>/<pack>/pack.json into OKF bundles under <to>/<pack>/ (once)
 
-const USAGE = 'Usage: packs-cli migrate [--from <dir>] [--to <dir>]';
+const USAGE = 'Usage: packs-cli <compile [--dir <dir>] | migrate [--from <dir>] [--to <dir>]>';
 
 function arg(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
@@ -37,9 +42,26 @@ function migrateCommand(args: string[]) {
   if (!converted) throw new Error(`No pack.json found under ${from}`);
 }
 
+async function compileCommand(args: string[]) {
+  loadDotEnv();
+  const config = loadConfig();
+  const dir = path.resolve(arg(args, 'dir') ?? config.packsDir ?? DEFAULT_PACKS_DIR);
+  const db = connectPg(config.databaseUrl, { max: 2 });
+  try {
+    const pending = await pendingMigrations(db);
+    if (pending.length) throw new Error(`Database has unapplied migrations (${pending.join(', ')}); run migrate first`);
+    const r = await compileDir(db, dir);
+    for (const p of r.packs) console.log(`${p.packId}@${p.version}: ${p.outcome}`);
+    if (r.trailBundleId) console.log(`${r.nodes} nodes, ${r.edges} edges, ${r.chunks} chunks, ${r.deprecated} deprecated; trail ${r.trailBundleId}`);
+  } finally {
+    await db.close();
+  }
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command === 'migrate') migrateCommand(args);
+  if (command === 'compile') await compileCommand(args);
+  else if (command === 'migrate') migrateCommand(args);
   else throw new Error(USAGE);
 }
 
