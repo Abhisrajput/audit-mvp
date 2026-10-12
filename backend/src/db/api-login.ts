@@ -23,10 +23,38 @@ export async function createApiLogin(db: Db, name: string, password: string): Pr
   if (existing && !existing.ok) {
     throw new Error(`Role ${name} is not an API login made by this tool (it is privileged, owns database objects, or has memberships other than audit_api); choose a new name for the API login`);
   }
+  await assertMayManage(db, name, Boolean(existing));
   // Role names and passwords can't be bound as parameters in DDL; both are escaped by node-postgres.
   const role = escapeIdentifier(name);
   const secret = escapeLiteral(password);
   if (existing) await db.execScript(`ALTER ROLE ${role} WITH LOGIN PASSWORD ${secret};`);
   else await db.execScript(`CREATE ROLE ${role} LOGIN PASSWORD ${secret} IN ROLE audit_api;`);
   return existing ? 'updated' : 'created';
+}
+
+/**
+ * Checks, before any DDL, that the current login can run the CREATE or ALTER ROLE. A refused statement is written to the
+ * server log in full (log_min_error_statement), password included, so it must never be sent just to fail.
+ * Postgres 16 also wants ADMIN OPTION: on audit_api to grant it, and on the login to change its password.
+ */
+async function assertMayManage(db: Db, name: string, existing: boolean): Promise<void> {
+  const me = (await sql<{ me: string; superuser: boolean; createrole: boolean; pg16: boolean; api: boolean }>`
+    SELECT current_user AS me, r.rolsuper AS superuser, r.rolcreaterole AS createrole,
+           current_setting('server_version_num')::int >= 160000 AS pg16,
+           EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'audit_api') AS api
+    FROM pg_roles r WHERE r.rolname = current_user`.execute(db.kysely)).rows[0];
+  const unchanged = 'nothing was changed';
+  if (!me.api) throw new Error(`Role audit_api does not exist: run migrate first (migration 009 creates it); ${unchanged}`);
+  if (me.superuser) return;
+  if (!me.createrole) {
+    throw new Error(`The database login ${me.me} cannot create or change roles: it needs CREATEROLE (run create-api-login as an administrator with CREATEROLE); ${unchanged}`);
+  }
+  if (!me.pg16) return;
+  const target = existing ? name : 'audit_api';
+  const admin = (await sql<{ ok: boolean }>`SELECT pg_has_role(current_user, ${target}, 'MEMBER WITH ADMIN OPTION') AS ok`.execute(db.kysely)).rows[0].ok;
+  if (admin) return;
+  if (existing) {
+    throw new Error(`The database login ${me.me} has CREATEROLE but not ADMIN OPTION on ${name}, which Postgres 16 needs to change its password (the login that created it has it); ${unchanged}`);
+  }
+  throw new Error(`The database login ${me.me} has CREATEROLE but not ADMIN OPTION on audit_api, which Postgres 16 needs to grant it (GRANT audit_api TO ${me.me} WITH ADMIN OPTION); ${unchanged}`);
 }

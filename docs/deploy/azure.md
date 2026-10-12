@@ -47,6 +47,8 @@ authentication-context fallback described in spec section 13.
    - The login is a member of `audit_api`, which can read everything and append to the record but never change, delete or unprotect it.
    - Run again with the same name, it only changes the password. It does so only for a login this tool made: no privileged attributes, owning nothing, and `audit_api` as its only membership. Otherwise it refuses; choose a new name.
    - `API_DB_PASSWORD_FILE` works in place of `API_DB_PASSWORD`.
+   - Before sending any role statement it checks that the login running it can succeed (superuser, or `CREATEROLE` plus, on Postgres 16, `ADMIN OPTION` on `audit_api` to create the login, or on the login itself to change its password), and otherwise refuses naming what is missing. A failed statement would be written to the server log with the password in it.
+   - The statement contains the password. If the server logs DDL (`log_statement=ddl` or `all`, or pgAudit's `ddl` class), the successful statement is logged too: turn that off for the run, or keep those logs out of wide-access workspaces.
 6. The API's `DATABASE_URL` uses `audit_app` and the server's host name, with `DATABASE_SSL=verify-full` (the default in production). Azure's server certificate chains to a public CA; set `DATABASE_SSL_CA_FILE` only for a private CA.
 7. Never put TLS parameters in the URL (`sslmode`, `ssl`, `sslcert`, `sslkey`, `sslrootcert`, `sslnegotiation`, `uselibpqcompat`). Start-up refuses them, because node-postgres would let the URL override `DATABASE_SSL`; the API also strips them before connecting.
 

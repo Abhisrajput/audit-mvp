@@ -90,6 +90,6 @@ Exit 1 means escalate as a data-integrity incident. Do not edit data to make it 
 
 ## 6. Rotating secrets
 
-- **API database password.** Run `API_DB_PASSWORD=<new, 16+ characters> node dist/db/cli.js create-api-login audit_app` again, as a login with `CREATEROLE`. For an existing login made by this tool, it only changes the password; otherwise it refuses and you choose a new name. Update `DATABASE_URL` in Key Vault, then roll the `api` revision.
+- **API database password.** Run `API_DB_PASSWORD=<new, 16+ characters> node dist/db/cli.js create-api-login audit_app` again, as the login that created it (it holds `ADMIN OPTION` on it) or a superuser; the tool refuses before sending anything if the login lacks that. For an existing login made by this tool, it only changes the password; otherwise it refuses and you choose a new name. Update `DATABASE_URL` in Key Vault, then roll the `api` revision.
 - **`METRICS_TOKEN`.** Update Prometheus's scrape credential first, then Key Vault, then roll the revision. Metrics gaps are expected between the steps.
 - **OIDC client secret.** Create the new secret in Entra, update it in Key Vault, then roll the revision. Remove the old secret afterwards.

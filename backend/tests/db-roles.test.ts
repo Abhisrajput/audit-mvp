@@ -107,4 +107,44 @@ describe('the API database role', () => {
     await owner.execScript(`CREATE ROLE ${inOwner} NOLOGIN; GRANT "${ownerName}" TO ${inOwner}; CREATE ROLE ${plain} NOLOGIN; CREATE ROLE ${repl} NOLOGIN REPLICATION;`);
     for (const name of [inOwner, plain, repl]) await expect(createApiLogin(owner, name, 'x'.repeat(20)), name).rejects.toThrow(/choose a new name/);
   });
+
+  it('refuses, before any role DDL, when the login running it cannot create or grant the API login [REQ-20]', async () => {
+    const { db: owner, url } = await testDbWithUrl();
+    const x = (p: string) => `${p}_${crypto.randomBytes(4).toString('hex')}`;
+    const pw = crypto.randomBytes(16).toString('hex');
+    const plain = x('no_createrole');
+    const noAdmin = x('createrole_only');
+    const admin = x('createrole_admin');
+    await owner.execScript(`CREATE ROLE ${plain} LOGIN PASSWORD '${pw}'; CREATE ROLE ${noAdmin} LOGIN CREATEROLE PASSWORD '${pw}';
+      CREATE ROLE ${admin} LOGIN CREATEROLE PASSWORD '${pw}'; GRANT audit_api TO ${admin} WITH ADMIN OPTION;`);
+    const as = (name: string) => {
+      const u = new URL(url);
+      u.username = name;
+      u.password = pw;
+      const db = connectPg(u.toString());
+      opened.push(db);
+      return db;
+    };
+    const exists = async (name: string) => (await sql`SELECT 1 FROM pg_roles WHERE rolname = ${name}`.execute(owner.kysely)).rows.length > 0;
+    const password = crypto.randomBytes(16).toString('hex');
+
+    const target1 = x('api');
+    const refused1 = await createApiLogin(as(plain), target1, password).catch((err: Error) => err);
+    expect(refused1).toBeInstanceOf(Error);
+    expect((refused1 as Error).message).toMatch(new RegExp(`${plain}.*CREATEROLE`));
+    expect((refused1 as Error).message).not.toContain(password);
+    expect(await exists(target1)).toBe(false);
+
+    const target2 = x('api');
+    const refused2 = await createApiLogin(as(noAdmin), target2, password).catch((err: Error) => err);
+    expect((refused2 as Error).message).toMatch(new RegExp(`${noAdmin}.*ADMIN OPTION on audit_api`));
+    expect(await exists(target2)).toBe(false);
+
+    const target3 = x('api');
+    expect(await createApiLogin(as(admin), target3, password)).toBe('created');
+    expect(await createApiLogin(as(admin), target3, crypto.randomBytes(16).toString('hex'))).toBe('updated');
+    // A CREATEROLE login without ADMIN OPTION on that login (it did not create it) may not re-password it either.
+    const refused3 = await createApiLogin(as(noAdmin), target3, password).catch((err: Error) => err);
+    expect((refused3 as Error).message).toMatch(new RegExp(`${noAdmin}.*ADMIN OPTION on ${target3}`));
+  });
 });
