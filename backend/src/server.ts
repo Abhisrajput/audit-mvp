@@ -3,7 +3,7 @@ import { loadAuthConfig } from './auth/config';
 import { createBlobStore, loadStorageConfig } from './storage/config';
 import { createOidcClient } from './auth/oidc';
 import { ensureDevUsers } from './auth/dev-users';
-import { loadConfig, loadDotEnv } from './config';
+import { loadCitationPolicy, loadConfig, loadDotEnv } from './config';
 import { connectPg } from './db';
 import { pendingMigrations } from './db/migrate';
 import { createProvider } from './engine/llm/router';
@@ -14,6 +14,7 @@ import { AuditService } from './service';
 async function main() {
   loadDotEnv();
   const config = loadConfig();
+  const citationPolicy = loadCitationPolicy();
   const auth = loadAuthConfig();
   const storage = loadStorageConfig();
   const blobs = createBlobStore(storage);
@@ -46,7 +47,10 @@ async function main() {
   }
   const oidc = auth.oidc ? await createOidcClient(auth.oidc) : null;
   if (oidc) console.log(`Sign-in via ${auth.oidc!.issuer}`);
-  const svc = new AuditService(db, registry, createProvider());
+  if (citationPolicy.allowUnverified) {
+    console.warn('ALLOW_UNVERIFIED_CITATIONS is on: findings may cite knowledge no reviewer has verified (flagged, not blocked). Never use this in production.');
+  }
+  const svc = new AuditService(db, registry, createProvider(), { citationPolicy });
   createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }).listen(config.port, () => {
     console.log(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);
   });

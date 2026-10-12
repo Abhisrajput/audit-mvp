@@ -10,9 +10,15 @@ export const unattended = { unattended: 'test' } as const;
 export const registry = registryFromBundles();
 export const [auditor, reviewer, approver, admin, viewer] = DEV_USERS;
 
+/**
+ * The MVP packs are not yet expert-verified, so tests run the way demos do: unverified knowledge is
+ * cited with a warning. tests/trust.test.ts covers the strict default.
+ */
+export const LENIENT = { citationPolicy: { allowUnverified: true } } as const;
+
 /** A service on its own fresh database. */
 export async function newService(llm: LlmProvider | null = null) {
-  return new AuditService(await testDb(), registry, llm);
+  return new AuditService(await testDb(), registry, llm, LENIENT);
 }
 
 /** A scripted model: returns whatever the handler builds for the request. */

@@ -1,6 +1,7 @@
 import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { PackRegistry } from '../engine/packs';
+import { STRICT_CITATIONS, type CitationPolicy } from '../engine/trust';
 import type { ContentPack, EvalCase } from '../engine/types';
 import type { User } from '../engine/types';
 import { AuditService, ENGINE_VERSION } from '../service';
@@ -25,6 +26,8 @@ export interface EvalReport {
   provider: { id: string; model: string };
   engineVersion: string;
   packVersions: Record<string, string>;
+  /** Optional: stored reports from before the trust rules (REQ-22) have none. */
+  citationPolicy?: CitationPolicy;
   total: number;
   passed: number;
   byKind: Record<string, { total: number; passed: number }>;
@@ -94,11 +97,11 @@ async function runCase(registry: PackRegistry, svc: AuditService, pack: ContentP
   }
 }
 
-export async function runEval(registry: PackRegistry, llm: LlmProvider | null, packIds?: string[]): Promise<EvalReport> {
+export async function runEval(registry: PackRegistry, llm: LlmProvider | null, packIds?: string[], policy: CitationPolicy = STRICT_CITATIONS): Promise<EvalReport> {
   // A throwaway in-process database: eval never touches operational data or the trail.
   const db = await createMemoryDb();
   try {
-    const svc = new AuditService(db, registry, llm);
+    const svc = new AuditService(db, registry, llm, { citationPolicy: policy });
     const packs = registry.list().filter((p) => !packIds || packIds.includes(p.id));
     const cases: EvalCaseResult[] = [];
     for (const pack of packs) {
@@ -116,6 +119,7 @@ export async function runEval(registry: PackRegistry, llm: LlmProvider | null, p
       provider: svc.providerInfo,
       engineVersion: ENGINE_VERSION,
       packVersions: Object.fromEntries(packs.map((p) => [p.id, p.version])),
+      citationPolicy: policy,
       total: cases.length,
       passed: cases.filter((c) => c.passed).length,
       byKind,
@@ -133,6 +137,7 @@ export function evalMarkdown(r: EvalReport): string {
     `- Run at: ${r.at}`,
     `- Provider: ${r.provider.id} / ${r.provider.model}`,
     `- Engine: ${r.engineVersion}; packs: ${Object.entries(r.packVersions).map(([k, v]) => `${k}@${v}`).join(', ')}`,
+    `- Unverified citations: ${r.citationPolicy?.allowUnverified ? 'allowed with a warning (not valid for release)' : 'blocked'}`,
     `- Result: **${r.passed}/${r.total} passed**`,
     ``,
     `| Kind | Passed |`,

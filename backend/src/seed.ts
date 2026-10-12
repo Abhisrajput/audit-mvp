@@ -1,4 +1,4 @@
-import { loadConfig, loadDotEnv } from './config';
+import { loadCitationPolicy, loadConfig, loadDotEnv } from './config';
 import { connectPg } from './db';
 import { listEngagements } from './db/engagement-repo';
 import { createProvider } from './engine/llm/router';
@@ -15,13 +15,14 @@ type Field = [controlId: string, designAdequate: boolean, observation: string, e
 
 async function main() {
   loadDotEnv();
+  const citationPolicy = loadCitationPolicy();
   const db = connectPg(loadConfig().databaseUrl);
   try {
     if ((await listEngagements(db.kysely)).length) {
       throw new Error('Database already has engagements. Seed only an empty database (locally: docker compose down -v, then migrate).');
     }
     const registry = await prepareRegistry(db, loadBundles(), { production: process.env.NODE_ENV === 'production' });
-    const svc = new AuditService(db, registry, createProvider());
+    const svc = new AuditService(db, registry, createProvider(), { citationPolicy });
     const [auditor, reviewer, approver] = DEV_USERS;
 
     async function build(meta: Parameters<AuditService['createEngagement']>[0], fields: Field[], approveFirst: number) {

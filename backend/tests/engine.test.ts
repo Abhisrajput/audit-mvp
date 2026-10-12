@@ -44,7 +44,9 @@ describe('module chain', () => {
       expect(row.citations.every((c) => registry.clauses.has(c.clauseId))).toBe(true);
     }
     const rcmRun = (await svc.trailFor(e.id)).find((b) => b.moduleId === 'rcm')!;
-    expect(rcmRun.qaActions.every((a) => a.gate === 'citation' && a.outcome === 'pass')).toBe(true);
+    const citationGates = rcmRun.qaActions.filter((a) => a.gate === 'citation');
+    expect(citationGates.length).toBe(e.rcm.length);
+    expect(citationGates.every((a) => a.outcome === 'pass')).toBe(true);
   });
 });
 

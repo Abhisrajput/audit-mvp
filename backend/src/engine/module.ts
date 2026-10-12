@@ -1,6 +1,7 @@
 import type { Bm25Index } from './grounding';
 import type { LlmProvider } from './llm/provider';
 import type { PackRegistry } from './packs';
+import type { CitationPolicy } from './trust';
 import type { Engagement, LogEntry, QaAction, RetrievalHit, User } from './types';
 
 export interface Grounding {
@@ -23,6 +24,7 @@ export class ModuleContext {
     readonly llm: LlmProvider | null,
     readonly actor: User,
     readonly input: Record<string, unknown>,
+    readonly policy: CitationPolicy,
   ) {}
 
   step(step: string, detail: string) {

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadCitationPolicy, loadDotEnv } from '../config';
 import { createProvider } from '../engine/llm/router';
 import { createMemoryDb } from '../db/pglite';
 import { compilePacks } from '../knowledge/graph/compile';
@@ -9,6 +10,8 @@ import { evalMarkdown, runEval } from './harness';
 
 // Usage: npm run eval [-- --provider anthropic] [--packs food,pharma]
 async function main() {
+  loadDotEnv();
+  const policy = loadCitationPolicy();
   const args = process.argv.slice(2);
   const arg = (name: string) => {
     const i = args.indexOf(`--${name}`);
@@ -24,7 +27,7 @@ async function main() {
   } finally {
     await graph.close();
   }
-  const report = await runEval(registry, createProvider(arg('provider') ?? 'offline'), arg('packs')?.split(','));
+  const report = await runEval(registry, createProvider(arg('provider') ?? 'offline'), arg('packs')?.split(','), policy);
   const outDir = path.resolve(__dirname, '../../validation-output');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'eval-latest.json'), JSON.stringify(report, null, 2));

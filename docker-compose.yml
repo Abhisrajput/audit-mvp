@@ -36,6 +36,8 @@ services:
       # Local demo defaults. A real deployment sets NODE_ENV=production, DEV_AUTH=false and the OIDC_* settings.
       NODE_ENV: ${NODE_ENV:-development}
       DEV_AUTH: ${DEV_AUTH:-true}
+      # Demo only: the packs are unreviewed drafts (refused when NODE_ENV=production)
+      ALLOW_UNVERIFIED_CITATIONS: ${ALLOW_UNVERIFIED_CITATIONS:-true}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}

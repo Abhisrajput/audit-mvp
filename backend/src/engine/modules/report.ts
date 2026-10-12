@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AuditModule } from '../module';
+import { trustProblems } from '../trust';
 import type { AuditReport, Engagement, Finding, SignOff, TestConclusion } from '../types';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
@@ -84,8 +85,12 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'>> = {
     const counts: Record<TestConclusion, number> = { Effective: 0, Ineffective: 0, 'Design deficient': 0, 'Not tested': 0 };
     e.rcm.forEach((r) => counts[e.testResults[r.id]?.conclusion ?? 'Not tested']++);
     const packs = e.packIds.map((id) => `${ctx.registry.get(id).name} v${ctx.registry.get(id).version}`).join(', ');
-    const draftClauses = new Set<string>();
-    e.rcm.forEach((r) => r.citations.forEach((c) => ctx.registry.clauses.get(c.clauseId)?.reviewStatus === 'draft' && draftClauses.add(c.clauseId)));
+    // Every cited source that can't be cited under the trust rules (REQ-22): each row's clauses and its control.
+    const notCitable = new Set<string>();
+    e.rcm.forEach((r) => {
+      r.citations.forEach((c) => trustProblems(ctx.registry.clauses.get(c.clauseId)?.trust).length && notCitable.add(c.clauseId));
+      if (trustProblems(ctx.registry.controls.get(r.controlId)?.trust).length) notCitable.add(r.controlId);
+    });
 
     const md = [
       `# Internal Audit Report — ${e.name}`,
@@ -124,7 +129,7 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'>> = {
       ``,
       excluded.length ? `## 5. Excluded from this report\n\n${excluded.map((f) => `- ${f.id} ${f.title} — status ${f.status}`).join('\n')}\n` : '',
       `---`,
-      `Citations marked draft in the content pack (${draftClauses.size}) are pending domain-expert review: ${[...draftClauses].join(', ') || 'none'}.`,
+      `Cited sources not yet verified by a reviewer or due for re-review (${notCitable.size}): ${[...notCitable].join(', ') || 'none'}.`,
     ].join('\n');
 
     return { generatedAt: new Date().toISOString(), markdown: md, includedFindingIds: approved.map((f) => f.id), excludedFindingIds: excluded.map((f) => f.id) };

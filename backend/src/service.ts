@@ -19,6 +19,7 @@ import { ModuleContext, type Grounding } from './engine/module';
 import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
+import { STRICT_CITATIONS, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
@@ -63,6 +64,11 @@ export interface UnattendedSigning {
 
 type Emit = (bundle: UnsealedBundle) => void;
 
+export interface ServiceOptions {
+  /** Defaults to STRICT_CITATIONS: unverified knowledge blocks release. */
+  citationPolicy?: CitationPolicy;
+}
+
 /** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
 class NoChange {
   constructor(readonly finding: Finding) {}
@@ -70,8 +76,10 @@ class NoChange {
 
 export class AuditService {
   readonly grounding: Grounding;
+  readonly citationPolicy: CitationPolicy;
 
-  constructor(readonly db: Db, readonly registry: PackRegistry, readonly llm: LlmProvider | null) {
+  constructor(readonly db: Db, readonly registry: PackRegistry, readonly llm: LlmProvider | null, opts: ServiceOptions = {}) {
+    this.citationPolicy = opts.citationPolicy ?? STRICT_CITATIONS;
     this.grounding = {
       clauses: new Bm25Index([...registry.clauses.values()].map((c) => ({ id: c.id, text: clauseText(c) }))),
       controls: new Bm25Index([...registry.controls.values()].map((c) => ({ id: c.id, text: controlText(c) }))),
@@ -178,7 +186,7 @@ export class AuditService {
       // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
       // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
       const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id), await lastRevisionTimes(trx, e.id)) : e;
-      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input);
+      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
       ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
       const output = await mod.run(ctx);
       ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
@@ -276,7 +284,7 @@ export class AuditService {
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
-      const { finding, actions } = findingCitationGate(this.registry, edited, allowed);
+      const { finding, actions } = findingCitationGate(this.registry, edited, allowed, this.citationPolicy);
       e.findings[idx] = finding;
       emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));
       return finding;
