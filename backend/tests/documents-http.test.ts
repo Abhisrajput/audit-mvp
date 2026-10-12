@@ -11,7 +11,7 @@ import { Readable } from 'node:stream';
 import { sql } from 'kysely';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { captureLogs } from '../src/observability/log';
-import { engagementWithFailedControl, newService } from './helpers';
+import { engagementWithFailedControl, NEW_ENGAGEMENT, newService } from './helpers';
 import { devAuthConfig, signIn } from './http';
 
 async function setup(opts: { blobs?: boolean | ((local: LocalBlobStore) => BlobStore); maxUploadBytes?: number; presignDownloads?: boolean } = {}) {
@@ -101,6 +101,29 @@ describe('document API', () => {
     }
     expect((await viewer.get('/api/documents').expect(200)).body).toEqual([]);
     expect((await viewer.get('/api/knowledge/search?q=incident').expect(200)).body).toEqual([]);
+  });
+
+  it('redacts trail entries for documents the reader may not see, keeping their place in the chain [REQ-23]', async () => {
+    const { app } = await setup();
+    const manager = await signIn(app, 'reviewer');
+    const created = await manager.post('/api/engagements', NEW_ENGAGEMENT).expect(201);
+    const engagementId = created.body.id as string;
+    const up = await upload(manager, Buffer.from('%PDF restricted incident'));
+    await manager.post('/api/documents', {
+      sha256: up.body.sha256, filename: 'incident.pdf', mime: 'application/pdf', kind: 'other', classification: 'restricted', engagementId,
+    }).expect(201);
+
+    const full = (await manager.get(`/api/engagements/${engagementId}/trail`).expect(200)).body;
+    const shown = full.find((b: any) => b.moduleId === 'document:register');
+    expect(shown.inputs).toMatchObject({ classification: 'restricted', sha256: up.body.sha256 });
+    expect(shown.redacted).toBeUndefined();
+
+    const viewer = await signIn(app, 'viewer');
+    const limited = (await viewer.get(`/api/engagements/${engagementId}/trail`).expect(200)).body;
+    const hidden = limited.find((b: any) => b.moduleId === 'document:register');
+    expect(hidden).toMatchObject({ id: shown.id, seq: shown.seq, hash: shown.hash, prevHash: shown.prevHash, actor: shown.actor, redacted: true, inputs: { classification: 'restricted' }, output: null, executionLog: [] });
+    expect(JSON.stringify(limited)).not.toContain(up.body.sha256);
+    expect(limited.map((b: any) => b.seq)).toEqual(full.map((b: any) => b.seq));
   });
 
   it('refuses registrations that are wrong, unknown or beyond what the uploader may read', async () => {

@@ -7,6 +7,7 @@ import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
 import { errorHandler } from './http/errors';
 import { DEFAULT_RATE_LIMITS, rateLimiters, securityHeaders, type RateLimits } from './http/security';
+import { visibleTrail } from './knowledge/trail-visibility';
 import { documentRoutes, UPLOAD_PATH, type StorageDeps } from './knowledge/routes';
 import { requestContext } from './observability/context';
 import { accessLog } from './observability/log';
@@ -178,7 +179,7 @@ export function createApp(
   }));
 
   // ----- Evidence & validation -----
-  app.get('/api/engagements/:id/trail', readers, wrap(async (req, res) => res.json(await svc.trailFor(param(req, 'id')))));
+  app.get('/api/engagements/:id/trail', readers, wrap(async (req, res) => res.json(visibleTrail(await svc.trailFor(param(req, 'id')), actorOf(req).role))));
   app.get('/api/trail/verify', readers, wrap(async (_req, res) => res.json(await svc.verifyTrail())));
 
   app.post('/api/eval/run', evaluators, wrap(async (_req, res) => {
