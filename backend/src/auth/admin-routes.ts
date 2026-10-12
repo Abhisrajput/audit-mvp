@@ -4,6 +4,7 @@ import type { Db } from '../db';
 import type { Role } from '../engine/types';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
+import { knowledgeDue } from '../knowledge/graph/due';
 import type { AuthConfig } from './config';
 import { actorOf, requireRole } from './http';
 import { recordIdentityEvent } from './identity-trail';
@@ -24,6 +25,9 @@ export function adminRoutes(db: Db, cfg: AuthConfig): Router {
   r.use('/api/admin', requireRole(['admin']));
 
   r.get('/api/admin/users', wrap(async (_req, res) => res.json(await listUsers(db.kysely))));
+
+  // Library concepts awaiting expert verification or re-review: ids, titles and dates only.
+  r.get('/api/admin/knowledge/due', wrap(async (_req, res) => res.json(await knowledgeDue(db.kysely))));
 
   r.get('/api/admin/settings', (_req, res) =>
     res.json({
