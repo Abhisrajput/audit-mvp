@@ -139,6 +139,51 @@ export interface SignIntentsTable {
   completed_at: NullableTimestamp;
 }
 
+export interface DocumentsTable {
+  id: string;
+  sha256: string;
+  filename: string;
+  mime: string;
+  size: number;
+  kind: 'evidence' | 'sop' | 'policy' | 'prior_report' | 'regulation' | 'okf_concept' | 'other';
+  classification: 'internal' | 'confidential' | 'restricted';
+  engagement_id: string | null;
+  uploaded_by: string;
+  uploaded_at: Generated<Date>;
+  retain_until: ColumnType<string | null, string | null | undefined, string | null>;
+  retention_expired: ColumnType<boolean, boolean | undefined, boolean>;
+  metadata: ColumnType<Record<string, unknown>, string | undefined, string>;
+}
+
+export interface DocumentTextTable {
+  document_id: string;
+  extractor: string;
+  extractor_version: string;
+  text: string;
+  pages: ColumnType<number[], string | undefined, string>;
+  extracted_at: Generated<Date>;
+}
+
+export interface ChunksTable {
+  id: string;
+  document_id: string | null;
+  kg_node_id: string | null;
+  ordinal: number;
+  page: number | null;
+  text: string;
+  tsv: ColumnType<string, never, never>;
+  embedding: ColumnType<string | null, string | null | undefined, string | null>;
+  classification: 'internal' | 'confidential' | 'restricted';
+  engagement_id: string | null;
+}
+
+
+export interface BlobUploadsTable {
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: Generated<Date>;
+}
+
 export interface DB {
   engagements: EngagementsTable;
   engagement_work: EngagementWorkTable;
@@ -151,4 +196,8 @@ export interface DB {
   finding_revisions: FindingRevisionsTable;
   signatures: SignaturesTable;
   sign_intents: SignIntentsTable;
+  documents: DocumentsTable;
+  document_text: DocumentTextTable;
+  chunks: ChunksTable;
+  blob_uploads: BlobUploadsTable;
 }

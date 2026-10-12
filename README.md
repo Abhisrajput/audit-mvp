@@ -49,7 +49,7 @@ Requires Node 20+ (tested on 22) and Docker.
 
 ```bash
 # Database (Postgres 16 + pgvector) on localhost:5432
-cp .env.example .env   # then set POSTGRES_PASSWORD
+cp .env.example .env   # then set POSTGRES_PASSWORD (and S3_ROOT_* if you run the full Compose stack)
 docker compose up -d postgres
 
 # API (port 3002)
@@ -66,10 +66,14 @@ npm install
 npm run dev         # open http://localhost:5174
 ```
 
-Or run everything with Docker: `cp .env.example .env` (then set `POSTGRES_PASSWORD`), then `docker compose up --build` from the repo root.
-Compose starts Postgres, runs migrations once, then starts the API and the UI on
+Or run everything with Docker: `cp .env.example .env` (then set `POSTGRES_PASSWORD`, `S3_ROOT_ACCESS_KEY` and `S3_ROOT_SECRET_KEY`), then `docker compose up --build` from the repo root.
+Compose starts Postgres and the object store (SeaweedFS, S3-compatible), runs migrations and creates the storage bucket once
+(`objectstore-init`), then starts the API and the UI on
 http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
-To reset the local database: `docker compose down -v`.
+To reset the local database and stored files: `docker compose down -v`.
+
+Using your own Postgres instead of Compose's: it needs the **pgvector** extension (migration 005 runs `CREATE EXTENSION vector`).
+On Azure Database for PostgreSQL Flexible Server, first allow-list it: add `vector` to the `azure.extensions` server parameter.
 Compose binds the UI and API to localhost only; demo sign-in must be off (`DEV_AUTH=false`) on any machine others can reach.
 
 **Coming from the JSON-file MVP?** Import your old data once into an empty
@@ -131,6 +135,58 @@ Seeded demo data is signed by the seed script without re-authentication and show
 **Identity-provider settings for signing:**
 - The ID token must carry the `auth_time` claim. On **Entra ID**, add `auth_time` as an optional claim to the ID token (*Token configuration → Add optional claim*). Without it, signing is refused with "did not report when you signed in (auth_time)".
 - Signing asks for a fresh password with `prompt=login` and `max_age=0`. Identity providers that ignore these and reuse an existing session (e.g. Google) are refused at signing, because their `auth_time` is earlier than the signing request.
+
+### Documents and evidence files
+
+Files are stored **content-addressed**: each object's key is its own SHA-256, so a file can't change unnoticed and duplicates are stored once.
+
+**Where files are stored** (`BLOB_DRIVER`):
+- `local`: a folder; development only.
+- `s3`: AWS S3, or any S3-compatible store. Compose runs SeaweedFS (S3-compatible) for you; its keys come from `S3_ROOT_ACCESS_KEY` / `S3_ROOT_SECRET_KEY` in `.env`.
+- `azure`: Azure Blob Storage.
+
+For write-once retention, turn on S3 Object Lock, or time-based retention (immutability) on the Azure container.
+The local SeaweedFS in Compose has **no Object Lock / WORM**: it is for development only. Production should use a bucket
+with Object Lock (or an Azure container with immutable storage).
+
+**Storage permissions.** On S3 the API needs `s3:GetObject`, `s3:PutObject` and `s3:ListBucket` on the bucket.
+`s3:ListBucket` lets S3 answer "no such object" (404) instead of "access denied" (403); without it, every missing
+object reads as a storage failure. Uploads are conditional writes (`If-None-Match: *`), so an existing object is never
+rewritten. SeaweedFS 3.80 ignores that condition, so Compose sets `S3_CONDITIONAL_WRITES=false` (the API checks for the
+object first); leave it at the default `true` on AWS. On Azure, the identity needs read and create on blobs in the container.
+
+**Storage failures are not "not found".** A missing bucket or container, or denied credentials, answers
+`503 STORAGE_UNAVAILABLE`. A registered document whose bytes are gone answers `500 STORAGE_INTEGRITY` and is logged with its
+id and SHA-256.
+
+**Presigned downloads** (`BLOB_PRESIGN_DOWNLOADS=true`) redirect the browser to the storage service, so the storage
+endpoint must be reachable from users' browsers (Compose's `objectstore:8333` is not). Links last 60 seconds and always
+download as an attachment.
+
+**Downloads are inert.** Every file is stored as `application/octet-stream`. HTML, XML, SVG and script types are served as
+`application/octet-stream`, always as an attachment, with `Content-Security-Policy: sandbox`.
+
+**Retention.** Documents past retention stay in listings and metadata with `retentionExpired: true`; search skips them and
+their content answers `410 RETENTION_EXPIRED`.
+
+**Who can read what.** Each document is registered with a kind (evidence, SOP, policy, ...), a classification, and optionally an engagement:
+
+| Role | May read |
+|---|---|
+| Viewer | internal |
+| Auditor | internal, confidential |
+| Audit manager, CAE | internal, confidential, restricted |
+| Administrator | nothing (no audit content) |
+
+**Search** (`GET /api/knowledge/search?q=...&engagementId=...&kinds=sop,policy&limit=10`) returns global documents plus that engagement's own, and never another engagement's. `q` is required (up to 500 characters); `limit` is 1–50. Listing (`GET /api/documents?engagementId=...`) is scoped the same way.
+- Filtering by classification and engagement happens inside the database query, so text you may not read never leaves the database.
+- A document you may not read answers "not found".
+
+**API, for now** (the upload screen arrives with the evidence work):
+1. `PUT /api/blobs` with the file as the body returns its `sha256`.
+2. `POST /api/documents` registers it, optionally with its text.
+
+Registrations are recorded in the audit trail. Documents are never deleted; retention is flagged.
 
 ### Demo script (≈10 minutes)
 

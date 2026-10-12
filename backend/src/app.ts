@@ -5,6 +5,7 @@ import { adminRoutes } from './auth/admin-routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
+import { documentRoutes, UPLOAD_PATH, type StorageDeps } from './knowledge/routes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { wrap } from './http-util';
@@ -43,11 +44,17 @@ const FindingPatchSchema = z
   })
   .partial();
 
-export function createApp(svc: AuditService, auth: AuthDeps) {
+/** Routes that parse their own bodies (see documentRoutes). */
+const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
+
+export function createApp(svc: AuditService, auth: AuthDeps, storage: StorageDeps = { blobs: null, maxUploadBytes: 25 * 1024 * 1024, presignDownloads: false }) {
   const app = express();
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
-  app.use(express.json({ limit: '1mb' }));
+  // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,
+  // so the global parser skips both: a body parsed here would never reach their own parsers.
+  const json = express.json({ limit: '1mb' });
+  app.use((req, res, next) => (OWN_BODY_PARSER.has(req.path.toLowerCase().replace(/\/+$/, '')) ? next() : json(req, res, next)));
   app.use(sessionMiddleware(svc.db.kysely, auth.config));
 
   const param = (req: Request, name: string) => String(req.params[name]);
@@ -72,6 +79,7 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   const evaluators = requireRole([...PREPARER_ROLES, 'cae']);
   app.use(adminRoutes(svc.db, auth.config));
   app.use(signing.router);
+  app.use(documentRoutes(svc, storage));
 
   app.get('/api/modules', readers, (_req, res) => res.json(svc.modules()));
 
@@ -152,9 +160,13 @@ export function createApp(svc: AuditService, auth: AuthDeps) {
   }));
   app.get('/api/validation/traceability', readers, wrap(async (_req, res) => res.json(buildTraceability(await svc.latestEvalRun()))));
 
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', code: 'VALIDATION', issues: err.issues });
+    if ((err as { type?: string }).type === 'entity.too.large') {
+      const upload = req.path.toLowerCase().startsWith(UPLOAD_PATH);
+      return res.status(413).json({ error: upload ? 'The file is larger than the upload limit' : 'The request body is larger than the limit', code: 'VALIDATION' });
+    }
     console.error(err);
     res.status(500).json({ error: 'Internal error', code: 'INTERNAL' });
   });

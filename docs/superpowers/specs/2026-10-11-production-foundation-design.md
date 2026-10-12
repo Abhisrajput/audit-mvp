@@ -371,6 +371,7 @@ access. Every search is recorded in the trail's retrieval set.
 - `api` image: Node 22, non-root, read-only root filesystem. Commands: `serve`, `migrate`, `packs:compile`, `verify`.
 - `web` image: nginx serving the built UI and proxying `/api`.
 - Docker Compose: `postgres` (pgvector image), `minio`, `api`, `web`; profile `sso` adds `keycloak`.
+  *Note (plan 1D):* MinIO was superseded by SeaweedFS (S3-compatible) in Compose (`objectstore` + one-shot `objectstore-init`).
 
 ### 7.2 Reference Azure deployment (documented, not scripted)
 

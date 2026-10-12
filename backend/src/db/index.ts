@@ -4,6 +4,8 @@ import type { DB } from './schema';
 
 // int8 (counts, bigserial) as numbers; values in this application stay far below 2^53.
 pg.types.setTypeParser(20, (v) => Number(v));
+// date as the 'YYYY-MM-DD' string it is: parsing it into a Date at local midnight shifts it a day east of UTC.
+pg.types.setTypeParser(1082, (v) => v);
 
 export interface Db {
   kysely: Kysely<DB>;

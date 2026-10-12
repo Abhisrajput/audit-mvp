@@ -1,5 +1,6 @@
 import { createApp } from './app';
 import { loadAuthConfig } from './auth/config';
+import { createBlobStore, loadStorageConfig } from './storage/config';
 import { createOidcClient } from './auth/oidc';
 import { ensureDevUsers } from './auth/dev-users';
 import { loadConfig, loadDotEnv } from './config';
@@ -13,6 +14,8 @@ async function main() {
   loadDotEnv();
   const config = loadConfig();
   const auth = loadAuthConfig();
+  const storage = loadStorageConfig();
+  const blobs = createBlobStore(storage);
   const db = connectPg(config.databaseUrl);
   const pending = await pendingMigrations(db);
   if (pending.length) {
@@ -37,8 +40,8 @@ async function main() {
   if (oidc) console.log(`Sign-in via ${auth.oidc!.issuer}`);
   const registry = PackRegistry.loadFromDir(config.packsDir);
   const svc = new AuditService(db, registry, createProvider());
-  createApp(svc, { config: auth, oidc }).listen(config.port, () => {
-    console.log(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model}`);
+  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }).listen(config.port, () => {
+    console.log(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);
   });
 }
 

@@ -3,3 +3,4 @@ dist
 data/*.json
 validation-output
 .env
+data/blobs
