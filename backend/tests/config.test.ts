@@ -60,6 +60,16 @@ describe('configuration', () => {
     expect(message.match(/Invalid configuration:/g)).toHaveLength(1);
   });
 
+  it('reports TLS problems even when other core settings are invalid [REQ-25]', () => {
+    let message = '';
+    try {
+      loadServerConfig(prod({ DATABASE_SSL: 'disable', DATABASE_URL: `${URL}?sslmode=disable`, LOG_LEVEL: 'verbose', TRUST_PROXY: '9' }));
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    for (const key of ['DATABASE_SSL', 'DATABASE_URL', 'LOG_LEVEL', 'TRUST_PROXY']) expect(message.match(new RegExp(`- ${key}:`, 'g'))).toHaveLength(1);
+  });
+
   it('reads database TLS settings and keeps development defaults simple', () => {
     expect(loadConfig({ DATABASE_URL: URL })).toEqual({
       port: 3002, databaseUrl: URL, packsDir: undefined, production: false, databaseSsl: false, logLevel: 'info', trustProxy: 0, metricsToken: null,

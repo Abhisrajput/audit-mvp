@@ -68,34 +68,40 @@ export function prepareEnv(env: NodeJS.ProcessEnv = process.env): void {
   resolveSecretFiles(env);
 }
 
-const EnvSchema = z
-  .object({
-    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: z.coerce.number().int().min(1).max(65535).default(3002),
-    DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection URL'),
-    DATABASE_SSL: z.enum(['disable', 'require', 'verify-full']).optional(),
-    DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
-    PACKS_DIR: z.string().min(1).optional(),
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-    TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(0),
-    METRICS_TOKEN: z.string().min(24, 'must be at least 24 characters').optional(),
-  })
-  .superRefine((e, ctx) => {
-    const production = e.NODE_ENV === 'production';
-    if (/[?&]sslmode=/i.test(e.DATABASE_URL)) {
-      ctx.addIssue({ code: 'custom', path: ['DATABASE_URL'], message: 'remove sslmode from the URL and set DATABASE_SSL instead (the URL would override it)' });
-    }
-    if (production && e.DATABASE_SSL === 'disable') {
-      ctx.addIssue({ code: 'custom', path: ['DATABASE_SSL'], message: 'must not be disable in production; the database connection must use TLS' });
-    }
-  });
+const EnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3002),
+  DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection URL'),
+  DATABASE_SSL: z.enum(['disable', 'require', 'verify-full']).optional(),
+  DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
+  PACKS_DIR: z.string().min(1).optional(),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(0),
+  METRICS_TOKEN: z.string().min(24, 'must be at least 24 characters').optional(),
+});
+
+/** Cross-field rules run over the raw environment, so a bad field elsewhere never hides them (zod skips refinements then). */
+function crossFieldProblems(env: Record<string, string | undefined>): string[] {
+  const problems: string[] = [];
+  if (/[?&]sslmode=/i.test(env.DATABASE_URL ?? '')) {
+    problems.push('  - DATABASE_URL: remove sslmode from the URL and set DATABASE_SSL instead (the URL would override it)');
+  }
+  if (env.NODE_ENV === 'production' && env.DATABASE_SSL === 'disable') {
+    problems.push('  - DATABASE_SSL: must not be disable in production; the database connection must use TLS');
+  }
+  return problems;
+}
 
 /** Problem lines ("  - KEY: message") for the core settings, plus the parsed config when there are none. */
 function parseCore(env: NodeJS.ProcessEnv): { config: Config | null; problems: string[] } {
   // Compose passes unset optional settings as empty strings; treat them as absent.
   const present = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined && v !== ''));
   const parsed = EnvSchema.safeParse(present);
-  if (!parsed.success) return { config: null, problems: parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`) };
+  const problems = [
+    ...(parsed.success ? [] : parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`)),
+    ...crossFieldProblems(present),
+  ];
+  if (!parsed.success || problems.length) return { config: null, problems };
   const e = parsed.data;
   const production = e.NODE_ENV === 'production';
   const mode = e.DATABASE_SSL ?? (production ? 'verify-full' : 'disable');
