@@ -1,15 +1,19 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import { sql } from 'kysely';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
+import { createOidcClient } from '../src/auth/oidc';
 import { readTrail } from '../src/db/trail-repo';
 import { verifyChain } from '../src/engine/trail';
 import { errorHandler, pgErrorResponse } from '../src/http/errors';
 import { requestContext } from '../src/observability/context';
 import { accessLog, captureLogs, logger } from '../src/observability/log';
-import { auditor, NEW_ENGAGEMENT } from './helpers';
+import { httpErrors } from '../src/observability/metrics';
+import { auditor, NEW_ENGAGEMENT, newService } from './helpers';
 import { appWithDevUsers, devAuthConfig, signIn } from './http';
+import { startMockOidc } from './mock-oidc';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -65,6 +69,26 @@ describe('request ids and error responses', () => {
     expect(badJson.body).toEqual({ error: 'The request body is not valid JSON', code: 'VALIDATION', requestId: badJson.headers['x-request-id'] });
   });
 
+  it('answers other malformed request bodies as client errors, not INTERNAL', async () => {
+    const { app } = await appWithDevUsers();
+    const count = async (code: string) => (await httpErrors.get()).values.find((v) => v.labels.code === code)?.value ?? 0;
+    const before = { validation: await count('VALIDATION'), internal: await count('INTERNAL') };
+    const logs = captureLogs('trace');
+    const encoding = await request(app).post('/api/engagements').set('Content-Type', 'application/json').set('Content-Encoding', 'foo').send('{}');
+    const charset = await request(app).post('/api/engagements').set('Content-Type', 'application/json; charset=latin9').send('{}');
+    logs.restore();
+    for (const res of [encoding, charset]) {
+      expect(res.status).toBe(415);
+      expect(res.body).toEqual({ error: 'The request body could not be read', code: 'VALIDATION', requestId: res.headers['x-request-id'] });
+    }
+    expect(await count('VALIDATION')).toBe(before.validation + 2);
+    expect(await count('INTERNAL')).toBe(before.internal);
+    const lines = logs.text().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { level: number; msg: string; requestId?: string });
+    expect(lines.filter((l) => l.level >= 50)).toEqual([]);
+    const rejected = lines.filter((l) => l.msg === 'request body rejected');
+    expect(rejected.map((l) => [l.level, l.requestId])).toEqual([[40, encoding.headers['x-request-id']], [40, charset.headers['x-request-id']]]);
+  });
+
   it('writes one access-log line per request with a single request id', async () => {
     const app = express();
     app.use(requestContext({ trustProxy: 0 }));
@@ -117,5 +141,47 @@ describe('request ids and error responses', () => {
     expect(text).toContain('"route":"/api/engagements"');
     expect(text).toContain('[redacted]');
     for (const secret of [token, csrf, 'oidc-client-secret-value']) expect(text).not.toContain(secret);
+  });
+
+  it('never logs the OIDC client secret, the code or the state when a sign-in callback fails, even at trace', async () => {
+    const mock = await startMockOidc();
+    try {
+      const clientSecret = `oidc-secret-${crypto.randomBytes(12).toString('hex')}`;
+      const oidcCfg = {
+        issuer: mock.issuer, clientId: 'audit-platform', clientSecret, redirectUri: 'http://localhost:5174/auth/callback',
+        groupsClaim: 'groups', scopes: 'openid profile email groups', roleMap: { 'audit-auditors': 'auditor' as const }, allowInsecure: true,
+      };
+      const svc = await newService();
+      const app = createApp(svc, { config: devAuthConfig({ devAuth: false, oidc: oidcCfg }), oidc: await createOidcClient(oidcCfg) });
+      mock.setUser({ sub: 'm-1', name: 'Mallory', groups: ['audit-auditors'] });
+      /** Starts a sign-in and returns the agent (holding the login cookie) and the IdP's redirect back to us. */
+      const start = async () => {
+        const agent = request.agent(app);
+        const login = await agent.get('/auth/login').expect(302);
+        const authorize = await fetch(login.headers.location, { redirect: 'manual' });
+        return { agent, callback: new URL(authorize.headers.get('location')!) };
+      };
+      const logs = captureLogs('trace');
+      // A forged state, then a bogus code with the right state: the token endpoint refuses it (invalid_grant).
+      const forged = await start();
+      const realState = forged.callback.searchParams.get('state')!;
+      const realCode = forged.callback.searchParams.get('code')!;
+      forged.callback.searchParams.set('state', `forged-${crypto.randomBytes(8).toString('hex')}`);
+      const forgedState = forged.callback.searchParams.get('state')!;
+      const r1 = await forged.agent.get(forged.callback.pathname + forged.callback.search);
+      const bogus = await start();
+      const bogusState = bogus.callback.searchParams.get('state')!;
+      const bogusCode = `bogus-${crypto.randomBytes(12).toString('hex')}`;
+      bogus.callback.searchParams.set('code', bogusCode);
+      const r2 = await bogus.agent.get(bogus.callback.pathname + bogus.callback.search);
+      logs.restore();
+      expect(r1.status).toBeGreaterThanOrEqual(400);
+      expect(r2.status).toBeGreaterThanOrEqual(400);
+      const text = logs.text();
+      expect(text.match(/OIDC callback rejected/g)).toHaveLength(2);
+      for (const secret of [clientSecret, realState, realCode, forgedState, bogusState, bogusCode]) expect(text, secret).not.toContain(secret);
+    } finally {
+      await mock.close();
+    }
   });
 });

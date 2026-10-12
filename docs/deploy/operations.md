@@ -32,7 +32,7 @@ Suggested alerts:
 - p95 of `audit_trail_append_seconds` above 0.5 s.
 - Readiness failing (`/readyz` answering 503).
 
-Every error body is `{ error, code, requestId }`; an unexpected error is `{ code: 'INTERNAL', requestId }` and its detail is only in the logs, under that `requestId`.
+Every error body is `{ error, code, requestId }`; an unexpected error is `{ code: 'INTERNAL', requestId }` and its detail is only in the logs, under that `requestId`. A request body the API cannot read (an unsupported `Content-Encoding` or charset, an aborted upload) is the client's doing: it answers with that 4xx status and `code: 'VALIDATION'`, counts under `VALIDATION`, and logs `request body rejected` at warn, so it never raises the `INTERNAL` alert.
 
 ## 3. Backups
 

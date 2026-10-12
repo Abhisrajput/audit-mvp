@@ -53,6 +53,14 @@ export function errorHandler(): ErrorRequestHandler {
       httpErrors.inc({ code: 'VALIDATION' });
       return res.status(400).json({ error: 'The request body is not valid JSON', code: 'VALIDATION', requestId });
     }
+    // Any other body-parser refusal (encoding.unsupported, charset.unsupported, request.aborted, ...) is the client's doing:
+    // answered with its 4xx status, so anonymous clients cannot raise INTERNAL alerts.
+    const status = (err as { status?: unknown; statusCode?: unknown } | null)?.status ?? (err as { statusCode?: unknown } | null)?.statusCode;
+    if (typeof type === 'string' && typeof status === 'number' && status >= 400 && status < 500) {
+      httpErrors.inc({ code: 'VALIDATION' });
+      logger.warn({ requestId, type, status }, 'request body rejected');
+      return res.status(status).json({ error: 'The request body could not be read', code: 'VALIDATION', requestId });
+    }
     const pg = pgErrorResponse(err);
     if (pg) {
       httpErrors.inc({ code: pg.code });
