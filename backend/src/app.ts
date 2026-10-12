@@ -2,7 +2,7 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { evalMarkdown, runEval } from './eval/harness';
-import { AppError, AuditService, USERS } from './service';
+import { AppError, AuditService, USERS, type MutationOptions } from './service';
 import { buildTraceability } from './validation/traceability';
 
 const NewEngagementSchema = z.object({
@@ -47,6 +47,15 @@ export function createApp(svc: AuditService) {
   const wrap = (fn: (req: Request, res: Response) => unknown) => (req: Request, res: Response, next: NextFunction) =>
     Promise.resolve(fn(req, res)).catch(next);
 
+  /** `If-Match: "<version>"` opts a change into the optimistic-concurrency check. */
+  const mutation = (req: Request): MutationOptions => {
+    const header = req.header('if-match');
+    if (header === undefined) return {};
+    const version = Number(header.replace(/^W\//, '').replace(/"/g, ''));
+    if (!Number.isInteger(version) || version < 1) throw new AppError(400, 'If-Match must be the engagement version number');
+    return { expectedVersion: version };
+  };
+
   app.get('/api/health', (_req, res) => res.json({ ok: true, provider: svc.providerInfo }));
   app.get('/api/users', (_req, res) => res.json(USERS));
   app.get('/api/modules', (_req, res) => res.json(svc.modules()));
@@ -69,71 +78,71 @@ export function createApp(svc: AuditService) {
   });
 
   // ----- Engagements -----
-  app.get('/api/engagements', (_req, res) =>
-    res.json(svc.store.engagements.map((e) => ({ id: e.id, name: e.name, entity: e.entity, site: e.site, auditType: e.auditType, packIds: e.packIds, stage: e.stage, createdAt: e.createdAt, findings: e.findings.length, rcm: e.rcm.length }))),
-  );
-  app.post('/api/engagements', wrap((req, res) => {
+  app.get('/api/engagements', wrap(async (_req, res) => res.json(await svc.listEngagements())));
+  app.post('/api/engagements', wrap(async (req, res) => {
     const body = NewEngagementSchema.parse(req.body);
-    res.status(201).json(svc.createEngagement(body, actor(req)));
+    res.status(201).json(await svc.createEngagement(body, actor(req)));
   }));
-  app.get('/api/engagements/:id', wrap((req, res) => res.json(svc.engagement(param(req, 'id')))));
+  app.get('/api/engagements/:id', wrap(async (req, res) => {
+    const e = await svc.engagement(param(req, 'id'));
+    res.set('ETag', `"${e.version}"`).json(e);
+  }));
 
   app.post('/api/engagements/:id/modules/:moduleId/run', wrap(async (req, res) => {
-    const { bundle, engagement } = await svc.runModule(param(req, 'id'), param(req, 'moduleId'), actor(req), req.body ?? {});
+    const { bundle, engagement } = await svc.runModule(param(req, 'id'), param(req, 'moduleId'), actor(req), req.body ?? {}, mutation(req));
     res.json({ bundle, engagement });
   }));
 
-  app.put('/api/engagements/:id/scope', wrap((req, res) => {
+  app.put('/api/engagements/:id/scope', wrap(async (req, res) => {
     const items = z.array(z.object({ controlId: z.string(), included: z.boolean() })).parse(req.body.items);
-    res.json(svc.setScope(param(req, 'id'), items, actor(req)));
+    res.json(await svc.setScope(param(req, 'id'), items, actor(req), mutation(req)));
   }));
 
-  app.put('/api/engagements/:id/tests/:rowId', wrap((req, res) => {
-    res.json(svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actor(req)));
+  app.put('/api/engagements/:id/tests/:rowId', wrap(async (req, res) => {
+    res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actor(req), mutation(req)));
   }));
 
-  app.put('/api/engagements/:id/findings/:fid', wrap((req, res) => {
-    res.json(svc.editFinding(param(req, 'id'), param(req, 'fid'), FindingPatchSchema.parse(req.body), actor(req)));
+  app.put('/api/engagements/:id/findings/:fid', wrap(async (req, res) => {
+    res.json(await svc.editFinding(param(req, 'id'), param(req, 'fid'), FindingPatchSchema.parse(req.body), actor(req), mutation(req)));
   }));
 
-  app.post('/api/engagements/:id/findings/:fid/signoff', wrap((req, res) => {
+  app.post('/api/engagements/:id/findings/:fid/signoff', wrap(async (req, res) => {
     const body = z.object({ action: z.enum(['review', 'approve', 'reject']), comment: z.string().default('') }).parse(req.body);
-    res.json(svc.signOff(param(req, 'id'), param(req, 'fid'), body.action, body.comment, actor(req)));
+    res.json(await svc.signOff(param(req, 'id'), param(req, 'fid'), body.action, body.comment, actor(req), mutation(req)));
   }));
 
-  app.get('/api/engagements/:id/report.md', wrap((req, res) => {
-    const e = svc.engagement(param(req, 'id'));
+  app.get('/api/engagements/:id/report.md', wrap(async (req, res) => {
+    const e = await svc.engagement(param(req, 'id'));
     if (!e.report) throw new AppError(404, 'No report generated yet');
     res.type('text/markdown').attachment(`${e.id}-report.md`).send(e.report.markdown);
   }));
 
-  app.get('/api/engagements/:id/findings.csv', wrap((req, res) => {
-    res.type('text/csv').attachment(`${param(req, 'id')}-findings.csv`).send(svc.findingsCsv(param(req, 'id')));
+  app.get('/api/engagements/:id/findings.csv', wrap(async (req, res) => {
+    res.type('text/csv').attachment(`${param(req, 'id')}-findings.csv`).send(await svc.findingsCsv(param(req, 'id')));
   }));
 
   // ----- Evidence & validation -----
-  app.get('/api/engagements/:id/trail', wrap((req, res) => res.json(svc.trailFor(param(req, 'id')))));
-  app.get('/api/trail/verify', (_req, res) => res.json(svc.verifyTrail()));
+  app.get('/api/engagements/:id/trail', wrap(async (req, res) => res.json(await svc.trailFor(param(req, 'id')))));
+  app.get('/api/trail/verify', wrap(async (_req, res) => res.json(await svc.verifyTrail())));
 
   app.post('/api/eval/run', wrap(async (_req, res) => {
     const report = await runEval(svc.registry, svc.llm);
-    svc.store.evalRuns.push(report);
-    svc.store.save();
+    await svc.saveEvalRun(report);
     res.json(report);
   }));
-  app.get('/api/eval/runs', (_req, res) => res.json(svc.store.evalRuns.map(({ cases, ...r }) => r).reverse()));
-  app.get('/api/eval/runs/:id', wrap((req, res) => {
-    const r = svc.store.evalRuns.find((x) => x.id === param(req, 'id'));
+  app.get('/api/eval/runs', wrap(async (_req, res) => res.json(await svc.listEvalRuns())));
+  app.get('/api/eval/runs/:id', wrap(async (req, res) => {
+    const r = await svc.getEvalRun(param(req, 'id'));
     if (!r) throw new AppError(404, 'Eval run not found');
     res.json({ ...r, markdown: evalMarkdown(r) });
   }));
-  app.get('/api/validation/traceability', (_req, res) => res.json(buildTraceability(svc.store.evalRuns.at(-1) ?? null)));
+  app.get('/api/validation/traceability', wrap(async (_req, res) => res.json(buildTraceability(await svc.latestEvalRun()))));
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof AppError) return res.status(err.status).json({ error: err.message });
-    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', issues: err.issues });
+    if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code });
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', code: 'VALIDATION', issues: err.issues });
     console.error(err);
-    res.status(500).json({ error: 'Internal error' });
+    res.status(500).json({ error: 'Internal error', code: 'INTERNAL' });
   });
 
   return app;

@@ -1,11 +1,15 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { newService } from './helpers';
 
 describe('HTTP API', () => {
-  const app = createApp(newService());
+  let app: ReturnType<typeof createApp>;
   const as = (user: string) => ({ 'x-user-id': user });
+
+  beforeAll(async () => {
+    app = createApp(await newService());
+  });
 
   it('runs a full engagement end to end over HTTP [REQ-06, REQ-15]', async () => {
     expect((await request(app).post('/api/engagements').send({}).set(as('nobody'))).status).toBe(400);
@@ -48,11 +52,27 @@ describe('HTTP API', () => {
     expect(r.status).toBe(400);
   });
 
+  it('rejects a change sent with a stale If-Match version [REQ-21]', async () => {
+    const id = (await request(app).get('/api/engagements')).body[0].id;
+    const current = await request(app).get(`/api/engagements/${id}`).expect(200);
+    expect(current.headers.etag).toBe(`"${current.body.version}"`);
+    const body = { designAdequate: true, observation: 'All sequences reviewed', evidenceRefs: ['SEQ-Q3'], sampleTested: 20, exceptions: 0 };
+    const put = () => request(app).put(`/api/engagements/${id}/tests/PH-DI-01`).set(as('auditor'));
+    await put().set('If-Match', `"${current.body.version}"`).send(body).expect(200);
+    const stale = await put().set('If-Match', `"${current.body.version}"`).send(body);
+    expect(stale.status).toBe(409);
+    expect(stale.body.code).toBe('VERSION_CONFLICT');
+    expect((await put().set('If-Match', 'not-a-version').send(body)).status).toBe(400);
+  });
+
   it('runs the evaluation harness over all packs and serves the traceability matrix [REQ-13]', async () => {
+    const before = (await request(app).get('/api/trail/verify')).body.length;
     const run = await request(app).post('/api/eval/run').expect(200);
     expect(run.body.passed).toBe(run.body.total);
+    expect((await request(app).get('/api/trail/verify')).body.length).toBe(before);
+    expect((await request(app).get('/api/eval/runs')).body.map((r: any) => r.id)).toEqual([run.body.id]);
     const tm = await request(app).get('/api/validation/traceability').expect(200);
     const high = tm.body.rows.filter((r: any) => r.risk === 'High');
     expect(high.every((r: any) => r.covered)).toBe(true);
-  });
+  }, 120_000);
 });

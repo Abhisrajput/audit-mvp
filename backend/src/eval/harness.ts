@@ -1,8 +1,8 @@
+import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { PackRegistry } from '../engine/packs';
 import type { ContentPack, EvalCase } from '../engine/types';
 import { AuditService, ENGINE_VERSION, USERS } from '../service';
-import { Store } from '../store';
 
 // Evaluation harness: replays expert-labelled cases from each content pack
 // through the real modules and gates. Its report doubles as test evidence in
@@ -39,38 +39,38 @@ interface TestCaseInput {
   exceptions: number;
 }
 
-async function runFieldCase(registry: PackRegistry, llm: LlmProvider | null, pack: ContentPack, input: TestCaseInput, withGaps: boolean) {
-  const svc = new AuditService(new Store(null), registry, llm);
+async function runFieldCase(svc: AuditService, registry: PackRegistry, input: TestCaseInput, withGaps: boolean) {
   const [auditor] = USERS;
   const control = registry.controls.get(input.controlId);
   if (!control) throw new Error(`Eval case references unknown control ${input.controlId}`);
-  const e = svc.createEngagement(
+  const e = await svc.createEngagement(
     { name: 'eval', entity: 'eval', site: 'eval', periodFrom: '2026-01-01', periodTo: '2026-06-30', auditType: 'eval', scopeStatement: control.title, packIds: [control.packId] },
     auditor,
   );
   await svc.runModule(e.id, 'scope', auditor);
-  svc.setScope(e.id, e.scope.map((s) => ({ controlId: s.controlId, included: s.controlId === input.controlId })), auditor);
+  const scoped = await svc.engagement(e.id);
+  await svc.setScope(e.id, scoped.scope.map((s) => ({ controlId: s.controlId, included: s.controlId === input.controlId })), auditor);
   await svc.runModule(e.id, 'rcm', auditor);
-  svc.recordTest(e.id, input.controlId, { designAdequate: input.designAdequate, observation: input.observation, evidenceRefs: input.evidenceRefs, sampleTested: input.sampleTested, exceptions: input.exceptions }, auditor);
+  await svc.recordTest(e.id, input.controlId, { designAdequate: input.designAdequate, observation: input.observation, evidenceRefs: input.evidenceRefs, sampleTested: input.sampleTested, exceptions: input.exceptions }, auditor);
   await svc.runModule(e.id, 'testing', auditor);
   if (withGaps) await svc.runModule(e.id, 'gaps', auditor);
   return svc.engagement(e.id);
 }
 
-async function runCase(registry: PackRegistry, llm: LlmProvider | null, svcForSearch: AuditService, pack: ContentPack, c: EvalCase): Promise<EvalCaseResult> {
+async function runCase(registry: PackRegistry, svc: AuditService, pack: ContentPack, c: EvalCase): Promise<EvalCaseResult> {
   const base = { id: c.id, packId: pack.id, kind: c.kind, description: c.description };
   try {
     if (c.kind === 'retrieval') {
       const k = Number(c.expected.k ?? 5);
       const packIds = (c.input.packIds as string[] | undefined) ?? [pack.id];
       const allowed = new Set(registry.clausesFor(packIds).map((x) => x.id));
-      const hits = svcForSearch.grounding.clauses.search(String(c.input.query), k, (id) => allowed.has(id)).map((h) => h.clauseId);
+      const hits = svc.grounding.clauses.search(String(c.input.query), k, (id) => allowed.has(id)).map((h) => h.clauseId);
       const expected = c.expected.clauseIds as string[];
       const missing = expected.filter((id) => !hits.includes(id));
       return { ...base, passed: missing.length === 0, detail: missing.length ? `Missing from top ${k}: ${missing.join(', ')} (got ${hits.join(', ')})` : `All expected clauses in top ${k}` };
     }
     const input = c.input as unknown as TestCaseInput;
-    const e = await runFieldCase(registry, llm, pack, input, c.kind === 'gaps');
+    const e = await runFieldCase(svc, registry, input, c.kind === 'gaps');
     if (c.kind === 'testing') {
       const got = e.testResults[input.controlId]?.conclusion;
       return { ...base, passed: got === c.expected.conclusion, detail: `expected ${c.expected.conclusion}, got ${got}` };
@@ -94,29 +94,35 @@ async function runCase(registry: PackRegistry, llm: LlmProvider | null, svcForSe
 }
 
 export async function runEval(registry: PackRegistry, llm: LlmProvider | null, packIds?: string[]): Promise<EvalReport> {
-  const svc = new AuditService(new Store(null), registry, llm);
-  const packs = registry.list().filter((p) => !packIds || packIds.includes(p.id));
-  const cases: EvalCaseResult[] = [];
-  for (const pack of packs) {
-    for (const c of pack.evalCases) cases.push(await runCase(registry, llm, svc, pack, c));
+  // A throwaway in-process database: eval never touches operational data or the trail.
+  const db = await createMemoryDb();
+  try {
+    const svc = new AuditService(db, registry, llm);
+    const packs = registry.list().filter((p) => !packIds || packIds.includes(p.id));
+    const cases: EvalCaseResult[] = [];
+    for (const pack of packs) {
+      for (const c of pack.evalCases) cases.push(await runCase(registry, svc, pack, c));
+    }
+    const byKind: EvalReport['byKind'] = {};
+    for (const r of cases) {
+      byKind[r.kind] ??= { total: 0, passed: 0 };
+      byKind[r.kind].total++;
+      if (r.passed) byKind[r.kind].passed++;
+    }
+    return {
+      id: `EVAL-${Date.now()}`,
+      at: new Date().toISOString(),
+      provider: svc.providerInfo,
+      engineVersion: ENGINE_VERSION,
+      packVersions: Object.fromEntries(packs.map((p) => [p.id, p.version])),
+      total: cases.length,
+      passed: cases.filter((c) => c.passed).length,
+      byKind,
+      cases,
+    };
+  } finally {
+    await db.close();
   }
-  const byKind: EvalReport['byKind'] = {};
-  for (const r of cases) {
-    byKind[r.kind] ??= { total: 0, passed: 0 };
-    byKind[r.kind].total++;
-    if (r.passed) byKind[r.kind].passed++;
-  }
-  return {
-    id: `EVAL-${Date.now()}`,
-    at: new Date().toISOString(),
-    provider: svc.providerInfo,
-    engineVersion: ENGINE_VERSION,
-    packVersions: Object.fromEntries(packs.map((p) => [p.id, p.version])),
-    total: cases.length,
-    passed: cases.filter((c) => c.passed).length,
-    byKind,
-    cases,
-  };
 }
 
 export function evalMarkdown(r: EvalReport): string {

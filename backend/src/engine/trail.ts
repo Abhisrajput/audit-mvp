@@ -23,11 +23,15 @@ export function hashBundle(bundle: Omit<TrailBundle, 'hash'>): string {
   return sha256(bundle.prevHash + canonicalJson(bundle));
 }
 
-/** Seals a bundle onto the end of the chain. */
-export function seal(chain: TrailBundle[], bundle: Omit<TrailBundle, 'hash' | 'prevHash' | 'seq'>): TrailBundle {
-  const prev = chain[chain.length - 1];
+export interface ChainTip {
+  seq: number;
+  hash: string;
+}
+
+/** Seals a bundle onto the chain whose last entry is `prev` (null for the first bundle). */
+export function seal(prev: ChainTip | null, bundle: Omit<TrailBundle, 'hash' | 'prevHash' | 'seq'>): TrailBundle {
   // Deep copy: the sealed record must not share objects with live working state.
-  const unsealed = { ...structuredClone(bundle), seq: chain.length + 1, prevHash: prev ? prev.hash : GENESIS_HASH };
+  const unsealed = { ...structuredClone(bundle), seq: prev ? prev.seq + 1 : 1, prevHash: prev ? prev.hash : GENESIS_HASH };
   return { ...unsealed, hash: hashBundle(unsealed) };
 }
 
