@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadCitationPolicy, loadDotEnv } from '../config';
+import { loadCitationPolicy, prepareEnv } from '../config';
 import { createProvider } from '../engine/llm/router';
 import { createMemoryDb } from '../db/pglite';
 import { compilePacks } from '../knowledge/graph/compile';
@@ -10,7 +10,7 @@ import { evalMarkdown, runEval } from './harness';
 
 // Usage: npm run eval [-- --provider anthropic] [--packs food,pharma]
 async function main() {
-  loadDotEnv();
+  prepareEnv();
   const policy = loadCitationPolicy();
   const args = process.argv.slice(2);
   const arg = (name: string) => {

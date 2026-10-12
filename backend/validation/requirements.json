@@ -21,5 +21,6 @@
   { "id": "REQ-17", "risk": "High", "text": "Actions are authorised by role, and the preparer, reviewer and approver of a finding are distinct people (21 CFR Part 11 §11.10(g)).", "evalKinds": [] },
   { "id": "REQ-18", "risk": "High", "text": "Signing requires re-authentication within 120 seconds, bound to a single-use signing request for that finding, meaning and content (21 CFR Part 11 §11.200(a)).", "evalKinds": [] },
   { "id": "REQ-19", "risk": "High", "text": "Each signature records full name, meaning and time, is displayed with the record, and is bound to the signed content by hash (21 CFR Part 11 §11.50, §11.70).", "evalKinds": [] },
-  { "id": "REQ-22", "risk": "High", "text": "Only human-verified, active, non-stale knowledge nodes are citable in released outputs; unverified sources block release unless explicitly allowed outside production, and stale sources are flagged.", "evalKinds": [] }
+  { "id": "REQ-22", "risk": "High", "text": "Only human-verified, active, non-stale knowledge nodes are citable in released outputs; unverified sources block release unless explicitly allowed outside production, and stale sources are flagged.", "evalKinds": [] },
+  { "id": "REQ-25", "risk": "Medium", "text": "Configuration is validated at start-up; insecure combinations are refused.", "evalKinds": [] }
 ]

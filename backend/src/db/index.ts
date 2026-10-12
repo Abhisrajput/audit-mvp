@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
+import type { DatabaseSsl } from '../config';
 import type { DB } from './schema';
 
 // int8 (counts, bigserial) as numbers; values in this application stay far below 2^53.
@@ -19,12 +20,15 @@ export interface ConnectOptions {
   connectionTimeoutMillis?: number;
   idle_in_transaction_session_timeout?: number;
   statement_timeout?: number;
+  /** TLS for the connection (DATABASE_SSL); false = plain TCP (development and tests only). */
+  ssl?: DatabaseSsl;
 }
 
 export function connectPg(connectionString: string, opts: ConnectOptions = {}): Db {
   const pool = new pg.Pool({
     connectionString,
     max: opts.max ?? 10,
+    ssl: opts.ssl ?? false,
     connectionTimeoutMillis: opts.connectionTimeoutMillis ?? 5000,
     idle_in_transaction_session_timeout: opts.idle_in_transaction_session_timeout ?? 60000,
     statement_timeout: opts.statement_timeout ?? 120000,

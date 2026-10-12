@@ -1,4 +1,4 @@
-import { loadConfig, loadDotEnv } from '../config';
+import { loadConfig, prepareEnv } from '../config';
 import { verifyChain } from '../engine/trail';
 import { importJson } from './import-json';
 import { connectPg } from './index';
@@ -13,10 +13,11 @@ import { readTrail } from './trail-repo';
 const USAGE = 'Usage: cli <migrate | import-json <file> | verify>';
 
 async function main() {
-  loadDotEnv();
+  prepareEnv();
   const [command, arg] = process.argv.slice(2);
   if (!['migrate', 'import-json', 'verify'].includes(command)) throw new Error(USAGE);
-  const db = connectPg(loadConfig().databaseUrl, { max: 2 });
+  const config = loadConfig();
+  const db = connectPg(config.databaseUrl, { max: 2, ssl: config.databaseSsl });
   try {
     if (command === 'migrate') {
       const applied = await migrate(db);

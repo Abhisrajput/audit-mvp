@@ -62,7 +62,7 @@ describe('start-up safety', () => {
   it('refuses to start without a valid DATABASE_URL', () => {
     expect(() => loadConfig({})).toThrow(/DATABASE_URL/);
     expect(() => loadConfig({ DATABASE_URL: 'mysql://x' })).toThrow(/postgres:\/\//);
-    expect(loadConfig({ DATABASE_URL: 'postgres://u:p@h:5432/d', PORT: '4000' })).toEqual({ port: 4000, databaseUrl: 'postgres://u:p@h:5432/d', packsDir: undefined });
+    expect(loadConfig({ DATABASE_URL: 'postgres://u:p@h:5432/d', PORT: '4000' })).toMatchObject({ port: 4000, databaseUrl: 'postgres://u:p@h:5432/d', packsDir: undefined });
   });
 
   it('reports unapplied migrations instead of applying them', async () => {

@@ -21,6 +21,8 @@ services:
     build: ./backend
     command: ['sh', '-c', 'node dist/db/cli.js migrate && node dist/knowledge/packs-cli.js compile']
     environment:
+      # The image sets NODE_ENV=production; locally the migrate step has no TLS database.
+      NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
     depends_on:
       postgres:

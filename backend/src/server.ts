@@ -1,9 +1,8 @@
 import { createApp } from './app';
-import { loadAuthConfig } from './auth/config';
-import { createBlobStore, loadStorageConfig } from './storage/config';
+import { createBlobStore } from './storage/config';
 import { createOidcClient } from './auth/oidc';
 import { ensureDevUsers } from './auth/dev-users';
-import { loadCitationPolicy, loadConfig, loadDotEnv } from './config';
+import { loadServerConfig, prepareEnv } from './config';
 import { connectPg } from './db';
 import { pendingMigrations } from './db/migrate';
 import { createProvider } from './engine/llm/router';
@@ -12,13 +11,10 @@ import { prepareRegistry } from './knowledge/packs';
 import { AuditService } from './service';
 
 async function main() {
-  loadDotEnv();
-  const config = loadConfig();
-  const citationPolicy = loadCitationPolicy();
-  const auth = loadAuthConfig();
-  const storage = loadStorageConfig();
+  prepareEnv();
+  const { core: config, auth, storage, citationPolicy } = loadServerConfig();
   const blobs = createBlobStore(storage);
-  const db = connectPg(config.databaseUrl);
+  const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl });
   const pending = await pendingMigrations(db);
   if (pending.length) {
     await db.close();
