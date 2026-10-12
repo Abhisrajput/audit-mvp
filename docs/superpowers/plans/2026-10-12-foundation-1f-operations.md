@@ -167,6 +167,7 @@ This plan builds on 1A–1E. Its branch is `design/foundation-1f-operations`, st
   | `INSERT, UPDATE` | `engagements`, `engagement_work`, `findings`, `users`, `sessions`, `sign_intents` |
   | `INSERT` only | `trail`, `signatures`, `finding_revisions`, `documents`, `document_text`, `chunks`, `blob_uploads`, `eval_runs` |
   | read-only | `kg_nodes`, `kg_node_versions`, `kg_edges`, `schema_migrations` |
+  | `USAGE` | every sequence in `public` (`findings.seq` is a `bigserial`) |
 
   - Nothing gets `DELETE`, `TRUNCATE`, `REFERENCES` or `TRIGGER`.
   - `audit_api` owns nothing, so it can't alter or drop a table or its triggers.
@@ -1274,12 +1275,7 @@ Expected: PASS, and nginx prints `syntax is ok` and `test is successful`.
 
 Then run `npm test`. Expected: the whole suite passes. A test that drives many demo sign-ins through one app must stay under 60 requests per minute to `/auth/*`. If one doesn't, give that test's app a higher `authPerMinute` through `OpsOptions`, rather than raising the default, and list it in the report.
 
-Finally, check the browser app by hand with `docker compose up -d --build`:
-- Sign in at http://localhost:8080.
-- Run one module.
-- Open the signing pop-up.
-
-The browser console must show no CSP violations. Record the result in the report.
+A browser check of the SPA's and the pop-up's CSP can't be done from this task: sign in at :8080, run a module, open the signing pop-up, and watch for console CSP violations. It goes into the pull request's test plan as a reviewer checkbox.
 
 - [ ] **Step 5: Commit**
 
@@ -2044,6 +2040,8 @@ describe('the API database role', () => {
       });
       for (const p of ['DELETE', 'TRUNCATE', 'TRIGGER', 'REFERENCES']) expect({ table, p, ok: await can(p) }).toEqual({ table, p, ok: false });
     }
+    // Inserting a finding draws its seq from a sequence (001: findings.seq bigserial).
+    expect((await sql<{ ok: boolean }>`SELECT has_sequence_privilege('audit_api', 'public.findings_seq_seq', 'USAGE') AS ok`.execute(owner.kysely)).rows[0].ok).toBe(true);
   });
 
   it('cannot change, delete or unprotect the trail and signatures, even bypassing the application [REQ-20]', async () => {
@@ -2126,6 +2124,9 @@ GRANT INSERT, UPDATE ON engagements, engagement_work, findings, users, sessions,
 
 -- The record: written once, never changed by the API.
 GRANT INSERT ON trail, signatures, finding_revisions, documents, document_text, chunks, blob_uploads, eval_runs TO audit_api;
+
+-- findings.seq is a bigserial: inserting a finding draws from its sequence.
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO audit_api;
 
 -- kg_nodes, kg_node_versions, kg_edges and schema_migrations stay read-only: packs:compile and migrate run as the owner.
 ```
@@ -2495,6 +2496,11 @@ Add `security_opt: ['no-new-privileges:true']` to the `migrate` and `frontend` s
 Run:
 - `cd backend && npx vitest run tests/api.test.ts && npm run typecheck && npm run traceability; echo "exit=$?"`. Expected: PASS, and `exit=0` at 25/25.
 - `docker run --rm -v "$PWD/..:/repo" -w /repo rhysd/actionlint:1.7.12 -color`. Expected: no findings.
+- A local Trivy baseline, run on the images the smoke test below builds, so the CI scan isn't red on first push for reasons outside the code:
+  ```bash
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 audit-platform-backend:local
+  ```
+  Run the same command on the web image, as tagged by `docker compose images frontend`. If a base image (`node:22-alpine`, `nginx:1.27-alpine`) has a fixable HIGH or CRITICAL finding, move it to the newest patch tag of the same line that is at least two weeks old, and say so in the report. If the finding is in an npm dependency, report it as a concern instead of changing dependencies.
 - A smoke test of the hardened stack, from the repo root, with a `.env` copied from `.env.example`:
   ```bash
   docker compose up -d --build
