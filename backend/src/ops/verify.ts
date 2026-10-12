@@ -76,6 +76,21 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
   return { checked: rows.length, problems };
 }
 
+/** Every document:register trail entry must still have its documents row, with the SHA-256 the trail sealed. */
+async function checkRegistrations(db: Kysely<DB>, trail: Awaited<ReturnType<typeof readTrail>>) {
+  const problems: string[] = [];
+  const rows = new Map((await db.selectFrom('documents').select(['id', 'sha256']).execute()).map((r) => [r.id, r.sha256]));
+  for (const b of trail) {
+    if (b.moduleId !== 'document:register') continue;
+    const inputs = b.inputs as { documentId?: string; sha256?: string } | null;
+    if (!inputs?.documentId) continue;
+    const rowSha = rows.get(inputs.documentId);
+    if (rowSha === undefined) problems.push(`Trail entry ${b.id} registers document ${inputs.documentId}, but the document row is missing`);
+    else if (rowSha !== inputs.sha256) problems.push(`Document ${inputs.documentId}: registered as ${inputs.sha256} in the trail, but the row says ${rowSha}`);
+  }
+  return problems;
+}
+
 /** Every registered document's stored bytes, streamed and re-hashed. */
 async function checkDocuments(db: Kysely<DB>, blobs: BlobStore) {
   const problems: string[] = [];
@@ -97,9 +112,13 @@ export async function verifyIntegrity(db: Kysely<DB>, blobs: BlobStore | null, s
   const chain = await readTrail(db);
   const trail = verifyChain(chain);
   const signatures = await checkSignatures(db, chain);
-  const documents = blobs
-    ? { ...(await checkDocuments(db, blobs)), skipped: null }
-    : { checked: 0, problems: [], skipped: storageSkipped ?? 'file storage is not configured' };
+  // The registrations need no storage, so they are checked even when the storage check is skipped.
+  const registrations = await checkRegistrations(db, chain);
+  const stored = blobs ? await checkDocuments(db, blobs) : { checked: 0, problems: [] };
+  const documents = {
+    checked: stored.checked, problems: [...registrations, ...stored.problems],
+    skipped: blobs ? null : storageSkipped ?? 'file storage is not configured',
+  };
   const ok = trail.valid && !signatures.problems.length && !documents.problems.length && documents.skipped === null;
   return { ok, trail, signatures, documents };
 }

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
 import { insertDocument } from '../src/knowledge/document-repo';
+import { recordDocumentEvent } from '../src/knowledge/trail';
 import { verifyIntegrity } from '../src/ops/verify';
 import { AuditService } from '../src/service';
 import { blobKey } from '../src/storage/blob-store';
@@ -27,9 +28,14 @@ async function restoredSystem() {
   const docs = [];
   for (const text of ['SOP-001 cleaning procedure', 'Batch record template']) {
     const stored = await blobs.put(Buffer.from(text));
-    docs.push(await insertDocument(db.kysely, {
-      sha256: stored.sha256, filename: `${text}.txt`, mime: 'text/plain', size: stored.size, kind: 'sop',
-      classification: 'internal', engagementId: null, uploadedBy: auditor.id,
+    // As POST /api/documents does: the row and its sealed document:register trail entry in one transaction.
+    docs.push(await db.kysely.transaction().execute(async (trx) => {
+      const doc = await insertDocument(trx, {
+        sha256: stored.sha256, filename: `${text}.txt`, mime: 'text/plain', size: stored.size, kind: 'sop',
+        classification: 'internal', engagementId: null, uploadedBy: auditor.id,
+      });
+      await recordDocumentEvent(trx, auditor, doc, 0);
+      return doc;
     }));
   }
   return { db, url, dir, blobs, engagementId: e.id, fid, docs };
@@ -54,6 +60,28 @@ describe('verify', () => {
     expect(report.documents.problems).toEqual([
       `Document ${s.docs[0].id}: stored file ${s.docs[0].sha256} is missing`,
       expect.stringMatching(new RegExp(`^Document ${s.docs[1].id}: stored bytes hash to [a-f0-9]{64}, not ${s.docs[1].sha256}`)),
+    ]);
+  });
+
+  it('reports a registered document whose row was deleted or rewritten behind the application [REQ-24]', async () => {
+    const s = await restoredSystem();
+    const k = s.db.kysely;
+    const registered = (await k.selectFrom('trail').select(['id', 'body']).where('module_id', '=', 'document:register').execute())
+      .map((r) => ({ bundleId: r.id, documentId: (JSON.parse(r.body) as { inputs: { documentId: string } }).inputs.documentId }));
+    const deleted = registered.find((r) => r.documentId === s.docs[0].id)!;
+    // The rewritten row points at other bytes that are really in storage, so only the registration check can see it.
+    const swapped = await s.blobs.put(Buffer.from('Replacement SOP text'));
+    await sql`ALTER TABLE documents DISABLE TRIGGER documents_never_deleted`.execute(k);
+    await sql`ALTER TABLE documents DISABLE TRIGGER documents_only_retention_changes`.execute(k);
+    await sql`DELETE FROM documents WHERE id = ${s.docs[0].id}`.execute(k);
+    await sql`UPDATE documents SET sha256 = ${swapped.sha256}, size = ${swapped.size} WHERE id = ${s.docs[1].id}`.execute(k);
+
+    const report = await verifyIntegrity(k, s.blobs);
+    expect(report.ok).toBe(false);
+    expect(report.trail.valid).toBe(true);
+    expect(report.documents.problems).toEqual([
+      `Trail entry ${deleted.bundleId} registers document ${s.docs[0].id}, but the document row is missing`,
+      `Document ${s.docs[1].id}: registered as ${s.docs[1].sha256} in the trail, but the row says ${swapped.sha256}`,
     ]);
   });
 

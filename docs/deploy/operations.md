@@ -68,10 +68,13 @@ What the problems mean:
   - "sign-off <id> (<meaning> by <name>) is broken": the finding's recorded sign-off no longer matches its signature row.
   - "Signature <id> (...) is recorded but missing from the finding": a valid signature on the finding's current content has been removed from the finding.
 - **Documents.**
+  - "Trail entry <id> registers document <documentId>, but the document row is missing": a document row was deleted outside the application.
+  - "Document <id>: registered as <sha256> in the trail, but the row says <sha256>": the row's SHA-256 was rewritten after registration, so it points at other bytes.
   - "stored file <sha256> is missing": the stored file is gone.
   - "stored bytes hash to <hash>, not <sha256>": the file changed.
   - "stored size <n> bytes, registered <m>": the size differs from the registration.
   - "storage error: ...": storage could not be read; check readiness first.
+- The two registration checks compare the trail with the `documents` table and need no storage, so they run even when the storage check is skipped.
 - `documents.skipped` set to a reason means the storage settings did not load in the job. That also fails the report, because a verify that could not look at the files proves nothing about them. Fix the job's environment.
 
 Exit 1 means escalate as a data-integrity incident. Do not edit data to make it pass.
