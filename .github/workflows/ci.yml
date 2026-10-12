@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'design/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Typecheck (the lint gate; see plan 1F)
+        run: npm run typecheck
+      - name: Unit and integration tests (Testcontainers uses the runner's Docker)
+        run: npm test
+      - name: Evaluation harness (packs are unverified until expert review)
+        run: npm run eval
+        env:
+          ALLOW_UNVERIFIED_CITATIONS: 'true'
+      - name: Requirements traceability (fails on any uncovered requirement)
+        run: npm run traceability
+      - name: Dependency audit (high and critical)
+        run: npm audit --omit=dev --audit-level=high
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: validation-output
+          path: backend/validation-output/
+          if-no-files-found: ignore
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+      - name: Install (the UI imports the backend's types)
+        run: (cd backend && npm ci) && (cd frontend && npm ci)
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Dependency audit (high and critical)
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+
+  images:
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build the API image
+        run: docker build -t audit-platform-backend:ci backend
+      - name: Build the web image
+        run: docker build -f frontend/Dockerfile -t audit-platform-frontend:ci .
+      - name: Check the nginx configuration
+        run: docker run --rm --add-host backend:127.0.0.1 audit-platform-frontend:ci nginx -t
+      - name: Scan the API image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: audit-platform-backend:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Scan the web image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: audit-platform-frontend:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'

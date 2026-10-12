@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { appWithDevUsers, signIn } from './http';
@@ -87,4 +89,13 @@ describe('HTTP API', () => {
   it('no longer trusts the demo x-user-id header', async () => {
     expect((await request(app).get('/api/engagements').set('x-user-id', 'auditor')).status).toBe(401);
   });
+
+  it('fails the traceability command when a requirement has no automated evidence', () => {
+    const run = (env: NodeJS.ProcessEnv) =>
+      spawnSync('npx', ['tsx', 'src/validation/cli.ts'], { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', env: { ...process.env, ...env } });
+    expect(run({}).status).toBe(0);
+    const failing = run({ TRACEABILITY_REQUIREMENTS: path.resolve(__dirname, 'fixtures/requirements-uncovered.json') });
+    expect(failing.status).toBe(1);
+    expect(failing.stdout).toContain('**NOT COVERED**');
+  }, 60_000);
 });

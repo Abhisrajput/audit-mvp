@@ -24,6 +24,8 @@ services:
       # The image sets NODE_ENV=production; locally the migrate step has no TLS database.
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,6 +63,14 @@ services:
       BLOB_MAX_BYTES: ${BLOB_MAX_BYTES:-26214400}
       # SeaweedFS 3.80 ignores If-None-Match on PUT, so the API checks for an object before writing it.
       S3_CONDITIONAL_WRITES: 'false'
+    # Spec §7.1: non-root (the image's USER node), read-only root filesystem, nothing to escalate to.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     # Bound to this machine only: demo sign-in (DEV_AUTH=true) must never be reachable by others.
     ports:
       - '127.0.0.1:3002:3002'
@@ -80,6 +90,8 @@ services:
       dockerfile: frontend/Dockerfile
     ports:
       - '127.0.0.1:8080:80'
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       backend:
         condition: service_healthy

@@ -15,8 +15,8 @@ export interface Requirement {
 
 const ROOT = path.resolve(__dirname, '../..');
 
-export function loadRequirements(): Requirement[] {
-  return JSON.parse(fs.readFileSync(path.join(ROOT, 'validation/requirements.json'), 'utf8'));
+export function loadRequirements(file = process.env.TRACEABILITY_REQUIREMENTS ?? path.join(ROOT, 'validation/requirements.json')): Requirement[] {
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
 function testsByRequirement(): Map<string, string[]> {
