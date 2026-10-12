@@ -177,11 +177,59 @@ export interface ChunksTable {
   engagement_id: string | null;
 }
 
-
 export interface BlobUploadsTable {
   sha256: string;
   uploaded_by: string;
   uploaded_at: Generated<Date>;
+}
+
+export type KgNodeType = 'pack' | 'regulation' | 'clause' | 'control' | 'risk' | 'eval_case';
+
+export interface KgNodesTable {
+  id: string;
+  type: KgNodeType;
+  pack_id: string;
+  pack_version: string;
+  concept_id: string;
+  title: string;
+  description: string | null;
+  body: string;
+  tags: Json<string[]>;
+  sources: ColumnType<{ ref: string }[], string | undefined, string>;
+  attrs: Json<Record<string, unknown>>;
+  generated: ColumnType<{ by: string; at: string } | null, string | null, string | null>;
+  verified_by: string | null;
+  verified_role: string | null;
+  /** date: read as 'YYYY-MM-DD' (parser 1082 in db/index.ts and db/pglite.ts). */
+  verified_at: string | null;
+  status: 'active' | 'deprecated';
+  stale_after: string | null;
+  source_path: string;
+  source_sha256: string;
+  classification: 'internal' | 'confidential' | 'restricted';
+  compiled_at: DefaultedTimestamp;
+}
+
+export interface KgNodeVersionsTable {
+  node_id: string;
+  pack_version: string;
+  source_sha256: string;
+  snapshot: Json<unknown>;
+  compiled_at: DefaultedTimestamp;
+  compiled_by: string;
+}
+
+export interface KgEdgesTable {
+  id: Generated<number>;
+  from_id: string;
+  to_id: string;
+  rel: string;
+  origin: 'curated' | 'engagement' | 'proposed';
+  created_by: string;
+  source_ref: ColumnType<unknown, string | null | undefined, string | null>;
+  approved_by: string | null;
+  approved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: DefaultedTimestamp;
 }
 
 export interface DB {
@@ -200,4 +248,7 @@ export interface DB {
   document_text: DocumentTextTable;
   chunks: ChunksTable;
   blob_uploads: BlobUploadsTable;
+  kg_nodes: KgNodesTable;
+  kg_node_versions: KgNodeVersionsTable;
+  kg_edges: KgEdgesTable;
 }
