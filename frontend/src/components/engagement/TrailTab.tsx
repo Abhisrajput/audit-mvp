@@ -3,7 +3,7 @@ import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Chip, Stack,
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { TabProps } from '../../pages/EngagementPage';
-import type { TrailBundle } from '../../types';
+import type { VisibleTrailBundle } from '../../types';
 import { ActionButton } from '../common';
 
 interface Verification {
@@ -14,10 +14,10 @@ interface Verification {
 }
 
 export default function TrailTab({ engagement: e }: TabProps) {
-  const [trail, setTrail] = useState<TrailBundle[]>([]);
+  const [trail, setTrail] = useState<VisibleTrailBundle[]>([]);
   const [verification, setVerification] = useState<Verification | null>(null);
   useEffect(() => {
-    api<TrailBundle[]>(`/engagements/${e.id}/trail`).then((t) => setTrail(t.reverse()));
+    api<VisibleTrailBundle[]>(`/engagements/${e.id}/trail`).then((t) => setTrail(t.reverse()));
   }, [e]);
 
   return (
@@ -44,6 +44,7 @@ export default function TrailTab({ engagement: e }: TabProps) {
                 <Stack direction="row" spacing={1.5} alignItems="center" useFlexGap flexWrap="wrap" sx={{ width: '100%' }}>
                   <Typography sx={{ fontFamily: 'monospace', minWidth: 40 }}>#{b.seq}</Typography>
                   <Chip size="small" color={b.moduleId.startsWith('human:') ? 'default' : 'primary'} label={b.moduleId} />
+                  {b.redacted && <Chip size="small" variant="outlined" label="details restricted" />}
                   <Typography variant="body2" sx={{ flex: 1 }}>
                     by {b.actor} · {b.provider.id}/{b.provider.model} · {new Date(b.finishedAt).toLocaleString()}
                   </Typography>

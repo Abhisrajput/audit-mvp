@@ -271,6 +271,8 @@ export interface TrailBundle {
   executionLog: LogEntry[];
   qaActions: QaAction[];
   output: unknown;
+  /** The API request that wrote this bundle (absent for CLI, seed, import and eval bundles). Covered by the hash. */
+  requestId?: string;
   prevHash: string;
   hash: string;
 }

@@ -27,12 +27,12 @@ export function resultPage(res: Response, outcome: SignOutcome) {
   const [status, title, message] = outcome.ok
     ? [200, 'Signed', 'Your signature was recorded. You can close this window.']
     : [409, 'Not signed', outcome.message];
-  popupHeaders(res);
+  const nonce = popupHeaders(res);
   res
     .status(status as number)
     .type('html')
     .send(
       `<!doctype html><meta charset="utf-8"><title>${escapeHtml(title as string)}</title><h1>${escapeHtml(title as string)}</h1>` +
-        `<p>${escapeHtml(message as string)}</p><script>setTimeout(function () { window.close(); }, 1500);</script>`,
+        `<p>${escapeHtml(message as string)}</p><script nonce="${nonce}">setTimeout(function () { window.close(); }, 1500);</script>`,
     );
 }

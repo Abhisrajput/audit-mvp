@@ -1,20 +1,54 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { loadAuthConfig, type AuthConfig } from './auth/config';
 import type { CitationPolicy } from './engine/trust';
+import { loadStorageConfig, type StorageConfig } from './storage/config';
 
-// Configuration comes from the environment only, validated once at start-up.
-// Plan 1F extends this schema (identity, storage, security settings).
+// Configuration comes from the environment only, validated once at start-up (spec §7.3, REQ-25).
+// Each area has its own loader; loadServerConfig runs them all and reports every problem at once.
 
-const EnvSchema = z.object({
-  PORT: z.coerce.number().int().min(1).max(65535).default(3002),
-  DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection URL'),
-  PACKS_DIR: z.string().min(1).optional(),
-});
+export type DatabaseSsl = false | { rejectUnauthorized: boolean; ca?: string };
+export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
 
 export interface Config {
   port: number;
   databaseUrl: string;
   packsDir?: string;
+  production: boolean;
+  databaseSsl: DatabaseSsl;
+  logLevel: LogLevel;
+  /** How many proxies in front of the API to trust for the client address and X-Request-Id (0 = none). */
+  trustProxy: number;
+  /** Bearer token for /metrics; null = open (development only). */
+  metricsToken: string | null;
+}
+
+/** Settings that may instead be read from a mounted file named by <NAME>_FILE (Kubernetes / Container Apps secrets). */
+export const SECRET_NAMES = [
+  'DATABASE_URL', 'OIDC_CLIENT_SECRET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'AZURE_STORAGE_CONNECTION_STRING',
+  'ANTHROPIC_API_KEY', 'METRICS_TOKEN', 'API_DB_PASSWORD',
+] as const;
+
+const invalid = (lines: string[]) => new Error(`Invalid configuration:\n${lines.join('\n')}`);
+
+/** Replaces each <NAME>_FILE with the file's content (trailing whitespace trimmed) as <NAME>. */
+export function resolveSecretFiles(env: NodeJS.ProcessEnv): void {
+  const problems: string[] = [];
+  for (const name of SECRET_NAMES) {
+    const file = env[`${name}_FILE`];
+    if (!file) continue;
+    if (env[name]) {
+      problems.push(`  - ${name}: set ${name} and ${name}_FILE, not both`);
+      continue;
+    }
+    try {
+      env[name] = fs.readFileSync(file, 'utf8').trimEnd();
+    } catch {
+      problems.push(`  - ${name}_FILE: cannot read ${file}`);
+    }
+  }
+  if (problems.length) throw invalid(problems);
 }
 
 /** Loads backend/.env for local development. Never used in production. */
@@ -28,13 +62,100 @@ export function loadDotEnv(file = path.resolve(__dirname, '../.env')) {
   }
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = EnvSchema.safeParse(env);
-  if (!parsed.success) {
-    const lines = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`);
-    throw new Error(`Invalid configuration:\n${lines.join('\n')}`);
+/** Every entry point calls this first: the local .env (development), then secret files. */
+export function prepareEnv(env: NodeJS.ProcessEnv = process.env): void {
+  if (env === process.env) loadDotEnv();
+  resolveSecretFiles(env);
+}
+
+const EnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3002),
+  DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection URL'),
+  DATABASE_SSL: z.enum(['disable', 'require', 'verify-full']).optional(),
+  DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
+  PACKS_DIR: z.string().min(1).optional(),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(0),
+  METRICS_TOKEN: z.string().min(24, 'must be at least 24 characters').optional(),
+});
+
+/** Connection-URL parameters node-postgres turns into TLS settings that replace ours (it merges the parsed URL over the options). */
+export const TLS_URL_PARAMS = ['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'sslnegotiation', 'uselibpqcompat'] as const;
+
+/** The URL's query split into raw pairs, each with its decoded, lower-cased name, plus the parts around the query. */
+function splitQuery(url: string) {
+  const q = url.indexOf('?');
+  if (q < 0) return { base: url, pairs: [], hash: '' };
+  const h = url.indexOf('#', q);
+  const query = url.slice(q + 1, h < 0 ? undefined : h);
+  const pairs = query.split('&').filter(Boolean).map((raw) => ({ raw, name: (new URLSearchParams(raw).keys().next().value ?? '').toLowerCase() }));
+  return { base: url.slice(0, q), pairs, hash: h < 0 ? '' : url.slice(h) };
+}
+
+const isTlsParam = (name: string) => (TLS_URL_PARAMS as readonly string[]).includes(name);
+
+/** The TLS parameters present in a connection URL (lower-cased, de-duplicated). */
+export function tlsParamsIn(url: string): string[] {
+  return [...new Set(splitQuery(url).pairs.map((p) => p.name).filter(isTlsParam))];
+}
+
+/** The URL without any TLS parameter; returned unchanged when it has none. */
+export function stripTlsParams(url: string): string {
+  const { base, pairs, hash } = splitQuery(url);
+  if (!pairs.some((p) => isTlsParam(p.name))) return url;
+  const kept = pairs.filter((p) => !isTlsParam(p.name)).map((p) => p.raw);
+  return `${base}${kept.length ? `?${kept.join('&')}` : ''}${hash}`;
+}
+
+/** Cross-field rules run over the raw environment, so a bad field elsewhere never hides them (zod skips refinements then). */
+function crossFieldProblems(env: Record<string, string | undefined>): string[] {
+  const problems: string[] = [];
+  const tls = tlsParamsIn(env.DATABASE_URL ?? '');
+  if (tls.length) {
+    problems.push(`  - DATABASE_URL: remove ${tls.join(', ')} from the URL and set DATABASE_SSL (and DATABASE_SSL_CA_FILE) instead (the URL would override them)`);
   }
-  return { port: parsed.data.PORT, databaseUrl: parsed.data.DATABASE_URL, packsDir: parsed.data.PACKS_DIR };
+  if (env.NODE_ENV === 'production' && env.DATABASE_SSL === 'disable') {
+    problems.push('  - DATABASE_SSL: must not be disable in production; the database connection must use TLS');
+  }
+  return problems;
+}
+
+/** Problem lines ("  - KEY: message") for the core settings, plus the parsed config when there are none. */
+function parseCore(env: NodeJS.ProcessEnv): { config: Config | null; problems: string[] } {
+  // Compose passes unset optional settings as empty strings; treat them as absent.
+  const present = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined && v !== ''));
+  const parsed = EnvSchema.safeParse(present);
+  const problems = [
+    ...(parsed.success ? [] : parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`)),
+    ...crossFieldProblems(present),
+  ];
+  if (!parsed.success || problems.length) return { config: null, problems };
+  const e = parsed.data;
+  const production = e.NODE_ENV === 'production';
+  const mode = e.DATABASE_SSL ?? (production ? 'verify-full' : 'disable');
+  let ca: string | undefined;
+  if (e.DATABASE_SSL_CA_FILE) {
+    try {
+      ca = fs.readFileSync(e.DATABASE_SSL_CA_FILE, 'utf8');
+    } catch {
+      return { config: null, problems: [`  - DATABASE_SSL_CA_FILE: cannot read ${e.DATABASE_SSL_CA_FILE}`] };
+    }
+  }
+  const databaseSsl: DatabaseSsl = mode === 'disable' ? false : { rejectUnauthorized: mode === 'verify-full', ...(ca ? { ca } : {}) };
+  return {
+    problems: [],
+    config: {
+      port: e.PORT, databaseUrl: e.DATABASE_URL, packsDir: e.PACKS_DIR, production, databaseSsl,
+      logLevel: e.LOG_LEVEL, trustProxy: e.TRUST_PROXY, metricsToken: e.METRICS_TOKEN ?? null,
+    },
+  };
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const { config, problems } = parseCore(env);
+  if (!config) throw invalid(problems);
+  return config;
 }
 
 /**
@@ -50,4 +171,35 @@ export function loadCitationPolicy(env: NodeJS.ProcessEnv = process.env): Citati
     throw new Error('Invalid configuration:\n  - ALLOW_UNVERIFIED_CITATIONS: must not be true in production; released work may cite only verified knowledge');
   }
   return { allowUnverified: raw === 'true' };
+}
+
+export interface ServerConfig {
+  core: Config;
+  auth: AuthConfig;
+  storage: StorageConfig;
+  citationPolicy: CitationPolicy;
+}
+
+/** Runs every loader and throws once, listing every problem, so a deployment is fixed in one pass (REQ-25). */
+export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const problems: string[] = [];
+  const attempt = <T>(load: () => T): T | null => {
+    try {
+      return load();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      problems.push(...message.replace(/^Invalid configuration:\n/, '').split('\n').filter(Boolean));
+      return null;
+    }
+  };
+  const core = attempt(() => loadConfig(env));
+  // Only the API server needs the metrics token; CLIs (migrate, verify, ...) use loadConfig and don't.
+  if (env.NODE_ENV === 'production' && !env.METRICS_TOKEN) {
+    problems.push('  - METRICS_TOKEN: required in production (Prometheus sends it as a bearer token)');
+  }
+  const auth = attempt(() => loadAuthConfig(env));
+  const storage = attempt(() => loadStorageConfig(env));
+  const citationPolicy = attempt(() => loadCitationPolicy(env));
+  if (problems.length) throw invalid(problems);
+  return { core: core!, auth: auth!, storage: storage!, citationPolicy: citationPolicy! };
 }

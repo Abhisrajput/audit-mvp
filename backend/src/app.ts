@@ -1,11 +1,18 @@
 import cookieParser from 'cookie-parser';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type Request } from 'express';
 import { z } from 'zod';
 import { adminRoutes } from './auth/admin-routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
+import { errorHandler } from './http/errors';
+import { DEFAULT_RATE_LIMITS, rateLimiters, securityHeaders, type RateLimits } from './http/security';
+import { visibleTrail } from './knowledge/trail-visibility';
 import { documentRoutes, UPLOAD_PATH, type StorageDeps } from './knowledge/routes';
+import { requestContext } from './observability/context';
+import { accessLog } from './observability/log';
+import { httpMetrics } from './observability/metrics';
+import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { wrap } from './http-util';
@@ -47,8 +54,36 @@ const FindingPatchSchema = z
 /** Routes that parse their own bodies (see documentRoutes). */
 const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
 
-export function createApp(svc: AuditService, auth: AuthDeps, storage: StorageDeps = { blobs: null, maxUploadBytes: 25 * 1024 * 1024, presignDownloads: false }) {
+/** Operational settings. */
+export interface OpsOptions {
+  /** Proxy hops to trust (TRUST_PROXY); above 0, a forwarded X-Request-Id is reused. */
+  trustProxy?: number;
+  /** Per-client request limits; tests lower them. */
+  rateLimits?: RateLimits;
+  /** Bearer token for /metrics; null leaves it open (local development). */
+  metricsToken?: string | null;
+  /** Per-check readiness timeout in ms (default 2000); tests lower it. */
+  probeTimeoutMs?: number;
+}
+
+export function createApp(
+  svc: AuditService,
+  auth: AuthDeps,
+  storage: StorageDeps = { blobs: null, maxUploadBytes: 25 * 1024 * 1024, presignDownloads: false },
+  ops: OpsOptions = {},
+) {
   const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', ops.trustProxy ?? 0);
+  app.use(requestContext({ trustProxy: ops.trustProxy ?? 0 }));
+  app.use(accessLog());
+  app.use(httpMetrics());
+  app.use(securityHeaders());
+  app.use(probeRoutes({ db: svc.db, blobs: storage.blobs, metricsToken: ops.metricsToken ?? null, timeoutMs: ops.probeTimeoutMs }));
+  const limits = rateLimiters(ops.rateLimits ?? DEFAULT_RATE_LIMITS);
+  app.use('/auth', limits.auth);
+  app.use('/auth/sign', limits.signing);
+  app.post('/api/engagements/:id/findings/:fid/sign-intents', limits.signing);
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,
@@ -144,7 +179,7 @@ export function createApp(svc: AuditService, auth: AuthDeps, storage: StorageDep
   }));
 
   // ----- Evidence & validation -----
-  app.get('/api/engagements/:id/trail', readers, wrap(async (req, res) => res.json(await svc.trailFor(param(req, 'id')))));
+  app.get('/api/engagements/:id/trail', readers, wrap(async (req, res) => res.json(visibleTrail(await svc.trailFor(param(req, 'id')), actorOf(req).role))));
   app.get('/api/trail/verify', readers, wrap(async (_req, res) => res.json(await svc.verifyTrail())));
 
   app.post('/api/eval/run', evaluators, wrap(async (_req, res) => {
@@ -160,16 +195,7 @@ export function createApp(svc: AuditService, auth: AuthDeps, storage: StorageDep
   }));
   app.get('/api/validation/traceability', readers, wrap(async (_req, res) => res.json(buildTraceability(await svc.latestEvalRun()))));
 
-  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code });
-    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', code: 'VALIDATION', issues: err.issues });
-    if ((err as { type?: string }).type === 'entity.too.large') {
-      const upload = req.path.toLowerCase().startsWith(UPLOAD_PATH);
-      return res.status(413).json({ error: upload ? 'The file is larger than the upload limit' : 'The request body is larger than the limit', code: 'VALIDATION' });
-    }
-    console.error(err);
-    res.status(500).json({ error: 'Internal error', code: 'INTERNAL' });
-  });
+  app.use(errorHandler());
 
   return app;
 }

@@ -6,6 +6,7 @@ import { actorOf, requireRole } from '../auth/http';
 import { PREPARER_ROLES, READ_ROLES } from '../auth/roles';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
+import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { assertSha256, attachmentDisposition, BlobNotFound, type BlobStore } from '../storage/blob-store';
 import { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, mayRead } from './access';
@@ -83,7 +84,7 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
       return await fn();
     } catch (err) {
       if (err instanceof AppError || err instanceof BlobNotFound) throw err;
-      console.error(`File storage failed (${what}):`, err);
+      logger.error({ err, what }, 'File storage failed');
       throw new AppError(503, 'File storage is unavailable', 'STORAGE_UNAVAILABLE');
     }
   };
@@ -170,7 +171,7 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
       for (const name of Object.keys(headers)) res.removeHeader(name);
       if (!(err instanceof BlobNotFound)) throw err;
       // The registry says these bytes exist: losing them is an integrity failure, not "not found".
-      console.error(`Stored bytes missing for document ${doc.id} (sha256 ${doc.sha256})`);
+      logger.error({ documentId: doc.id, sha256: doc.sha256 }, 'Stored bytes missing for document');
       throw new AppError(500, 'The stored file is missing', 'STORAGE_INTEGRITY');
     }
     try {
@@ -179,7 +180,7 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
       // The client went away: pipeline has already closed the storage stream.
       if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') return;
       // Headers (and maybe bytes) are out, so no JSON error is possible; the response was destroyed.
-      console.error(`Download of document ${doc.id} failed:`, err);
+      logger.error({ err, documentId: doc.id }, 'Download failed');
     }
   }));
 

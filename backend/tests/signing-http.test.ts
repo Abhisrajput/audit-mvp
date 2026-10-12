@@ -3,36 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
 import { findingContentHash } from '../src/signing/content-hash';
-import { appWithDevUsers, failTrailWrites, signIn } from './http';
-
-type Session = Awaited<ReturnType<typeof signIn>>;
-
-/** Runs the pharma chain as the auditor until one draft finding exists. */
-async function draftFinding(app: Awaited<ReturnType<typeof appWithDevUsers>>['app']) {
-  const auditor = await signIn(app, 'auditor');
-  const created = await auditor.post('/api/engagements', {
-    name: 'Pharma self-inspection', entity: 'Demo Pharma', site: 'OSD plant', periodFrom: '2026-01-01', periodTo: '2026-06-30',
-    auditType: 'GMP self-inspection', scopeStatement: 'Data integrity: HPLC audit trails and user access', packIds: ['pharma'],
-  }).expect(201);
-  const id = created.body.id as string;
-  await auditor.post(`/api/engagements/${id}/modules/scope/run`).expect(200);
-  await auditor.post(`/api/engagements/${id}/modules/rcm/run`).expect(200);
-  await auditor.put(`/api/engagements/${id}/tests/PH-DI-01`, { designAdequate: true, observation: 'Audit trail review missing for 5 of 20 sequences', evidenceRefs: ['SEQ-Q2'], sampleTested: 20, exceptions: 5 }).expect(200);
-  await auditor.post(`/api/engagements/${id}/modules/testing/run`).expect(200);
-  const gaps = await auditor.post(`/api/engagements/${id}/modules/gaps/run`).expect(200);
-  return { auditor, id, fid: gaps.body.engagement.findings[0].id as string };
-}
-
-/** The signing pop-up for a demo user: start, read the form, confirm. */
-async function devSign(user: Session, userId: string, id: string, fid: string, action: string, confirm = userId) {
-  const intent = await user.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action, comment: 'agreed' });
-  if (intent.status !== 201) return { intent, status: null as null | { status: string; code: string | null } };
-  const popup = await user.get(intent.body.reauthUrl).expect(200);
-  const nonce = /name="nonce" value="([^"]+)"/.exec(popup.text)![1];
-  const done = await user.agent.post(`${intent.body.reauthUrl}/dev`).type('form').send({ nonce, confirm });
-  const status = (await user.get(`/api/sign-intents/${intent.body.intentId}`).expect(200)).body;
-  return { intent, popup, done, nonce, status };
-}
+import { appWithDevUsers, devSign, draftFinding, failTrailWrites, signIn } from './http';
 
 describe('signing over HTTP', () => {
   it('no longer signs without re-authentication', async () => {
@@ -331,7 +302,8 @@ describe('signing over HTTP', () => {
     const intent = await reviewer.post(`/api/engagements/${id}/findings/${fid}/sign-intents`, { action: 'review' }).expect(201);
     for (const res of [await reviewer.get(intent.body.reauthUrl).expect(200), await reviewer.get('/auth/sign/INT-nope').expect(404)]) {
       expect(res.headers['cache-control']).toBe('no-store');
-      expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+      expect(res.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+      expect(res.headers['content-security-policy']).toContain("script-src 'nonce-");
       expect(res.headers['x-frame-options']).toBe('DENY');
     }
   });

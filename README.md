@@ -77,6 +77,14 @@ Using your own Postgres instead of Compose's: it needs the **pgvector** extensio
 On Azure Database for PostgreSQL Flexible Server, first allow-list it: add `vector` to the `azure.extensions` server parameter.
 Compose binds the UI and API to localhost only; demo sign-in must be off (`DEV_AUTH=false`) on any machine others can reach.
 
+**Operations settings** (all optional locally; see `backend/.env.example`):
+- `DATABASE_SSL`: `disable`, `require` or `verify-full`. Defaults to `verify-full` in production, `disable` otherwise; `disable` is refused in production. Never put TLS parameters (`sslmode`, `ssl`, `sslcert`, `sslkey`, `sslrootcert`, `sslnegotiation`, `uselibpqcompat`) in `DATABASE_URL`; start-up refuses them.
+- `DATABASE_SSL_CA_FILE`: path to a PEM file, for a private certificate authority.
+- `LOG_LEVEL`: `fatal`, `error`, `warn`, `info` (default), `debug`, `trace` or `silent`.
+- `TRUST_PROXY`: how many proxies sit in front of the API (0 to 5, default 0). It sets the client address used for rate limits and whether an incoming `X-Request-Id` is trusted.
+- `METRICS_TOKEN`: bearer token for `/metrics`, at least 24 characters. Required by the API server in production.
+- `<NAME>_FILE`: the secrets `DATABASE_URL`, `OIDC_CLIENT_SECRET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `AZURE_STORAGE_CONNECTION_STRING`, `ANTHROPIC_API_KEY`, `METRICS_TOKEN` and `API_DB_PASSWORD` can instead be read from a file named by `<NAME>_FILE`.
+
 **Coming from the JSON-file MVP?** Import your old data once into an empty
 database: `npm run import-json -- data/db.json`. The trail's hash chain is
 verified before and after import. A broken chain or a non-empty database is
@@ -290,6 +298,16 @@ Agreed management actions are tracked, validated and closed on time.
   Each concept hit carries its bundle file and whether it is citable. Recording each search
   in the audit trail (spec §6.5) is deferred to a later sub-project.
 
+## Running in production
+
+- **Deployment guide:** [docs/deploy/azure.md](docs/deploy/azure.md) (reference deployment on Azure).
+- **Runbook:** [docs/deploy/operations.md](docs/deploy/operations.md) (health, metrics and alerts, backups, restore, secret rotation).
+- **Release order:** `migrate`, then `packs:compile`, then deploy the new API. In the container: `node dist/db/cli.js migrate`, then `node dist/knowledge/packs-cli.js compile`.
+- **Separate API login:** run the API as a member of `audit_api`, which can append to the record but never change or delete it. Create it with `API_DB_PASSWORD=... node dist/db/cli.js create-api-login <name>`.
+- **Probes and metrics:** `/healthz` (liveness), `/readyz` (database and storage) and `/metrics` (bearer token). nginx does not expose them.
+- **Logs** are JSON on stdout. Every request has a `requestId`, also returned as `X-Request-Id`, in error bodies and in the audit trail.
+- **Integrity check:** `npm run verify` (in the container, `node dist/db/cli.js verify`) checks the trail, the signatures and every stored file. Run it nightly and after any restore.
+
 ## Checks
 
 ```bash
@@ -299,7 +317,7 @@ npm run eval          # 25/25 eval cases (offline), on a throwaway in-process da
                       # needs ALLOW_UNVERIFIED_CITATIONS=true until the packs are verified (the report header records it)
 npm run packs:compile # compile the OKF bundles into the knowledge graph (a release step)
 npm run traceability  # requirements traceability matrix -> validation-output/traceability.md
-npm run verify        # recompute the audit-trail hash chain in the configured database
+npm run verify        # check the trail chain, signatures and stored documents in the configured database (exit 1 on any problem)
 npm run typecheck
 ```
 
@@ -311,9 +329,16 @@ npm run typecheck
 - **Real evidence ingestion:** evidence is recorded as references today. Next is
   reading SOPs, deviations and CAPAs from an eQMS (Veeva, MasterControl, TrackWise)
   and attaching documents.
-- **Deployment:** deploy into the client's tenant (e.g. Azure App Service +
-  Azure AI Search).
+- **Deployment:** the reference Azure deployment is documented, not scripted
+  (`docs/deploy/azure.md`); infrastructure-as-code for it is next.
 - **Further modules:** pharma deviation/CAPA effectiveness review, ALCOA+
   data-integrity audit, food supplier audit modules, Audit Committee pack.
 - **Validation:** IQ/PQ in a client environment, and full change control over
   prompts and models.
+- **Deferred from the operations work:**
+  - ESLint. CI runs `tsc --noEmit` (strict) as the lint gate for now.
+  - Playwright end-to-end tests. The flow is covered end to end through supertest.
+  - The `react-router-dom` 7 upgrade, which clears two moderate advisories in version 6.
+  - Recording searches in the audit trail (spec section 6.5).
+  - A shared rate-limit store, needed before running more than one API replica.
+  - Moving off `prom-client` 15.1.3, which is marked deprecated upstream (replaced by `@prometheus-io/client`).

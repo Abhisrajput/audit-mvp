@@ -1,5 +1,5 @@
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code: string | null) {
+  constructor(message: string, readonly status: number, readonly code: string | null, readonly requestId: string | null = null) {
     super(message);
     this.name = 'ApiError';
   }
@@ -43,9 +43,14 @@ export function requestInit(init: ApiInit = {}): RequestInit {
 }
 
 export function errorFrom(status: number, data: unknown): ApiError {
-  const body = (data && typeof data === 'object' ? data : {}) as { error?: string; code?: string };
+  const body = (data && typeof data === 'object' ? data : {}) as { error?: string; code?: string; requestId?: string };
   const code = body.code ?? null;
-  return new ApiError((code && FRIENDLY[code]) || body.error || `HTTP ${status}`, status, code);
+  const requestId = body.requestId ?? null;
+  const message =
+    code === 'INTERNAL'
+      ? `Something went wrong on the server.${requestId ? ` If you report it, quote reference ${requestId}.` : ''}`
+      : (code && FRIENDLY[code]) || body.error || `HTTP ${status}`;
+  return new ApiError(message, status, code, requestId);
 }
 
 export async function request<T>(url: string, init: ApiInit = {}): Promise<T> {

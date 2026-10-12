@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, loadDotEnv } from '../config';
+import { loadConfig, prepareEnv } from '../config';
 import { connectPg } from '../db';
 import { pendingMigrations } from '../db/migrate';
 import { compileDir } from './graph/compile';
@@ -43,10 +43,10 @@ function migrateCommand(args: string[]) {
 }
 
 async function compileCommand(args: string[]) {
-  loadDotEnv();
+  prepareEnv();
   const config = loadConfig();
   const dir = path.resolve(arg(args, 'dir') ?? config.packsDir ?? DEFAULT_PACKS_DIR);
-  const db = connectPg(config.databaseUrl, { max: 2 });
+  const db = connectPg(config.databaseUrl, { max: 2, ssl: config.databaseSsl });
   try {
     const pending = await pendingMigrations(db);
     if (pending.length) throw new Error(`Database has unapplied migrations (${pending.join(', ')}); run migrate first`);

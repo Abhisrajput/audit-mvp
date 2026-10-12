@@ -1,0 +1,40 @@
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+  server_tokens off;
+
+  # API and sign-in pages: the API sends its own security headers. One trusted hop (TRUST_PROXY=1 in Compose):
+  # nginx appends the client address it saw and sets the request id, so a browser can choose neither.
+  # The image renders this template at start: API_UPSTREAM (host:port, default backend:3002) is the only variable
+  # substituted; nginx's own $variables are left alone because they are not set in the environment.
+  location /api/ {
+    proxy_pass http://${API_UPSTREAM};
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_read_timeout 300s;
+    # Uploads: a little above the API's 25 MiB default BLOB_MAX_BYTES, streamed to the API rather than buffered here.
+    client_max_body_size 26m;
+    proxy_request_buffering off;
+  }
+
+  location /auth/ {
+    proxy_pass http://${API_UPSTREAM};
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-Id $request_id;
+  }
+
+  # The browser app (spec §7.6). MUI/emotion injects <style> tags at run time, hence style-src 'unsafe-inline'.
+  # Kept to this location: a second CSP on API responses would be combined with theirs.
+  location / {
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    try_files $uri /index.html;
+  }
+}

@@ -9,6 +9,7 @@ import type { AuthDeps } from '../auth/routes';
 import { getUser } from '../auth/user-repo';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
+import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { completeSigning, failIntent, NO_LONGER_VALID, REAUTH_MAX_AGE_MS, SKEW_MS } from './flow';
 import { createIntent, getIntent, getIntentByState, type SignIntent } from './intent-repo';
@@ -147,7 +148,7 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     try {
       identity = await auth.oidc.finish(callbackUrl, { state: intent.state, nonce: intent.nonce, codeVerifier: intent.codeVerifier });
     } catch (err) {
-      console.warn('Signing re-authentication rejected:', err instanceof Error ? err.message : err);
+      logger.warn({ err }, 'Signing re-authentication rejected');
       resultPage(res, await failIntent(svc, intent, actor, 'REAUTH_REQUIRED', 'Re-authentication could not be verified. Try again.'));
       return true;
     }
@@ -159,7 +160,7 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     // sign-in), not in the future, and within the last two minutes.
     const stale = (message: string) => failIntent(svc, intent, actor, 'REAUTH_STALE', message);
     if (identity.authTime === null) {
-      console.warn('Signing re-authentication refused: the identity provider sent no auth_time claim. Enable the auth_time claim in the ID token.');
+      logger.warn('Signing re-authentication refused: the identity provider sent no auth_time claim. Enable the auth_time claim in the ID token.');
       resultPage(res, await stale('Your identity provider did not report when you signed in (auth_time); ask your administrator to enable it.'));
       return true;
     }
