@@ -11,7 +11,7 @@ import { migrate } from './migrate';
 //   migrate              apply pending SQL migrations
 //   import-json <file>   import an MVP data/db.json into an empty database
 //   create-api-login <name>  create or re-password the API's login (member of audit_api); password from API_DB_PASSWORD
-//   verify               check the trail chain, signatures and stored documents (exit 1 on any problem)
+//   verify               check the trail chain, signatures, gates, agent steps and stored documents (exit 1 on any problem)
 
 const USAGE = 'Usage: cli <migrate | import-json <file> | create-api-login <name> | verify>';
 
@@ -35,7 +35,7 @@ async function main() {
       const result = await createApiLogin(db, arg, password);
       console.log(`${result === 'created' ? 'Created' : 'Updated'} login ${arg} (member of audit_api). Point the API's DATABASE_URL at it; keep the owner for migrate and packs:compile.`);
     } else {
-      // verify: trail chain, signatures and stored documents (exit 1 on any problem)
+      // verify: trail chain, signatures, gates, agent steps and stored documents (exit 1 on any problem)
       let blobs: BlobStore | null = null;
       let skipped: string | null = null;
       try {
