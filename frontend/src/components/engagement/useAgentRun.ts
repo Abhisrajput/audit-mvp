@@ -36,8 +36,9 @@ export function useAgentRun(engagementId: string, onEngagementChanged: () => voi
   const changed = useRef(onEngagementChanged);
   changed.current = onEngagementChanged;
 
-  const load = useCallback(async () => {
-    const mine = epoch.current;
+  // `mine` is the epoch when the refresh was asked for, so a refresh queued before an unmount or an engagement switch
+  // writes nothing and reloads nothing when its turn comes.
+  const load = useCallback(async (mine: number) => {
     try {
       const [rs, gs] = await Promise.all([agentApi.runs(engagementId), agentApi.gates(engagementId)]);
       if (mine !== epoch.current) return;
@@ -57,7 +58,7 @@ export function useAgentRun(engagementId: string, onEngagementChanged: () => voi
         else if (fetched.length) setSteps((prev) => [...prev, ...fetched]);
         if (!fresh && changedEngagement(fetched)) {
           // A failed reload is shown with the other agent errors; it never becomes an unhandled rejection.
-          Promise.resolve(changed.current()).catch((e) => setError(`Could not reload the engagement: ${e instanceof Error ? e.message : String(e)}`));
+          Promise.resolve(changed.current()).catch((e) => mine === epoch.current && setError(`Could not reload the engagement: ${e instanceof Error ? e.message : String(e)}`));
         }
       }
       setError(null);
@@ -69,7 +70,8 @@ export function useAgentRun(engagementId: string, onEngagementChanged: () => voi
 
   const refresh = useCallback(() => {
     pending.current += 1;
-    return (queue.current = queue.current.then(load).finally(() => {
+    const mine = epoch.current;
+    return (queue.current = queue.current.then(() => (mine === epoch.current ? load(mine) : undefined)).finally(() => {
       pending.current -= 1;
     }));
   }, [load]);
@@ -79,7 +81,12 @@ export function useAgentRun(engagementId: string, onEngagementChanged: () => voi
   }, []);
 
   useEffect(() => {
+    // A new engagement starts empty, so the panel never shows (or acts on) the previous engagement's run.
     seen.current = { runId: null, lastSeq: 0 };
+    setRuns([]);
+    setSteps([]);
+    setGates([]);
+    setError(null);
     void refresh();
     return () => {
       epoch.current += 1;
