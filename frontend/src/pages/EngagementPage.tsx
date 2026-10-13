@@ -8,12 +8,14 @@ import RcmTab from '../components/engagement/RcmTab';
 import ReportTab from '../components/engagement/ReportTab';
 import RunPanel from '../components/engagement/RunPanel';
 import ScopeTab from '../components/engagement/ScopeTab';
+import TestPlansTab from '../components/engagement/TestPlansTab';
 import TrailTab from '../components/engagement/TrailTab';
 import { useAgentRun } from '../components/engagement/useAgentRun';
 import type { Engagement, Gate, TrailBundle } from '../types';
 
-const STEPS = ['Risk & scope', 'RCM', 'Fieldwork & testing', 'Findings', 'Report'];
-const FINDINGS_TAB = 3;
+const STEPS = ['Risk & scope', 'RCM', 'Test plans', 'Fieldwork & testing', 'Findings', 'Report'];
+const FINDINGS_TAB = 4;
+const TRAIL_TAB = STEPS.length;
 
 export interface TabProps {
   engagement: Engagement;
@@ -77,7 +79,7 @@ export default function EngagementPage() {
 
   if (!engagement) return null;
   const e = engagement;
-  const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
+  const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testPlans).length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
   const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, qaThreshold: agent.settings?.qaThreshold ?? null };
 
   return (
@@ -121,14 +123,15 @@ export default function EngagementPage() {
         ))}
       </Tabs>
 
-      {lastRun && tab < 5 && <GateSummary bundle={lastRun} />}
+      {lastRun && tab < TRAIL_TAB && <GateSummary bundle={lastRun} />}
 
       {tab === 0 && <ScopeTab {...props} />}
       {tab === 1 && <RcmTab {...props} />}
-      {tab === 2 && <FieldworkTab {...props} />}
-      {tab === 3 && <FindingsTab {...props} />}
-      {tab === 4 && <ReportTab {...props} />}
-      {tab === 5 && <TrailTab {...props} />}
+      {tab === 2 && <TestPlansTab {...props} />}
+      {tab === 3 && <FieldworkTab {...props} />}
+      {tab === FINDINGS_TAB && <FindingsTab {...props} />}
+      {tab === 5 && <ReportTab {...props} />}
+      {tab === TRAIL_TAB && <TrailTab {...props} />}
     </Stack>
   );
 }

@@ -340,6 +340,9 @@ export const planDraft = (p: TestPlan): PlanDraft => ({
   evidenceToRequest: p.evidenceToRequest.join('\n'), procedure: p.procedure, notTestedJustification: p.notTestedJustification ?? '',
 });
 
+/** The longest reason not to test that the server accepts. */
+export const REASON_MAX = 2000;
+
 /** The fields a person changed, as the API takes them, or what is wrong with the form. An empty reason clears it. */
 export function planPatch(before: TestPlan, d: PlanDraft): { patch: TestPlanPatch } | { problem: string } {
   const sampleSize = Number(d.sampleSize);
@@ -347,6 +350,8 @@ export function planPatch(before: TestPlan, d: PlanDraft): { patch: TestPlanPatc
   for (const [k, label] of [['attribute', 'Attribute'], ['population', 'Population'], ['procedure', 'Procedure']] as const) {
     if (!d[k].trim()) return { problem: `${label} cannot be empty` };
   }
+  const reason = d.notTestedJustification.trim();
+  if (reason.length > REASON_MAX) return { problem: `The reason is too long: ${reason.length} of ${REASON_MAX} characters` };
   const next: Required<TestPlanPatch> = {
     attribute: d.attribute.trim(), population: d.population.trim(), sampleSize, selectionMethod: d.selectionMethod,
     evidenceToRequest: d.evidenceToRequest.split('\n').map((s) => s.trim()).filter(Boolean), procedure: d.procedure.trim(),

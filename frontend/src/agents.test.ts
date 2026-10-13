@@ -171,6 +171,9 @@ describe('forms', () => {
     expect(planPatch({ ...PLAN, notTestedJustification: 'Retired' }, { ...planDraft(PLAN), notTestedJustification: ' ' })).toEqual({ patch: { notTestedJustification: '' } });
     expect(planPatch(PLAN, { ...planDraft(PLAN), sampleSize: '-1' })).toEqual({ problem: 'Sample size must be a whole number, 0 or more' });
     expect(planPatch(PLAN, { ...planDraft(PLAN), procedure: ' ' })).toEqual({ problem: 'Procedure cannot be empty' });
+    // The server refuses a reason over 2000 characters; spaces around it are trimmed first.
+    expect(planPatch(PLAN, { ...planDraft(PLAN), notTestedJustification: ` ${'x'.repeat(2000)} ` })).toEqual({ patch: { notTestedJustification: 'x'.repeat(2000) } });
+    expect(planPatch(PLAN, { ...planDraft(PLAN), notTestedJustification: 'x'.repeat(2001) })).toEqual({ problem: 'The reason is too long: 2001 of 2000 characters' });
   });
 
   it('counts the controls a run still waits on, as the run does', () => {
