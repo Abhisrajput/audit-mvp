@@ -1,8 +1,10 @@
 import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
 import { closeFindingGate, closeGate, insertGate, listGates, supersedeOpenGates } from '../src/agents/gate-repo';
-import { appendStep, assertLease, createRun, getRun, leaseNext, listSteps, markRunnable, releaseRun, requestCancel, requestPause } from '../src/agents/run-repo';
+import { appendStep, assertLease, createRun, getRun, leaseNext, listSteps, markRunnable, recordSpend, releaseRun, requestCancel, requestPause } from '../src/agents/run-repo';
 import { ensureDevUsers } from '../src/auth/dev-users';
+import { ModelMeter } from '../src/agents/budget';
+import { NO_SPEND, type Spent } from '../src/agents/types';
 import { appendTrail } from '../src/db/trail-repo';
 import { runWithRequestId } from '../src/observability/context';
 import { auditor, NEW_ENGAGEMENT, newService } from './helpers';
@@ -177,5 +179,48 @@ describe('agent run fixes', () => {
     await insertGate(db, fg);
     await closeFindingGate(db, e.id, 'F1', 'h1', 'approved', 'SIG-2', 'ok');
     expect((await listGates(db, e.id))[1]).toMatchObject({ state: 'approved', signatureId: 'SIG-2' });
+  });
+});
+
+describe('crash takeovers and recorded spend [REQ-29]', () => {
+  it('counts the step of a worker that died mid-step as a failed one', async () => {
+    const { db, run } = await engagementWithRun();
+    expect(await leaseNext(db, 'w1', 60_000)).toMatchObject({ id: run.id, takenOver: false, failureStreak: 0, spent: { steps: 0 } });
+    await sql`UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = ${run.id}`.execute(db);
+    expect(await leaseNext(db, 'w2', 60_000)).toMatchObject({ id: run.id, takenOver: true, failureStreak: 1, spent: { steps: 1, tokensIn: 0 } });
+  });
+
+  it('records spend only while the worker holds the lease', async () => {
+    const { db, run } = await engagementWithRun();
+    await leaseNext(db, 'w1', 60_000);
+    const spent: Spent = { steps: 0, tokensIn: 10, tokensOut: 5, costUsd: 0.01 };
+    await db.transaction().execute((trx) => recordSpend(trx, run.id, 'w1', spent));
+    expect((await getRun(db, run.id))!.spent).toEqual(spent);
+    await expect(db.transaction().execute((trx) => recordSpend(trx, run.id, 'w2', spent))).rejects.toMatchObject({ code: 'LEASE_LOST' });
+  });
+});
+
+describe('the model meter [REQ-29]', () => {
+  const budget = { maxSteps: 10, maxTokens: 1000, maxCostUsd: 1 };
+
+  it('charges a call before it is made, and refuses a call the budget cannot cover', async () => {
+    const written: Spent[] = [];
+    const meter = new ModelMeter(budget, NO_SPEND, async (s) => { written.push(s); });
+    await meter.reserve({ tokensIn: 300, tokensOut: 500, costUsd: 0.4 });
+    expect(written).toEqual([{ steps: 0, tokensIn: 300, tokensOut: 500, costUsd: 0.4 }]);
+    await expect(meter.reserve({ tokensIn: 100, tokensOut: 200, costUsd: 0.1 })).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED', message: 'budget_exhausted: 1000 tokens' });
+    expect(written).toHaveLength(1);
+    expect(meter.spent).toEqual(written[0]);
+  });
+
+  it('settles to what the call used, and refunds a call that failed', async () => {
+    const meter = new ModelMeter({ ...budget, maxTokens: 10_000 }, NO_SPEND, async () => {});
+    const estimate = { tokensIn: 300, tokensOut: 500, costUsd: 0.4 };
+    await meter.reserve(estimate);
+    await meter.settle(estimate, { tokensIn: 280, tokensOut: 120, costUsd: 0.1 });
+    expect(meter.spent).toEqual({ steps: 0, tokensIn: 280, tokensOut: 120, costUsd: 0.1 });
+    await meter.reserve(estimate);
+    await meter.settle(estimate, {});
+    expect(meter.spent).toEqual({ steps: 0, tokensIn: 280, tokensOut: 120, costUsd: 0.1 });
   });
 });

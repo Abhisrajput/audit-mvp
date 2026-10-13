@@ -2,8 +2,9 @@ import { sql } from 'kysely';
 import { describe, expect, it, vi } from 'vitest';
 import { defaultAgentConfig, type AgentConfig } from '../src/agents/config';
 import { listGates } from '../src/agents/gate-repo';
+import { ModelMeter } from '../src/agents/budget';
 import { RULES_VERSION } from '../src/agents/policy/rules';
-import { createRun, getRun, leaseNext, listSteps, markRunnable, requestCancel, requestPause } from '../src/agents/run-repo';
+import { createRun, getRun, leaseNext, listSteps, markRunnable, recordSpend, requestCancel, requestPause } from '../src/agents/run-repo';
 import type { Action, Menu, Policy } from '../src/agents/types';
 import { AgentWorker, chooseDecision } from '../src/agents/worker';
 import { ensureDevUsers } from '../src/auth/dev-users';
@@ -32,6 +33,37 @@ async function started(budget = defaultAgentConfig().budget) {
 }
 
 describe('the agent worker', () => {
+  it('hands the run to a person when its workers keep dying mid-step [REQ-29]', async () => {
+    const { db, run, worker } = await started();
+    for (const dead of ['dead-1', 'dead-2', 'dead-3']) {
+      expect(await leaseNext(db, dead, 60_000)).toMatchObject({ id: run.id });
+      await sql`UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = ${run.id}`.execute(db);
+    }
+    expect(await worker.tick()).toBe('worked');
+    expect(await getRun(db, run.id)).toMatchObject({
+      status: 'needs_human', statusReason: expect.stringMatching(/stopped mid-step 3 times in a row/), failureStreak: 3, spent: { steps: 3 },
+    });
+    expect((await listSteps(db, run.id))[0]).toMatchObject({ kind: 'tool_call', agent: 'worker', decision: { recovered: expect.any(String) } });
+  });
+
+  it('keeps model spend charged by a worker that dies before handing the run back [REQ-29]', async () => {
+    const { svc, db, run } = await started();
+    await leaseNext(db, 'dead', 60_000);
+    const meter = new ModelMeter(run.budget, run.spent, (s) => db.transaction().execute((trx) => recordSpend(trx, run.id, 'dead', s)));
+    await meter.reserve({ tokensIn: 1000, tokensOut: 4000, costUsd: 0.5 });
+    await sql`UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = ${run.id}`.execute(db);
+    expect(await new AgentWorker(svc, cfg(), { id: 'w2' }).tick()).toBe('worked');
+    // The dead worker's reservation stands; its abandoned step and the new worker's step are both counted.
+    expect((await getRun(db, run.id))!.spent).toEqual({ steps: 2, tokensIn: 1000, tokensOut: 4000, costUsd: 0.5 });
+  });
+
+  it('hands the run to a person when a model call would overrun its budget [REQ-29]', async () => {
+    const { svc, db, run, worker } = await started();
+    vi.spyOn(svc, 'runModuleAsAgent').mockRejectedValue(new AppError(409, 'budget_exhausted: $25', 'BUDGET_EXHAUSTED'));
+    await worker.tick();
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'needs_human', statusReason: 'budget_exhausted: $25', failureStreak: 0, spent: { steps: 1 } });
+  });
+
   it('takes a new engagement offline to its scope gate, recording every decision in the trail [REQ-26, REQ-28]', async () => {
     const { e, run, db, worker } = await started();
     expect(await worker.drain()).toBeGreaterThan(2);

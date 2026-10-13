@@ -9,16 +9,16 @@ import { AppError } from '../errors';
 import { runWithRequestId } from '../observability/context';
 import { logger } from '../observability/log';
 import type { AuditService } from '../service';
-import { addSpend, budgetProblem } from './budget';
+import { addSpend, budgetProblem, ModelMeter } from './budget';
 import type { AgentConfig } from './config';
 import { applyDecision, type Outcome } from './executor';
 import { listGates, supersedeOpenGates } from './gate-repo';
 import { allowedActions } from './graph';
 import { RulesPolicy } from './policy/rules';
 import { agentPort, type AgentPort } from './port';
-import { appendStep, assertLease, leaseNext, releaseRun, renewLease, type AgentRun, type RunUpdate } from './run-repo';
+import { appendStep, assertLease, leaseNext, recordSpend, releaseRun, renewLease, type AgentRun, type LeasedRun, type RunUpdate } from './run-repo';
 import { loadGraphInput, reconcileGates } from './state';
-import { DecisionSchema, sameAction, type Decision, type Menu, type Policy } from './types';
+import { DecisionSchema, sameAction, type Decision, type Menu, type Policy, type Spent } from './types';
 
 // The agent worker (spec §2, §6). One tick leases one due run, takes one step of its loop, and hands the run back with
 // its next status. Everything is derived again from the database each tick, so a worker that dies loses at most one
@@ -107,8 +107,10 @@ export class AgentWorker {
     await Promise.all(this.loops.splice(0));
   }
 
-  private async iterate(run: AgentRun): Promise<RunUpdate> {
+  private async iterate(run: LeasedRun): Promise<RunUpdate> {
     const db = this.svc.db.kysely;
+    // Every model call this iteration makes is charged through the meter and written to the run as it happens.
+    const meter = new ModelMeter(run.budget, run.spent, (spent) => db.transaction().execute((trx) => recordSpend(trx, run.id, this.id, spent)));
     try {
       // Lock order is engagement, then run, then gate, everywhere; a worker whose lease has lapsed writes nothing.
       if (run.cancelRequested) {
@@ -120,6 +122,19 @@ export class AgentWorker {
         return { status: 'cancelled', reason: 'cancelled_by_user' };
       }
       if (run.pauseRequested) return { status: 'waiting', reason: 'paused_by_user', pauseHandled: true };
+      if (run.takenOver) {
+        // leaseNext has already counted the dead worker's step as a failed one; say so in the run's record.
+        await db.transaction().execute(async (trx) => {
+          await assertLease(trx, run.id, this.id);
+          await appendStep(trx, run.id, {
+            kind: 'tool_call', agent: 'worker',
+            decision: { recovered: 'The worker holding this run stopped mid-step. That step was counted as failed, and is redone from the engagement as it is now.' },
+          });
+        });
+        if (run.failureStreak >= MAX_STREAK) {
+          return { status: 'needs_human', reason: `error: the worker running this run stopped mid-step ${run.failureStreak} times in a row` };
+        }
+      }
       const over = budgetProblem(run.budget, run.spent);
       if (over) return { status: 'needs_human', reason: over };
       const record = await getUser(db, run.startedBy);
@@ -136,7 +151,6 @@ export class AgentWorker {
       const gates = await listGates(db, e.id);
       const menu = allowedActions(await loadGraphInput(db, run, e, gates, this.cfg.qaThreshold));
       const decision = await chooseDecision(this.policy, menu);
-      const spent = addSpend(run.spent, { steps: 1 });
       await db.transaction().execute(async (trx) => {
         await assertLease(trx, run.id, this.id);
         const sealed = await appendTrail(trx, this.port.agentBundle(e, {
@@ -146,9 +160,9 @@ export class AgentWorker {
         await appendStep(trx, run.id, { kind: 'decision', agent: 'supervisor', decision, model: decision.policyVersion, trailBundleId: sealed.id });
       });
       const outcome = await applyDecision({ db, port: this.port, run, starter, engagement: e, gates, menu }, decision);
-      return { ...statusOf(outcome), spent, failureStreak: 0, conflictStreak: 0 };
+      return { ...statusOf(outcome), spent: addSpend(meter.spent, { steps: 1 }), failureStreak: 0, conflictStreak: 0 };
     } catch (err) {
-      return this.failed(run, err);
+      return this.failed(run, err, meter.spent);
     }
   }
 
@@ -159,11 +173,14 @@ export class AgentWorker {
     return loaded.engagement;
   }
 
-  private async failed(run: AgentRun, err: unknown): Promise<RunUpdate> {
+  private async failed(run: AgentRun, err: unknown, spentSoFar: Spent): Promise<RunUpdate> {
     // A failed iteration still counts as a step against the budget, so a run that keeps failing cannot go on forever.
-    const spent = addSpend(run.spent, { steps: 1 });
+    // Model calls it made are already in `spentSoFar` (the meter wrote them as they happened).
+    const spent = addSpend(spentSoFar, { steps: 1 });
     // Another worker holds the run now; hand it back without touching its streaks (releasing will do nothing).
     if (err instanceof AppError && err.code === 'LEASE_LOST') return { status: 'runnable' };
+    // A model call the budget could not cover was refused before it was made (spec §6.1): a person decides.
+    if (err instanceof AppError && err.code === 'BUDGET_EXHAUSTED') return { status: 'needs_human', reason: err.message, spent };
     if (err instanceof AppError && err.code === 'VERSION_CONFLICT') {
       const streak = run.conflictStreak + 1;
       if (streak < MAX_STREAK) return { status: 'runnable', conflictStreak: streak, spent };
