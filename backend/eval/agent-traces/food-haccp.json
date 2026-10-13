@@ -1,0 +1,114 @@
+{
+  "scenario": {
+    "id": "food-haccp",
+    "description": "Food safety audit on the food and common packs; one CCP monitoring control fails",
+    "engagement": {
+      "name": "Agent eval: food safety",
+      "entity": "Demo Foods",
+      "site": "Plant 1",
+      "periodFrom": "2026-01-01",
+      "periodTo": "2026-06-30",
+      "auditType": "Food safety",
+      "scopeStatement": "HACCP CCP monitoring, supplier approval, traceability and allergen controls",
+      "packIds": [
+        "food",
+        "common"
+      ]
+    },
+    "failingControls": [
+      "FD-HACCP-03"
+    ]
+  },
+  "trace": [
+    {
+      "type": "delegate",
+      "subjectKey": "scope",
+      "specialist": "scope",
+      "policy": "forced"
+    },
+    {
+      "type": "request_qa",
+      "subjectKey": "scope",
+      "mode": "review",
+      "policy": "forced"
+    },
+    {
+      "type": "open_gate",
+      "subjectKey": "scope",
+      "policy": "rules"
+    },
+    {
+      "type": "delegate",
+      "subjectKey": "rcm",
+      "specialist": "rcm",
+      "policy": "forced"
+    },
+    {
+      "type": "request_qa",
+      "subjectKey": "rcm",
+      "mode": "review",
+      "policy": "forced"
+    },
+    {
+      "type": "open_gate",
+      "subjectKey": "rcm",
+      "policy": "rules"
+    },
+    {
+      "type": "delegate",
+      "subjectKey": "test_plans",
+      "specialist": "test-plan",
+      "policy": "forced"
+    },
+    {
+      "type": "request_qa",
+      "subjectKey": "test_plans",
+      "mode": "review",
+      "policy": "forced"
+    },
+    {
+      "type": "wait",
+      "policy": "forced"
+    },
+    {
+      "type": "delegate",
+      "subjectKey": "testing",
+      "specialist": "testing",
+      "policy": "forced"
+    },
+    {
+      "type": "delegate",
+      "subjectKey": "gaps",
+      "specialist": "gaps",
+      "policy": "forced"
+    },
+    {
+      "type": "request_qa",
+      "subjectKey": "finding:FD-HACCP-03",
+      "mode": "review",
+      "policy": "forced"
+    },
+    {
+      "type": "open_gate",
+      "subjectKey": "finding:FD-HACCP-03",
+      "policy": "rules"
+    },
+    {
+      "type": "delegate",
+      "subjectKey": "report",
+      "specialist": "report",
+      "policy": "forced"
+    },
+    {
+      "type": "request_qa",
+      "subjectKey": "report",
+      "mode": "review",
+      "policy": "forced"
+    },
+    {
+      "type": "open_gate",
+      "subjectKey": "report",
+      "policy": "forced"
+    }
+  ]
+}

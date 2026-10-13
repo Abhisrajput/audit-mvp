@@ -79,6 +79,8 @@ describe('HTTP API', () => {
     const before = (await auditor.get('/api/trail/verify')).body.length;
     const run = await auditor.post('/api/eval/run').expect(200);
     expect(run.body.passed).toBe(run.body.total);
+    // Agent golden traces are for the command line: a configured model provider would make them paid runs.
+    expect(run.body.cases.filter((c: any) => c.kind.startsWith('agent-trace'))).toEqual([]);
     expect((await auditor.get('/api/trail/verify')).body.length).toBe(before);
     expect((await auditor.get('/api/eval/runs')).body.map((r: any) => r.id)).toEqual([run.body.id]);
     const tm = await auditor.get('/api/validation/traceability').expect(200);

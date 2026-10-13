@@ -1,3 +1,4 @@
+import { runAgentTraces } from './agent-traces';
 import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { PackRegistry } from '../engine/packs';
@@ -14,7 +15,7 @@ import { AuditService, ENGINE_VERSION } from '../service';
 export interface EvalCaseResult {
   id: string;
   packId: string;
-  kind: EvalCase['kind'];
+  kind: EvalCase['kind'] | 'agent-trace' | 'agent-trace-llm';
   description: string;
   passed: boolean;
   detail: string;
@@ -97,7 +98,12 @@ async function runCase(registry: PackRegistry, svc: AuditService, pack: ContentP
   }
 }
 
-export async function runEval(registry: PackRegistry, llm: LlmProvider | null, packIds?: string[], policy: CitationPolicy = STRICT_CITATIONS): Promise<EvalReport> {
+// `agentTraces` runs the agent's golden traces. Only the command line asks for it: the HTTP route must not, because a
+// configured model provider would turn them into paid model-policy runs.
+export async function runEval(
+  registry: PackRegistry, llm: LlmProvider | null, packIds?: string[], policy: CitationPolicy = STRICT_CITATIONS,
+  opts: { agentTraces?: boolean; updateTraces?: boolean } = {},
+): Promise<EvalReport> {
   // A throwaway in-process database: eval never touches operational data or the trail.
   const db = await createMemoryDb();
   try {
@@ -107,6 +113,8 @@ export async function runEval(registry: PackRegistry, llm: LlmProvider | null, p
     for (const pack of packs) {
       for (const c of pack.evalCases) cases.push(await runCase(registry, svc, pack, c));
     }
+    // The agent's golden traces (agent spec §8), offline, each on its own in-process database.
+    if (opts.agentTraces) cases.push(...(await runAgentTraces(registry, { update: opts.updateTraces, packIds, llm })));
     const byKind: EvalReport['byKind'] = {};
     for (const r of cases) {
       byKind[r.kind] ??= { total: 0, passed: 0 };

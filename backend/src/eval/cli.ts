@@ -8,7 +8,7 @@ import { loadBundles } from '../knowledge/okf/bundle';
 import { registryFromGraph } from '../knowledge/packs';
 import { evalMarkdown, runEval } from './harness';
 
-// Usage: npm run eval [-- --provider anthropic] [--packs food,pharma]
+// Usage: npm run eval [-- --provider anthropic] [--packs food,pharma] [--update-traces]
 async function main() {
   prepareEnv();
   const policy = loadCitationPolicy();
@@ -27,7 +27,7 @@ async function main() {
   } finally {
     await graph.close();
   }
-  const report = await runEval(registry, createProvider(arg('provider') ?? 'offline'), arg('packs')?.split(','), policy);
+  const report = await runEval(registry, createProvider(arg('provider') ?? 'offline'), arg('packs')?.split(','), policy, { agentTraces: true, updateTraces: args.includes('--update-traces') });
   const outDir = path.resolve(__dirname, '../../validation-output');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'eval-latest.json'), JSON.stringify(report, null, 2));
