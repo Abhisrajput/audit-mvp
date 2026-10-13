@@ -4,6 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { sql } from 'kysely';
 import { afterAll, describe, expect, it } from 'vitest';
+import { defaultAgentConfig } from '../src/agents/config';
+import { listGates } from '../src/agents/gate-repo';
+import { RULES_VERSION } from '../src/agents/policy/rules';
+import { createRun, getRun } from '../src/agents/run-repo';
+import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { connectPg, type Db } from '../src/db';
@@ -11,7 +16,7 @@ import { createApiLogin } from '../src/db/api-login';
 import { AuditService } from '../src/service';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { testDbWithUrl } from './db';
-import { LENIENT, registry } from './helpers';
+import { auditor, LENIENT, NEW_ENGAGEMENT, registry, reviewer, unattended } from './helpers';
 import { devAuthConfig, devSign, draftFinding, signIn } from './http';
 
 /** What the API's role may do with each table. A table missing here fails the inventory test until it is classified. */
@@ -88,6 +93,20 @@ describe('the API database role', () => {
     await auditor.post(`/api/engagements/${id}/modules/report/run`).expect(200);
     await auditor.post('/api/eval/run').expect(200);
     expect((await auditor.get('/api/trail/verify').expect(200)).body.valid).toBe(true);
+  }, 120_000);
+
+  it('runs agent work as that role: runs, steps, gates and gate signatures [REQ-20, REQ-26]', async () => {
+    const { api } = await asApiRole();
+    const svc = new AuditService(api, registry, null, LENIENT);
+    await ensureDevUsers(api.kysely);
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const run = await createRun(api.kysely, { engagementId: e.id, startedBy: 'auditor', policy: 'rules', policyVersion: RULES_VERSION, budget: defaultAgentConfig().budget });
+    const worker = new AgentWorker(svc, defaultAgentConfig(), { id: 'w-api-role' });
+    await worker.drain();
+    const [gate] = await listGates(api.kysely, e.id);
+    await svc.signGate(gate.id, 'approve', 'In scope as proposed', reviewer, unattended);
+    await worker.drain();
+    expect(await getRun(api.kysely, run.id)).toMatchObject({ status: 'waiting', statusReason: 'awaiting rcm gate signature' });
   }, 120_000);
 
   it('creates the login once and only changes its password afterwards; never touches other roles [REQ-20]', async () => {
