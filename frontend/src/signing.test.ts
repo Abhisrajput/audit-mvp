@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { signWithReauth, type SigningDeps, type SigningWindow } from './signing';
+import { signGateWithReauth, signWithReauth, type SigningDeps, type SigningWindow } from './signing';
 
 type Status = { status: string; code?: string | null; message?: string | null };
 
@@ -55,7 +55,7 @@ describe('signWithReauth', () => {
   it('explains a finding that changed while signing', async () => {
     const { deps } = fakeDeps([{ status: 'failed', code: 'CONTENT_CHANGED', message: 'server text' }]);
     await expect(signWithReauth('ENG-1', 'F-1', 'approve', '', { closed: false }, { deps })).rejects.toMatchObject({
-      code: 'CONTENT_CHANGED', message: expect.stringMatching(/changed after you started signing/),
+      code: 'CONTENT_CHANGED', message: expect.stringMatching(/^The finding changed after you started signing/),
     });
   });
 
@@ -152,5 +152,33 @@ describe('signWithReauth', () => {
     await expect(signWithReauth('ENG-1', 'F-1', 'approve', '', { closed: false }, { deps: silent.deps })).rejects.toMatchObject({
       code: 'REAUTH_REQUIRED', message: expect.stringMatching(/did not complete/),
     });
+  });
+});
+
+describe('signGateWithReauth', () => {
+  it('signs a gate through the same window, request and polling as a finding', async () => {
+    const { deps, calls, bodies, navigated } = fakeDeps([{ status: 'pending' }, { status: 'signed' }]);
+    await expect(signGateWithReauth('GATE-1', 'reject', 'Bring the allergen controls into scope', { closed: false }, { deps })).resolves.toBeUndefined();
+    expect(calls[0]).toBe('POST /gates/GATE-1/sign-intents');
+    expect(bodies[0]).toEqual(['/gates/GATE-1/sign-intents', { action: 'reject', comment: 'Bring the allergen controls into scope' }]);
+    expect(navigated).toEqual(['/auth/sign/INT-1']);
+    expect(polls(calls)).toBe(2);
+  });
+
+  it('says the workpaper changed, not a finding, when its content moved while signing', async () => {
+    const { deps } = fakeDeps([{ status: 'failed', code: 'CONTENT_CHANGED', message: 'server text' }]);
+    await expect(signGateWithReauth('GATE-1', 'approve', '', { closed: false }, { deps })).rejects.toMatchObject({
+      code: 'CONTENT_CHANGED', message: expect.stringMatching(/^The workpaper changed after you started signing/),
+    });
+  });
+
+  it('asks for pop-ups to be allowed before creating a gate signing request, and closes the window if the request is refused', async () => {
+    const blocked = fakeDeps([]);
+    await expect(signGateWithReauth('GATE-1', 'approve', '', null, { deps: blocked.deps })).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+    expect(blocked.calls).toEqual([]);
+    const popup = { closed: false };
+    const refused = fakeDeps([], { intentError: new Error('You started this agent run, so someone else must sign its gates') });
+    await expect(signGateWithReauth('GATE-1', 'approve', '', popup, { deps: refused.deps })).rejects.toThrow(/someone else must sign/);
+    expect(refused.closed).toEqual([popup]);
   });
 });
