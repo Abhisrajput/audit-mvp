@@ -3,6 +3,7 @@ import { tokenize } from '../grounding';
 import type { AuditModule } from '../module';
 import { toCitation } from '../qa';
 import type { Citation, ScopeItem } from '../types';
+import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 const ModelScope = z.object({
@@ -53,7 +54,7 @@ export const scopeModule: AuditModule<ScopeItem[]> = {
     const drafted = await askModel(
       ctx,
       SYSTEM_PREAMBLE,
-      `Audit: ${e.name} (${e.auditType}) at ${e.entity}, ${e.site}.\nScope statement: ${e.scopeStatement}\n\n` +
+      `Audit details and scope statement:\n${asData('workpaper:scope', { audit: e.name, auditType: e.auditType, entity: e.entity, site: e.site, scopeStatement: e.scopeStatement })}\n\n` +
         `Candidate controls (id | process area | title | inherent risk | keyword relevance):\n` +
         items.map((i) => `${i.controlId} | ${i.processArea} | ${ctx.registry.controls.get(i.controlId)!.title} | ${i.inherentRisk} | ${i.relevance}`).join('\n') +
         `\n\nFor every candidate decide whether it is in scope for this audit and give a one-sentence rationale tied to the scope statement.`,

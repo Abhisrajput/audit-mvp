@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { canonicalJson } from '../engine/trail';
 import type { Engagement } from '../engine/types';
+import type { AgentModels } from './llm/models';
 
 export type RunStatus = 'running' | 'runnable' | 'waiting' | 'needs_human' | 'completed' | 'cancelled' | 'failed';
 export const TERMINAL_STATUSES: readonly RunStatus[] = ['completed', 'cancelled', 'failed'];
@@ -35,6 +36,13 @@ export interface QaIssue {
   detail: string;
 }
 
+/** One rubric criterion as a model scored it (spec §5.5): 0 (not met) to 4 (fully met). */
+export interface QaCriterionScore {
+  id: string;
+  score: number;
+  note: string;
+}
+
 /** A QA review of one subject at one content hash (spec §5.5). */
 export interface QaReport {
   subjectKey: string;
@@ -44,6 +52,10 @@ export interface QaReport {
   /** 0–100 */
   score: number;
   issues: QaIssue[];
+  /** The rubric as the model scored it. Absent for a review without a model. */
+  criteria?: QaCriterionScore[];
+  /** A model was configured but could not review: only the automatic checks ran (spec §6.3). */
+  withoutModel?: boolean;
 }
 
 /** The specialists the supervisor can delegate to. Each wraps one existing module (or, for test plans, the drafter). */
@@ -65,12 +77,22 @@ export const ActionSchema = z.discriminatedUnion('type', [
 ]);
 export type Action = z.infer<typeof ActionSchema>;
 
+/** One try of a model policy at choosing, kept on the decision so its step and trail entry show every attempt (spec §6.3). */
+export const PolicyAttemptSchema = z.object({
+  outcome: z.enum(['chosen', 'off_menu', 'malformed', 'model_error']),
+  model: z.string().nullable(),
+  detail: z.string().max(500),
+});
+export type PolicyAttempt = z.infer<typeof PolicyAttemptSchema>;
+
 export const DecisionSchema = z.object({
   action: ActionSchema,
   rationale: z.string().max(500),
   /** 'forced' when the menu had one entry and no policy was asked. */
   policy: z.enum(['llm', 'rules', 'forced']),
   policyVersion: z.string(),
+  /** A model policy's tries, in order. Absent for the rules policy and forced decisions. */
+  attempts: z.array(PolicyAttemptSchema).optional(),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 
@@ -121,7 +143,8 @@ export interface Menu {
 export interface Policy {
   readonly kind: 'llm' | 'rules';
   readonly version: string;
-  decide(menu: Menu): Promise<Decision>;
+  /** Picks one action from the menu. `models` is the iteration's metered model access; the rules policy ignores it. */
+  decide(menu: Menu, models?: AgentModels): Promise<Decision>;
 }
 
 /** Redrafts a subject may get from QA feedback before its gate (spec §5.3). */

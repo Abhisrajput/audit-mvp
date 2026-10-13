@@ -24,7 +24,8 @@ export interface NewGate {
   subjectId: string;
   subjectHash: string;
   basisHash: string;
-  qaReport: QaReport | null;
+  /** The QA review of exactly this content (REQ-30; migration 011 refuses a gate without it). */
+  qaReport: QaReport;
 }
 
 const iso = (d: Date | string) => new Date(d).toISOString();
@@ -58,6 +59,19 @@ export async function insertGate(db: Executor, g: NewGate): Promise<Gate> {
 /** Every gate on the engagement, oldest first. */
 export async function listGates(db: Executor, engagementId: string): Promise<Gate[]> {
   return (await db.selectFrom('gates').selectAll().where('engagement_id', '=', engagementId).orderBy('seq').execute()).map(toGate);
+}
+
+/** The open gate on a subject (a finding id, or a workpaper kind), or null. */
+export async function openGateForSubject(db: Executor, engagementId: string, subjectId: string): Promise<Gate | null> {
+  const row = await db
+    .selectFrom('gates')
+    .selectAll()
+    .where('engagement_id', '=', engagementId)
+    .where('subject_id', '=', subjectId)
+    .where('state', '=', 'open')
+    .orderBy('seq', 'desc')
+    .executeTakeFirst();
+  return row ? toGate(row) : null;
 }
 
 export async function getGate(db: Executor, id: string, opts: { forUpdate?: boolean } = {}): Promise<Gate | null> {

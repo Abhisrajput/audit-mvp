@@ -18,7 +18,8 @@ const insertRun = (db: Db, engagementId: string, id: string, status = 'runnable'
 
 const insertGate = (db: Db, engagementId: string, runId: string, id: string, key = 'scope') =>
   db.execScript(`INSERT INTO gates (id, engagement_id, run_id, kind, subject_key, subject_id, subject_hash, basis_hash, qa_report, attempt)
-    VALUES ('${id}', '${engagementId}', '${runId}', 'scope', '${key}', 'scope', 'h1', 'b1', 'null', 1)`);
+    VALUES ('${id}', '${engagementId}', '${runId}', 'scope', '${key}', 'scope', 'h1', 'b1',
+      jsonb_build_object('subjectKey', '${key}', 'subjectHash', 'h1'), 1)`);
 
 const insertSignature = (db: Db, engagementId: string, id: string, columns: string, values: string) =>
   db.execScript(`INSERT INTO signatures (id, engagement_id, user_id, user_name, role, meaning, content_hash, reauth_method, trail_bundle_id, signed_at${columns})

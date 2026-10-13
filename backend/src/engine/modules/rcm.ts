@@ -3,6 +3,7 @@ import type { AuditModule } from '../module';
 import { rcmCitationGate, toCitation } from '../qa';
 import { trustActions } from '../trust';
 import type { Citation, Frequency, RcmRow, RiskRating } from '../types';
+import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 // Sample sizes by control frequency, [lower risk, high risk]. A common
@@ -74,8 +75,8 @@ export const rcmModule: AuditModule<RcmRow[]> = {
       ctx,
       SYSTEM_PREAMBLE,
       `Tailor these library test programmes to the client context. Keep each step concrete and testable; do not add regulatory references.\n` +
-        `Client: ${e.entity}, site ${e.site}. Audit period ${e.periodFrom} to ${e.periodTo}. Scope: ${e.scopeStatement}\n\n` +
-        JSON.stringify(rows.map((r) => ({ controlId: r.controlId, control: r.control, testOfDesign: r.testOfDesign, testOfEffectiveness: r.testOfEffectiveness, checklist: r.checklist }))),
+        `Client context:\n${asData('workpaper:engagement', { entity: e.entity, site: e.site, periodFrom: e.periodFrom, periodTo: e.periodTo, scopeStatement: e.scopeStatement })}\n\n` +
+        asData('library:test-programmes', rows.map((r) => ({ controlId: r.controlId, control: r.control, testOfDesign: r.testOfDesign, testOfEffectiveness: r.testOfEffectiveness, checklist: r.checklist }))),
       ModelRcm,
     );
     if (drafted) {

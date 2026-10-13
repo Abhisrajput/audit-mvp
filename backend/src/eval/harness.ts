@@ -1,3 +1,4 @@
+import { runAgentTraces } from './agent-traces';
 import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { PackRegistry } from '../engine/packs';
@@ -14,9 +15,11 @@ import { AuditService, ENGINE_VERSION } from '../service';
 export interface EvalCaseResult {
   id: string;
   packId: string;
-  kind: EvalCase['kind'];
+  kind: EvalCase['kind'] | 'agent-trace' | 'agent-trace-llm';
   description: string;
   passed: boolean;
+  /** Reported for information only, and left out of the totals: a model-driven agent run (--agent-llm). */
+  informational?: boolean;
   detail: string;
 }
 
@@ -97,7 +100,34 @@ async function runCase(registry: PackRegistry, svc: AuditService, pack: ContentP
   }
 }
 
-export async function runEval(registry: PackRegistry, llm: LlmProvider | null, packIds?: string[], policy: CitationPolicy = STRICT_CITATIONS): Promise<EvalReport> {
+/** The eval command line: `[--provider anthropic] [--packs food,pharma] [--update-traces] [--agent-llm]`. */
+export function evalArgs(args: string[]): { provider: string; packs?: string[]; updateTraces: boolean; agentLlm: boolean } {
+  const arg = (name: string) => {
+    const i = args.indexOf(`--${name}`);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  return { provider: arg('provider') ?? 'offline', packs: arg('packs')?.split(','), updateTraces: args.includes('--update-traces'), agentLlm: args.includes('--agent-llm') };
+}
+
+/** Totals over the cases that count: informational ones are reported but never counted. */
+export function tallyCases(cases: EvalCaseResult[]): Pick<EvalReport, 'total' | 'passed' | 'byKind'> {
+  const counted = cases.filter((c) => !c.informational);
+  const byKind: EvalReport['byKind'] = {};
+  for (const r of counted) {
+    byKind[r.kind] ??= { total: 0, passed: 0 };
+    byKind[r.kind].total++;
+    if (r.passed) byKind[r.kind].passed++;
+  }
+  return { total: counted.length, passed: counted.filter((c) => c.passed).length, byKind };
+}
+
+// `agentTraces` runs the agent's golden traces, offline. Only the command line asks for it. `agentLlm` adds a
+// model-driven run per scenario with `llm` (informational and paid), so it takes an explicit --agent-llm; the HTTP
+// route asks for neither.
+export async function runEval(
+  registry: PackRegistry, llm: LlmProvider | null, packIds?: string[], policy: CitationPolicy = STRICT_CITATIONS,
+  opts: { agentTraces?: boolean; updateTraces?: boolean; agentLlm?: boolean } = {},
+): Promise<EvalReport> {
   // A throwaway in-process database: eval never touches operational data or the trail.
   const db = await createMemoryDb();
   try {
@@ -107,12 +137,8 @@ export async function runEval(registry: PackRegistry, llm: LlmProvider | null, p
     for (const pack of packs) {
       for (const c of pack.evalCases) cases.push(await runCase(registry, svc, pack, c));
     }
-    const byKind: EvalReport['byKind'] = {};
-    for (const r of cases) {
-      byKind[r.kind] ??= { total: 0, passed: 0 };
-      byKind[r.kind].total++;
-      if (r.passed) byKind[r.kind].passed++;
-    }
+    // The agent's golden traces (agent spec §8), offline, each on its own in-process database.
+    if (opts.agentTraces) cases.push(...(await runAgentTraces(registry, { update: opts.updateTraces, packIds, llm: opts.agentLlm ? llm : null })));
     return {
       id: `EVAL-${Date.now()}`,
       at: new Date().toISOString(),
@@ -120,9 +146,7 @@ export async function runEval(registry: PackRegistry, llm: LlmProvider | null, p
       engineVersion: ENGINE_VERSION,
       packVersions: Object.fromEntries(packs.map((p) => [p.id, p.version])),
       citationPolicy: policy,
-      total: cases.length,
-      passed: cases.filter((c) => c.passed).length,
-      byKind,
+      ...tallyCases(cases),
       cases,
     };
   } finally {
@@ -146,6 +170,6 @@ export function evalMarkdown(r: EvalReport): string {
     ``,
     `| Case | Pack | Kind | Result | Detail |`,
     `|---|---|---|---|---|`,
-    ...r.cases.map((c) => `| ${c.id} | ${c.packId} | ${c.kind} | ${c.passed ? 'PASS' : 'FAIL'} | ${c.detail.replace(/\|/g, '/')} |`),
+    ...r.cases.map((c) => `| ${c.id} | ${c.packId} | ${c.kind} | ${c.informational ? 'INFO' : c.passed ? 'PASS' : 'FAIL'} | ${c.detail.replace(/\|/g, '/')} |`),
   ].join('\n');
 }

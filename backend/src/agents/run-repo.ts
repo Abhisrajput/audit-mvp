@@ -85,22 +85,37 @@ export async function listRuns(db: Executor, engagementId: string): Promise<Agen
   return rows.map(toRun);
 }
 
-/** Takes one due run: runnable, waiting past its wake time, or running with an expired lease (its worker died). */
-export async function leaseNext(db: Executor, owner: string, leaseMs: number): Promise<AgentRun | null> {
-  const { rows } = await sql<Selectable<AgentRunsTable>>`
-    UPDATE agent_runs
-    SET status = 'running', lease_owner = ${owner}, lease_until = now() + ${leaseMs}::int * interval '1 millisecond',
-        wake_at = NULL, wake_requested = false, updated_at = now(), version = version + 1
-    WHERE id = (
-      SELECT id FROM agent_runs
+/** A leased run. `takenOver` when its previous worker's lease ran out mid-step (the worker died or stalled). */
+export interface LeasedRun extends AgentRun {
+  takenOver: boolean;
+}
+
+/**
+ * Takes one due run: runnable, waiting past its wake time, or running with an expired lease (its worker died). A run
+ * taken from a dead worker has that worker's unfinished step counted as a failed one, against the failure streak and
+ * the step budget, so a run whose workers keep dying stops, and model calls made in that step stay paid for (spec §6.3).
+ */
+export async function leaseNext(db: Executor, owner: string, leaseMs: number): Promise<LeasedRun | null> {
+  const { rows } = await sql<Selectable<AgentRunsTable> & { taken_over: boolean }>`
+    WITH due AS (
+      SELECT id, status = 'running' AS taken_over FROM agent_runs
       WHERE status = 'runnable'
          OR (status = 'waiting' AND wake_at IS NOT NULL AND wake_at <= now())
          OR (status = 'running' AND lease_until < now())
       ORDER BY updated_at, id
       LIMIT 1
       FOR UPDATE SKIP LOCKED)
-    RETURNING *`.execute(db);
-  return rows[0] ? toRun(rows[0]) : null;
+    UPDATE agent_runs r
+    SET status = 'running', lease_owner = ${owner}, lease_until = now() + ${leaseMs}::int * interval '1 millisecond',
+        wake_at = NULL, wake_requested = false, updated_at = now(), version = r.version + 1,
+        failure_streak = CASE WHEN due.taken_over THEN r.failure_streak + 1 ELSE r.failure_streak END,
+        spent = CASE WHEN due.taken_over
+                     THEN jsonb_set(r.spent, '{steps}', to_jsonb(COALESCE((r.spent->>'steps')::int, 0) + 1))
+                     ELSE r.spent END
+    FROM due
+    WHERE r.id = due.id
+    RETURNING r.*, due.taken_over`.execute(db);
+  return rows[0] ? { ...toRun(rows[0]), takenOver: rows[0].taken_over } : null;
 }
 
 /** Extends the lease while an iteration is still working. False when another worker has taken the run. */
@@ -158,6 +173,15 @@ export async function releaseRun(db: Executor, id: string, owner: string, u: Run
 export async function assertLease(db: Executor, runId: string, owner: string): Promise<void> {
   const row = await db.selectFrom('agent_runs').select('id').where('id', '=', runId).where('lease_owner', '=', owner).where('status', '=', 'running').forUpdate().executeTakeFirst();
   if (!row) throw new AppError(409, `Agent run ${runId} is no longer held by this worker`, 'LEASE_LOST');
+}
+
+/**
+ * Writes what the run has spent so far, while this worker still holds it. Model spend is written as each call is
+ * reserved and settled (budget.ts ModelMeter), so it is on record even if the worker dies before handing the run back.
+ */
+export async function recordSpend(db: Executor, runId: string, owner: string, spent: Spent): Promise<void> {
+  await assertLease(db, runId, owner);
+  await db.updateTable('agent_runs').set({ spent: JSON.stringify(spent) }).where('id', '=', runId).where('lease_owner', '=', owner).execute();
 }
 
 async function lockedLiveRun(db: Executor, id: string): Promise<AgentRun> {

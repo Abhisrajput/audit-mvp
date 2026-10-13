@@ -115,7 +115,7 @@ describe('trust rules [REQ-22]', () => {
     let extra = '';
     const llm = new FakeProvider((req) => {
       if (req.user.includes('Draft one audit finding')) {
-        const [row] = JSON.parse(req.user.slice(req.user.lastIndexOf('\n\n') + 2)) as { allowedClauses: { clauseId: string }[] }[];
+        const [row] = JSON.parse(req.user.slice(req.user.indexOf('>\n', req.user.indexOf('<data source="workpaper:failed-controls"')) + 2, req.user.lastIndexOf('\n</data>'))) as { allowedClauses: { clauseId: string }[] }[];
         extra = row.allowedClauses.map((c) => c.clauseId).find((id) => !rowClauses.has(id))!;
         return { findings: [{ rowId: 'FD-HACCP-03', title: 't', rating: 'High', condition: 'c', criteria: 'c', cause: 'c', effect: 'e', recommendation: 'r', clauseIds: [...rowClauses, extra] }] };
       }

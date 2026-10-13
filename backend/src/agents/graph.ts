@@ -103,6 +103,11 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
   if (o.canRework && mine.filter((r) => r.kind === 'rework').length < MAX_SELF_REWORKS) {
     actions.push(rework(o, key, report.issues.length ? summarise(report) : `QA scored ${report.score}, below ${input.qaThreshold}`));
   }
+  // One adversarial pass per subject content, for a policy that wants a second look before a borderline gate (spec §5.3).
+  // The rules policy never takes it; a model policy may.
+  if (!input.qa.some((q) => q.subjectKey === key && q.subjectHash === s.hash && q.mode === 'challenge')) {
+    actions.push({ type: 'request_qa', subjectKey: key, mode: 'challenge' });
+  }
   actions.push({
     type: 'escalate',
     reason: report.issues.length

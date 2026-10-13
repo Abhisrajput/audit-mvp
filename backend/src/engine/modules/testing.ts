@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { negativeSignals, testEvidenceGate } from '../qa';
 import type { RcmRow, TestInput, TestResult } from '../types';
+import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 /** Deterministic conclusion from the auditor's field record. */
@@ -60,7 +61,7 @@ export const testingModule: AuditModule<Record<string, TestResult>> = {
       SYSTEM_PREAMBLE,
       `Conclude on each control test. Allowed conclusions: Effective, Ineffective, Design deficient, Not tested.\n` +
         `Any recorded exception means the control is not Effective. Give a one or two sentence rationale based only on the record.\n\n` +
-        JSON.stringify(tested.map((r) => ({ rowId: r.id, control: r.control, plannedSample: r.sampleSize, testOfEffectiveness: r.testOfEffectiveness, record: e.testInputs[r.id] }))),
+        asData('workpaper:field-work', tested.map((r) => ({ rowId: r.id, control: r.control, plannedSample: r.sampleSize, testOfEffectiveness: r.testOfEffectiveness, record: e.testInputs[r.id] }))),
       ModelTesting,
     );
     if (drafted) {

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import express, { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { openGateForSubject } from '../agents/gate-repo';
 import { DEV_ISSUER } from '../auth/dev-users';
 import { actorOf, requireRole } from '../auth/http';
 import { page, popupHeaders } from '../auth/page';
@@ -41,7 +42,10 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     const method = reauthMethodFor(req.auth!.user.issuer);
     if (!method) throw new AppError(409, 'No way to re-authenticate is configured for your account; ask your administrator', 'REAUTH_REQUIRED');
     const intent = await createIntent(db, { userId: actor.id, engagementId, findingId, action: body.action, comment: body.comment, contentHash });
-    res.status(201).json({ intentId: intent.id, reauthUrl: `/auth/sign/${intent.id}`, method, expiresAt: intent.expiresAt });
+    // An agent-drafted finding is under a gate: its reviewer sees the QA report that gate carries,
+    // but only if the gate was opened on the content being signed (agent spec REQ-30).
+    const gate = await openGateForSubject(db, engagementId, findingId);
+    res.status(201).json({ intentId: intent.id, reauthUrl: `/auth/sign/${intent.id}`, method, expiresAt: intent.expiresAt, qa: gate && gate.subjectHash === contentHash ? gate.qaReport : null });
   }));
 
   // A scope, RCM or report gate the agent opened (agent spec §4.3). Rejecting needs a reason: the agent redrafts from it.
@@ -50,11 +54,11 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     if (body.action === 'reject' && !body.comment.trim()) throw new AppError(400, 'Say why you are rejecting this workpaper: the agent redrafts it from your comment');
     const actor = actorOf(req);
     const gateId = String(req.params.gateId);
-    const { engagementId, workpaper, contentHash } = await svc.checkGateSignOff(gateId, actor);
+    const { engagementId, workpaper, contentHash, qaReport } = await svc.checkGateSignOff(gateId, actor);
     const method = reauthMethodFor(req.auth!.user.issuer);
     if (!method) throw new AppError(409, 'No way to re-authenticate is configured for your account; ask your administrator', 'REAUTH_REQUIRED');
     const intent = await createIntent(db, { userId: actor.id, engagementId, gateId, workpaper, action: body.action, comment: body.comment, contentHash });
-    res.status(201).json({ intentId: intent.id, reauthUrl: `/auth/sign/${intent.id}`, method, expiresAt: intent.expiresAt });
+    res.status(201).json({ intentId: intent.id, reauthUrl: `/auth/sign/${intent.id}`, method, expiresAt: intent.expiresAt, qa: qaReport });
   }));
 
   const statusOf = (intent: SignIntent) => ({ status: intent.status, code: intent.failureCode, message: intent.failureMessage });
