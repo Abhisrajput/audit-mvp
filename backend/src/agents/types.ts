@@ -36,6 +36,13 @@ export interface QaIssue {
   detail: string;
 }
 
+/** One rubric criterion as a model scored it (spec §5.5): 0 (not met) to 4 (fully met). */
+export interface QaCriterionScore {
+  id: string;
+  score: number;
+  note: string;
+}
+
 /** A QA review of one subject at one content hash (spec §5.5). */
 export interface QaReport {
   subjectKey: string;
@@ -45,6 +52,10 @@ export interface QaReport {
   /** 0–100 */
   score: number;
   issues: QaIssue[];
+  /** The rubric as the model scored it. Absent for a review without a model. */
+  criteria?: QaCriterionScore[];
+  /** A model was configured but could not review: only the automatic checks ran (spec §6.3). */
+  withoutModel?: boolean;
 }
 
 /** The specialists the supervisor can delegate to. Each wraps one existing module (or, for test plans, the drafter). */

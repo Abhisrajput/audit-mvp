@@ -1,4 +1,7 @@
-import type { Engagement } from '../../engine/types';
+import type { Engagement, QaAction } from '../../engine/types';
+import type { PackRegistry } from '../../engine/packs';
+import { rcmCitationGate } from '../../engine/qa';
+import { trustActions, type CitationPolicy } from '../../engine/trust';
 import { rowOfKey, subjectInfo } from '../subjects';
 import type { QaIssue, QaReport } from '../types';
 
@@ -6,6 +9,16 @@ import type { QaIssue, QaReport } from '../types';
 // advisory ones travel with the gate to the signer.
 
 export const DETERMINISTIC_REVIEWER = 'deterministic-1';
+
+/** The automatic review with the citation gate and trust rules added (what the worker always runs). */
+export const CHECKED_REVIEWER = 'deterministic-2';
+
+/** What the citation and trust checks need (engine/qa.ts, REQ-22). */
+export interface QaChecks {
+  registry: PackRegistry;
+  policy: CitationPolicy;
+  today?: string;
+}
 
 const blocking = (criterion: string, detail: string): QaIssue => ({ criterion, severity: 'blocking', detail });
 const advisory = (criterion: string, detail: string): QaIssue => ({ criterion, severity: 'advisory', detail });
@@ -60,18 +73,56 @@ function reportIssues(e: Engagement): QaIssue[] {
   ];
 }
 
-/** Reviews one subject as it stands now. The report is tied to the content hash it reviewed. */
-export function reviewSubject(e: Engagement, subjectKey: string): QaReport {
+/** Trust-rule actions as issues. Where `canBlock` is false (scope proposals), even a blocked source is only advisory. */
+function trustIssues(prefix: string, actions: QaAction[], canBlock: boolean): QaIssue[] {
+  return actions.filter((a) => a.outcome !== 'pass').map((a) => (a.outcome === 'fail' && canBlock ? blocking : advisory)(`${prefix}.trust`, `${a.target}: ${a.detail}`));
+}
+
+/** The engine's citation gate and the trust rules, run again on the subject as it stands (spec §5.5 "always"). */
+function checkedIssues(e: Engagement, subjectKey: string, c: QaChecks): QaIssue[] {
+  const cites = (citations: { clauseId: string }[]) => citations.map((x) => x.clauseId);
+  if (subjectKey === 'scope') {
+    return e.scope.filter((s) => s.included).flatMap((s) => trustIssues('scope', trustActions(c.registry, s.controlId, { clauseIds: cites(s.citations), controlId: s.controlId }, c.policy, c.today), false));
+  }
+  if (subjectKey === 'rcm') {
+    return e.rcm.flatMap((r) => {
+      const gate = rcmCitationGate(c.registry, r);
+      return [
+        // A row with no citation at all is already blocked by rcm.citations.
+        ...(r.citations.length && gate.outcome === 'fail' ? [blocking('rcm.citation-gate', `${r.id}: ${gate.detail}`)] : []),
+        ...trustIssues('rcm', trustActions(c.registry, r.id, { clauseIds: cites(r.citations), controlId: r.controlId }, c.policy, c.today), true),
+      ];
+    });
+  }
+  const rowId = rowOfKey(subjectKey);
+  const f = rowId ? e.findings.find((x) => x.rowId === rowId) : undefined;
+  if (!f) return [];
+  const unknown = f.citations.filter((x) => !c.registry.clauses.has(x.clauseId)).map((x) => x.clauseId);
+  return [
+    ...(unknown.length ? [blocking('finding.citation-unknown', `${f.id} cites clauses not in the corpus: ${unknown.join(', ')}`)] : []),
+    ...trustIssues('finding', trustActions(c.registry, f.id, { clauseIds: cites(f.citations), controlId: f.controlId }, c.policy, c.today), true),
+  ];
+}
+
+/**
+ * Reviews one subject as it stands now. The report is tied to the content hash it reviewed. With `checks`, the citation
+ * gate and the trust rules run as well (the worker always passes them; pure tests may not).
+ */
+export function reviewSubject(e: Engagement, subjectKey: string, checks?: QaChecks): QaReport {
   const s = subjectInfo(e, subjectKey);
   if (!s) throw new Error(`Nothing to review for ${subjectKey}`);
   const rowId = rowOfKey(subjectKey);
-  const issues =
+  const own =
     subjectKey === 'scope' ? scopeIssues(e)
     : subjectKey === 'rcm' ? rcmIssues(e)
     : subjectKey === 'test_plans' ? planIssues(e)
     : subjectKey === 'report' ? reportIssues(e)
     : findingIssues(e, rowId!);
+  const issues = [...own, ...(checks ? checkedIssues(e, subjectKey, checks) : [])];
   const b = issues.filter((i) => i.severity === 'blocking').length;
   const a = issues.length - b;
-  return { subjectKey, subjectHash: s.hash, mode: 'review', reviewer: DETERMINISTIC_REVIEWER, score: Math.max(0, 100 - 25 * b - 10 * Math.min(a, 3)), issues };
+  return {
+    subjectKey, subjectHash: s.hash, mode: 'review', reviewer: checks ? CHECKED_REVIEWER : DETERMINISTIC_REVIEWER,
+    score: Math.max(0, 100 - 25 * b - 10 * Math.min(a, 3)), issues,
+  };
 }

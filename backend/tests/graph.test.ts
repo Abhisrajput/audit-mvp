@@ -65,15 +65,15 @@ describe('the engagement graph', () => {
 
   it('offers the gate, a redraft and escalation after QA issues, within the caps [REQ-26]', () => {
     const e = engagement({ scope: [scopeItem('A')] });
-    expect(types(menu(e, { qa: [qa(e, 'scope', [advisory], 60)] }))).toEqual(['open_gate', 'rework', 'escalate']);
-    expect(types(menu(e, { qa: [qa(e, 'scope', [blocking], 75)] }))).toEqual(['rework', 'escalate']);
+    expect(types(menu(e, { qa: [qa(e, 'scope', [advisory], 60)] }))).toEqual(['open_gate', 'rework', 'request_qa', 'escalate']);
+    expect(types(menu(e, { qa: [qa(e, 'scope', [blocking], 75)] }))).toEqual(['rework', 'request_qa', 'escalate']);
     const basis = subjectInfo(e, 'scope')!.basis;
     const twice: RedraftRecord[] = [
       { subjectKey: 'scope', kind: 'rework', basis, sinceGateId: null },
       { subjectKey: 'scope', kind: 'rework', basis, sinceGateId: null },
     ];
-    expect(types(menu(e, { qa: [qa(e, 'scope', [blocking], 75)], redrafts: twice }))).toEqual(['escalate']);
-    expect(types(menu(e, { qa: [qa(e, 'scope', [advisory], 60)], redrafts: twice }))).toEqual(['open_gate', 'escalate']);
+    expect(types(menu(e, { qa: [qa(e, 'scope', [blocking], 75)], redrafts: twice }))).toEqual(['request_qa', 'escalate']);
+    expect(types(menu(e, { qa: [qa(e, 'scope', [advisory], 60)], redrafts: twice }))).toEqual(['open_gate', 'request_qa', 'escalate']);
   });
 
   it("redrafts a rejected workpaper from the signer's comment, then escalates when nothing changed or after two rejections [REQ-26]", () => {
@@ -182,7 +182,7 @@ describe('the engagement graph', () => {
 
   it('holds a clean QA report below the threshold to the same menu as advisory issues [REQ-26]', () => {
     const e = engagement({ scope: [scopeItem('A')] });
-    expect(types(menu(e, { qa: [qa(e, 'scope', [], 50)] }))).toEqual(['open_gate', 'rework', 'escalate']);
+    expect(types(menu(e, { qa: [qa(e, 'scope', [], 50)] }))).toEqual(['open_gate', 'rework', 'request_qa', 'escalate']);
     expect(types(menu(e, { qa: [qa(e, 'scope', [], 90)] }))).toEqual(['open_gate']);
   });
 
@@ -199,5 +199,14 @@ describe('the engagement graph', () => {
     const a: Action[] = allowedActions(given).actions;
     expect(allowedActions(given).actions).toEqual(a);
     expect(given).toEqual(copy);
+  });
+
+  it('offers one challenge pass per subject content, only after a review that left a choice [REQ-26]', () => {
+    const e = engagement({ scope: [scopeItem('A')] });
+    const review = qa(e, 'scope', [advisory], 60);
+    expect(menu(e, { qa: [review] }).actions).toContainEqual({ type: 'request_qa', subjectKey: 'scope', mode: 'challenge' });
+    const challenged: QaReport = { ...review, mode: 'challenge' };
+    expect(types(menu(e, { qa: [review, challenged] }))).toEqual(['open_gate', 'rework', 'escalate']);
+    expect(menu(e, { qa: [qa(e, 'scope', [], 90)] }).actions).toEqual([{ type: 'open_gate', subjectKey: 'scope' }]);
   });
 });
