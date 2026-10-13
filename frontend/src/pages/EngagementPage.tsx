@@ -10,7 +10,7 @@ import RunPanel from '../components/engagement/RunPanel';
 import ScopeTab from '../components/engagement/ScopeTab';
 import TrailTab from '../components/engagement/TrailTab';
 import { useAgentRun } from '../components/engagement/useAgentRun';
-import type { Engagement, TrailBundle } from '../types';
+import type { Engagement, Gate, TrailBundle } from '../types';
 
 const STEPS = ['Risk & scope', 'RCM', 'Fieldwork & testing', 'Findings', 'Report'];
 const FINDINGS_TAB = 3;
@@ -19,6 +19,10 @@ export interface TabProps {
   engagement: Engagement;
   setEngagement: (e: Engagement) => void;
   run: (moduleId: string) => Promise<void>;
+  /** The engagement's agent gates, for the QA review a finding's signer reads. */
+  gates: Gate[];
+  /** The QA score a gate's review should reach (agent settings); null until loaded. */
+  qaThreshold: number | null;
 }
 
 function GateSummary({ bundle }: { bundle: TrailBundle }) {
@@ -74,7 +78,7 @@ export default function EngagementPage() {
   if (!engagement) return null;
   const e = engagement;
   const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
-  const props: TabProps = { engagement: e, setEngagement, run };
+  const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, qaThreshold: agent.settings?.qaThreshold ?? null };
 
   return (
     <Stack spacing={2}>

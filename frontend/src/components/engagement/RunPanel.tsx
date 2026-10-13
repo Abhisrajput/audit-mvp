@@ -6,6 +6,7 @@ import { canPrepare } from '../../roles';
 import { useSession } from '../../session';
 import type { Budget } from '../../types';
 import { ActionButton } from '../common';
+import GateList from './GateList';
 import StepTimeline from './StepTimeline';
 import type { AgentRunState } from './useAgentRun';
 
@@ -74,7 +75,7 @@ export interface RunPanelProps {
 }
 
 /** The engagement's agent run (agent spec §7.2): status and reason, spend against budget, controls, steps. */
-export default function RunPanel({ engagementId, agent }: RunPanelProps) {
+export default function RunPanel({ engagementId, agent, onSigned, showFindings }: RunPanelProps) {
   const { user } = useSession();
   const [dialog, setDialog] = useState<'start' | 'budget' | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -188,6 +189,7 @@ export default function RunPanel({ engagementId, agent }: RunPanelProps) {
             Could not refresh the agent run: {error}
           </Alert>
         )}
+        <GateList agent={agent} onSigned={onSigned} showFindings={showFindings} />
         {run && (
           <Box sx={{ mt: 1.5 }}>
             <Link component="button" variant="body2" onClick={() => setShowSteps(!showSteps)}>

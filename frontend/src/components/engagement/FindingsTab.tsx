@@ -4,12 +4,14 @@ import {
 } from '@mui/material';
 import { useState } from 'react';
 import { api } from '../../api';
+import { openFindingGate } from '../../agents';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
 import { openSigningWindow, signWithReauth } from '../../signing';
 import { useSession } from '../../session';
-import type { Engagement, Finding, SignOff } from '../../types';
+import type { Engagement, Finding, Gate, SignOff } from '../../types';
 import { ActionButton, Citations, RiskChip, StatusChip } from '../common';
+import QaReportView from './QaReportView';
 
 const FIELDS = ['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const;
 
@@ -76,7 +78,7 @@ function EditDialog({ finding, ctx, onClose }: { finding: Finding; ctx: CardCont
   );
 }
 
-function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
+function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardContext; gate: Gate | null; qaThreshold: number | null }) {
   const { user } = useSession();
   const [comment, setComment] = useState('');
   const [editing, setEditing] = useState(false);
@@ -119,6 +121,14 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
         {f.status === 'blocked' && (
           <Alert severity="error" sx={{ mt: 1 }}>
             Blocked by QA gate: {f.blockedReasons.join('; ')}
+          </Alert>
+        )}
+        {gate?.qaReport && (
+          <Alert severity="info" icon={false} sx={{ mt: 1.5 }}>
+            <Typography variant="body2" sx={{ mb: 0.5 }}>
+              The agent drafted this finding and opened a gate on it (attempt {gate.attempt}). Its QA review, for whoever signs:
+            </Typography>
+            <QaReportView report={gate.qaReport} threshold={qaThreshold} />
           </Alert>
         )}
         <Grid container spacing={1.5} sx={{ mt: 0.5 }}>
@@ -213,7 +223,7 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
   );
 }
 
-export default function FindingsTab({ engagement: e, setEngagement, run }: TabProps) {
+export default function FindingsTab({ engagement: e, setEngagement, run, gates, qaThreshold }: TabProps) {
   const ctx: CardContext = {
     engagementId: e.id,
     version: e.version,
@@ -230,7 +240,7 @@ export default function FindingsTab({ engagement: e, setEngagement, run }: TabPr
         </Typography>
       </Stack>
       {e.findings.map((f) => (
-        <FindingCard key={f.id} f={f} ctx={ctx} />
+        <FindingCard key={f.id} f={f} ctx={ctx} gate={openFindingGate(gates, f.id)} qaThreshold={qaThreshold} />
       ))}
       {!e.findings.length && <Typography color="text.secondary">No findings yet.</Typography>}
     </Stack>
