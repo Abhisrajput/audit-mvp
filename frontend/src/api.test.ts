@@ -51,4 +51,11 @@ describe('api errors', () => {
     await expect(api('/engagements')).rejects.toMatchObject({ status: 401 });
     expect(signedOut).toHaveBeenCalledOnce();
   });
+
+  it('explains agent and gate errors in plain words', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(409, { error: 'The workpaper changed after this gate opened', code: 'GATE_STALE' })));
+    await expect(api('/gates/G-1/sign-intents', { method: 'POST', body: {} })).rejects.toMatchObject({ code: 'GATE_STALE', message: expect.stringMatching(/opens a new gate/) });
+    vi.stubGlobal('fetch', vi.fn(async () => json(503, { error: 'Agent runs are switched off (AGENT_ENABLED=false)', code: 'AGENT_DISABLED' })));
+    await expect(api('/engagements/E-1/runs', { method: 'POST', body: {} })).rejects.toMatchObject({ message: expect.stringMatching(/switched off on this server/) });
+  });
 });
