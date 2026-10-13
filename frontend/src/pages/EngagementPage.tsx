@@ -6,11 +6,14 @@ import FieldworkTab from '../components/engagement/FieldworkTab';
 import FindingsTab from '../components/engagement/FindingsTab';
 import RcmTab from '../components/engagement/RcmTab';
 import ReportTab from '../components/engagement/ReportTab';
+import RunPanel from '../components/engagement/RunPanel';
 import ScopeTab from '../components/engagement/ScopeTab';
 import TrailTab from '../components/engagement/TrailTab';
+import { useAgentRun } from '../components/engagement/useAgentRun';
 import type { Engagement, TrailBundle } from '../types';
 
 const STEPS = ['Risk & scope', 'RCM', 'Fieldwork & testing', 'Findings', 'Report'];
+const FINDINGS_TAB = 3;
 
 export interface TabProps {
   engagement: Engagement;
@@ -59,6 +62,9 @@ export default function EngagementPage() {
     load();
   }, [load]);
 
+  // The agent run, its steps and gates; when the agent drafts something, the engagement is reloaded.
+  const agent = useAgentRun(id!, load);
+
   const run = async (moduleId: string) => {
     const res = await api<{ bundle: TrailBundle; engagement: Engagement }>(`/engagements/${id}/modules/${moduleId}/run`, { method: 'POST', body: {}, ifMatch: engagement?.version });
     setEngagement(res.engagement);
@@ -92,6 +98,8 @@ export default function EngagementPage() {
           <b>Scope:</b> {e.scopeStatement}
         </Typography>
       </Box>
+
+      <RunPanel engagementId={e.id} agent={agent} onSigned={load} showFindings={() => setTab(FINDINGS_TAB)} />
 
       <Card variant="outlined" sx={{ p: 2 }}>
         <Stepper nonLinear activeStep={tab}>
