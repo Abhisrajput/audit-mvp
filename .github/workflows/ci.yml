@@ -78,7 +78,7 @@ jobs:
       - name: Build the web image
         run: docker build -f frontend/Dockerfile -t audit-platform-frontend:ci .
       - name: Check the Compose file, the worker service included
-        run: docker compose --env-file .env.example config --quiet
+        run: docker compose --env-file .env.example config --quiet && docker compose --env-file .env.example config --services | grep -x worker
       - name: Check the agent worker's entry point is in the API image
         run: docker run --rm --entrypoint node audit-platform-backend:ci -e "require.resolve('/app/dist/agents/worker-cli.js')"
       - name: Check the nginx configuration

@@ -26,6 +26,7 @@ Screenshots: [scope](docs/screenshots/scope.png) · [findings & sign-off](docs/s
 | Thesis component | Where | Status |
 |---|---|---|
 | Module orchestration (daisy-chaining) | `backend/src/engine/modules/*`, `service.ts` | 5 modules, chain order enforced |
+| Supervised autopilot | `backend/src/agents/*`, Run panel | A supervisor agent runs the chain within code-enforced rails, QA-reviews each workpaper, and stops at human gates signed under Part 11; offline rules or Claude |
 | Runtime QA gates | `backend/src/engine/qa.ts` | Citation, evidence, triple-citation, release, consistency, library-only |
 | Audit-trail bundle per execution | `backend/src/engine/trail.ts` | Inputs, retrieval set, log, QA actions, output, versions, actor; SHA-256 chained; append-only in Postgres (UPDATE/DELETE/TRUNCATE rejected by trigger) |
 | Grounding index with clause metadata | `backend/src/engine/grounding.ts` | BM25 keyword index; swap for vector search later |
@@ -65,11 +66,15 @@ npm run dev
 cd frontend
 npm install
 npm run dev         # open http://localhost:5174
+
+# Agent worker (runs agent runs between gates), in a third terminal
+cd backend
+npm run worker
 ```
 
 Or run everything with Docker: `cp .env.example .env` (then set `POSTGRES_PASSWORD`, `S3_ROOT_ACCESS_KEY` and `S3_ROOT_SECRET_KEY`), then `docker compose up --build` from the repo root.
 Compose starts Postgres and the object store (SeaweedFS, S3-compatible), runs migrations and compiles the content packs into the knowledge graph (`migrate`), and creates the storage bucket once
-(`objectstore-init`), then starts the API and the UI on
+(`objectstore-init`), then starts the API, the agent worker and the UI on
 http://localhost:8080. To seed it: `docker compose exec backend node dist/seed.js`.
 To reset the local database and stored files: `docker compose down -v`.
 
@@ -249,6 +254,17 @@ Microsoft-first clients, add a provider for Azure OpenAI, or for Claude on
 Microsoft Foundry, behind the same `LlmProvider` interface in
 `backend/src/engine/llm/provider.ts`.
 
+## Agent runs (supervised autopilot)
+
+An auditor can hand an engagement to the agent: **Start agent run** on the engagement page. The agent drafts the scope, then the RCM, then a test plan for every control. QA reviews each workpaper, and the run stops at a gate for a person to sign:
+
+- The scope and RCM gates are signed by an audit manager, and the report gate by the Chief Audit Executive, through the same Part 11 re-authentication window as findings. Whoever started the run cannot sign its gates.
+- A rejection's comment goes back to the agent as its instruction. A second rejection of the same workpaper hands the run to a person.
+- Testing stays human. The run waits until every control has a recorded test or a person's reason not to test it (the **Test plans** tab), then moves on by itself.
+- Findings are drafted, QA-reviewed and gated one by one. They are signed as before in the Findings tab, which shows the agent's QA review.
+
+The agent never signs, records a test result, or edits a reviewed finding: those are code checks, whatever a model says. With `LLM_PROVIDER=offline` it decides by deterministic rules. With `anthropic` the model chooses from the same menu of allowed actions and drafts with Claude, and every call is charged to the run's budget (`AGENT_MAX_STEPS`, `AGENT_MAX_TOKENS`, `AGENT_MAX_COST_USD`) before it is made. The worker is its own process (`npm run worker`; in production `node dist/agents/worker-cli.js`), and `AGENT_ENABLED=false` switches agent runs off.
+
 ## Content packs and the knowledge graph
 
 A pack is an OKF Markdown bundle under `backend/packs/<id>/`: `pack.md`, `clauses/`,
@@ -303,11 +319,12 @@ Agreed management actions are tracked, validated and closed on time.
 
 - **Deployment guide:** [docs/deploy/azure.md](docs/deploy/azure.md) (reference deployment on Azure).
 - **Runbook:** [docs/deploy/operations.md](docs/deploy/operations.md) (health, metrics and alerts, backups, restore, secret rotation).
-- **Release order:** `migrate`, then `packs:compile`, then deploy the new API. In the container: `node dist/db/cli.js migrate`, then `node dist/knowledge/packs-cli.js compile`.
+- **Release order:** `migrate`, then `packs:compile`, then deploy the new API, then the worker. In the container: `node dist/db/cli.js migrate`, then `node dist/knowledge/packs-cli.js compile`.
 - **Separate API login:** run the API as a member of `audit_api`, which can append to the record but never change or delete it. Create it with `API_DB_PASSWORD=... node dist/db/cli.js create-api-login <name>`.
-- **Probes and metrics:** `/healthz` (liveness), `/readyz` (database and storage) and `/metrics` (bearer token). nginx does not expose them.
+- **Probes and metrics:** `/healthz` (liveness), `/readyz` (database and storage) and `/metrics` (bearer token). nginx does not expose them. The agent worker serves the same three on `WORKER_PORT` (3003).
+- **Agent worker:** run the API image a second time as `node dist/agents/worker-cli.js`, after the API (see azure.md §5). `AGENT_ENABLED=false` on both is the kill switch. `AGENT_ENABLED`, `AGENT_MAX_*` and `AGENT_QA_THRESHOLD` must match on the API and the worker.
 - **Logs** are JSON on stdout. Every request has a `requestId`, also returned as `X-Request-Id`, in error bodies and in the audit trail.
-- **Integrity check:** `npm run verify` (in the container, `node dist/db/cli.js verify`) checks the trail, the signatures and every stored file. Run it nightly and after any restore.
+- **Integrity check:** `npm run verify` (in the container, `node dist/db/cli.js verify`) checks the trail, the signatures and gates, every agent step's trail entry and every stored file. Run it nightly and after any restore.
 
 ## Checks
 
@@ -318,7 +335,7 @@ npm run eval          # 25/25 eval cases (offline), on a throwaway in-process da
                       # needs ALLOW_UNVERIFIED_CITATIONS=true until the packs are verified (the report header records it)
 npm run packs:compile # compile the OKF bundles into the knowledge graph (a release step)
 npm run traceability  # requirements traceability matrix -> validation-output/traceability.md
-npm run verify        # check the trail chain, signatures and stored documents in the configured database (exit 1 on any problem)
+npm run verify        # check the trail chain, signatures, gates, agent steps and stored documents in the configured database (exit 1 on any problem)
 npm run typecheck
 ```
 
