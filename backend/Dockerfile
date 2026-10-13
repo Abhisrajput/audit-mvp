@@ -18,7 +18,8 @@ COPY packs ./packs
 COPY validation ./validation
 COPY tests ./tests
 USER node
-EXPOSE 3002
-# Liveness only: readiness (/readyz) also checks the database and file storage.
+EXPOSE 3002 3003
+# Liveness only: readiness (/readyz) also checks the database and file storage. The agent worker
+# (node dist/agents/worker-cli.js) answers on WORKER_PORT (3003) instead; Compose and Container Apps set its probes.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 CMD wget -qO /dev/null http://127.0.0.1:3002/healthz || exit 1
 CMD ["node", "dist/server.js"]

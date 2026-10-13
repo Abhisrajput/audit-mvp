@@ -1,3 +1,12 @@
+# Agent settings the API and the worker must agree on (the API shows the budget and threshold, the worker enforces them).
+# Merged into both services below; settings only the worker uses stay on the worker.
+x-agent-env: &agent-env
+  AGENT_ENABLED: ${AGENT_ENABLED:-true}
+  AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-}
+  AGENT_MAX_TOKENS: ${AGENT_MAX_TOKENS:-}
+  AGENT_MAX_COST_USD: ${AGENT_MAX_COST_USD:-}
+  AGENT_QA_THRESHOLD: ${AGENT_QA_THRESHOLD:-}
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -54,6 +63,8 @@ services:
       # offline (default, no key needed) | anthropic
       LLM_PROVIDER: ${LLM_PROVIDER:-offline}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Agent runs (docs/deploy/operations.md §7): the API starts them and shows them; the worker service runs them.
+      <<: *agent-env
       BLOB_DRIVER: s3
       S3_BUCKET: audit-evidence
       S3_ENDPOINT: http://objectstore:8333
@@ -82,6 +93,50 @@ services:
       migrate:
         condition: service_completed_successfully
       objectstore-init:
+        condition: service_completed_successfully
+
+  # The agent worker (agent spec §2): same image, its own process. It leases runs from Postgres, so more than one is
+  # safe (docker compose up -d --scale worker=2). Probes and metrics on WORKER_PORT, inside the Compose network only.
+  worker:
+    image: audit-platform-backend:local
+    build: ./backend
+    restart: unless-stopped
+    command: ['node', 'dist/agents/worker-cli.js']
+    environment:
+      WORKER_PORT: '3003'
+      DATABASE_URL: postgres://audit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - copy .env.example to .env first}@postgres:5432/audit
+      NODE_ENV: ${NODE_ENV:-development}
+      # Must match the API's: agent QA applies the same citation rules as the modules.
+      ALLOW_UNVERIFIED_CITATIONS: ${ALLOW_UNVERIFIED_CITATIONS:-true}
+      LLM_PROVIDER: ${LLM_PROVIDER:-offline}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      <<: *agent-env
+      AGENT_POLL_MS: ${AGENT_POLL_MS:-}
+      AGENT_WORKER_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-}
+      AGENT_POLICY_MODEL: ${AGENT_POLICY_MODEL:-}
+      AGENT_QA_MODEL: ${AGENT_QA_MODEL:-}
+      AGENT_TEST_PLAN_MODEL: ${AGENT_TEST_PLAN_MODEL:-}
+      AGENT_MODEL_TIMEOUT_MS: ${AGENT_MODEL_TIMEOUT_MS:-}
+      AGENT_MODEL_PRICES: ${AGENT_MODEL_PRICES:-}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+    # Same hardening as the API: read-only root filesystem, nothing to escalate to.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # An iteration in flight gets one lease (60 s) to finish before the container is killed.
+    stop_grace_period: 75s
+    # The image's own healthcheck is the API's port; the worker answers on 3003 (not published).
+    healthcheck:
+      test: ['CMD', 'wget', '-qO', '/dev/null', 'http://127.0.0.1:3003/readyz']
+      interval: 5s
+      retries: 30
+    depends_on:
+      migrate:
         condition: service_completed_successfully
 
   frontend:
