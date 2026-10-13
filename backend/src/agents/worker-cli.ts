@@ -19,7 +19,7 @@ async function main() {
   const citationPolicy = loadCitationPolicy();
   const agents = loadAgentConfig();
   setLogLevel(config.logLevel);
-  const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl, max: agents.concurrency + 2 });
+  const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl, max: agents.concurrency * 2 + 1 });
   const pending = await pendingMigrations(db);
   if (pending.length) {
     await db.close();
@@ -31,9 +31,18 @@ async function main() {
   if (!agents.enabled) logger.warn('AGENT_ENABLED=false: this worker takes no agent runs');
   worker.start();
   logger.info(`Agent worker ${worker.id}: ${agents.concurrency} loop(s), polling every ${agents.pollMs} ms, provider ${svc.providerInfo.id}/${svc.providerInfo.model}`);
+  let stopping = false;
   const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
     logger.info('Agent worker stopping');
-    await worker.stop();
+    // Give an iteration in flight one lease to finish; after that its lease expires and another worker takes the run.
+    const bound = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), agents.leaseMs).unref());
+    const result = await Promise.race([worker.stop().then(() => 'stopped' as const), bound]);
+    if (result === 'timeout') {
+      logger.error('Agent worker did not stop within its lease; exiting');
+      process.exit(1);
+    }
     await db.close();
     process.exit(0);
   };

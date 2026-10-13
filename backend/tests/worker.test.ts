@@ -93,6 +93,13 @@ describe('the agent worker', () => {
     expect(await getRun(db, run.id)).toMatchObject({ status: 'needs_human', statusReason: 'error: model endpoint unreachable' });
   });
 
+  it('counts a failed step against the budget, so a run that keeps failing escalates on it [REQ-29]', async () => {
+    const { svc, db, run, worker } = await started({ maxSteps: 2, maxTokens: 1000, maxCostUsd: 1 });
+    vi.spyOn(svc, 'runModuleAsAgent').mockRejectedValue(new Error('flaky'));
+    await worker.drain();
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'needs_human', statusReason: 'budget_exhausted: 2 steps' });
+  });
+
   it('stops and asks a person when the rails refuse an action [REQ-27]', async () => {
     const { svc, db, run, worker } = await started();
     vi.spyOn(svc, 'runModuleAsAgent').mockRejectedValue(new AppError(403, 'An agent may not sign', 'AGENT_FORBIDDEN'));

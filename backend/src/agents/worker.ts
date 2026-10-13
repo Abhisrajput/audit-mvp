@@ -66,7 +66,9 @@ export class AgentWorker {
     const run = await leaseNext(db, this.id, this.cfg.leaseMs);
     if (!run) return 'idle';
     const heartbeat = setInterval(() => {
-      renewLease(db, run.id, this.id, this.cfg.leaseMs).catch((err) => logger.warn({ err, runId: run.id }, 'agent lease renewal failed'));
+      renewLease(db, run.id, this.id, this.cfg.leaseMs)
+        .then((held) => { if (!held) logger.warn({ runId: run.id }, "lease lost; this iteration's writes will be refused"); })
+        .catch((err) => logger.warn({ err, runId: run.id }, 'agent lease renewal failed'));
     }, this.cfg.heartbeatMs);
     try {
       const update = await runWithRequestId(run.id, () => this.iterate(run));
@@ -158,12 +160,14 @@ export class AgentWorker {
   }
 
   private async failed(run: AgentRun, err: unknown): Promise<RunUpdate> {
+    // A failed iteration still counts as a step against the budget, so a run that keeps failing cannot go on forever.
+    const spent = addSpend(run.spent, { steps: 1 });
     // Another worker holds the run now; hand it back without touching its streaks (releasing will do nothing).
     if (err instanceof AppError && err.code === 'LEASE_LOST') return { status: 'runnable' };
     if (err instanceof AppError && err.code === 'VERSION_CONFLICT') {
       const streak = run.conflictStreak + 1;
-      if (streak < MAX_STREAK) return { status: 'runnable', conflictStreak: streak };
-      return { status: 'waiting', reason: 'engagement being edited', wakeAt: new Date(Date.now() + CONFLICT_BACKOFF_MS), conflictStreak: 0 };
+      if (streak < MAX_STREAK) return { status: 'runnable', conflictStreak: streak, spent };
+      return { status: 'waiting', reason: 'engagement being edited', wakeAt: new Date(Date.now() + CONFLICT_BACKOFF_MS), conflictStreak: 0, spent };
     }
     if (err instanceof AppError && err.code === 'AGENT_FORBIDDEN') {
       logger.warn({ runId: run.id, refused: err.message }, 'agent action refused by the rails');
@@ -172,10 +176,11 @@ export class AgentWorker {
           await assertLease(trx, run.id, this.id);
           await appendStep(trx, run.id, { kind: 'tool_call', agent: 'rails', decision: { refused: err.message } });
         });
-      } catch (leaseErr) {
-        logger.warn({ runId: run.id, err: leaseErr }, 'could not record the refused action; the lease is gone');
+      } catch (stepErr) {
+        if (stepErr instanceof AppError && stepErr.code === 'LEASE_LOST') logger.warn({ runId: run.id }, 'could not record the refused action; the lease is gone');
+        else logger.error({ runId: run.id, err: stepErr }, `could not record the refused action: ${stepErr instanceof Error ? stepErr.message : String(stepErr)}`);
       }
-      return { status: 'needs_human', reason: `agent_forbidden: ${err.message}` };
+      return { status: 'needs_human', reason: `agent_forbidden: ${err.message}`, spent };
     }
     if (err instanceof AppError && err.status === 404 && err.message.startsWith(`Engagement ${run.engagementId} `)) {
       return { status: 'failed', reason: `engagement ${run.engagementId} no longer exists` };
@@ -183,7 +188,7 @@ export class AgentWorker {
     const message = err instanceof Error ? err.message : String(err);
     logger.error({ runId: run.id, err }, 'agent run step failed');
     const streak = run.failureStreak + 1;
-    if (streak < MAX_STREAK) return { status: 'runnable', failureStreak: streak };
-    return { status: 'needs_human', reason: `error: ${message}`.slice(0, 500), failureStreak: streak };
+    if (streak < MAX_STREAK) return { status: 'runnable', failureStreak: streak, spent };
+    return { status: 'needs_human', reason: `error: ${message}`.slice(0, 500), failureStreak: streak, spent };
   }
 }
