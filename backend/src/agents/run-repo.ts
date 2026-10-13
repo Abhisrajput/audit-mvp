@@ -125,13 +125,14 @@ export interface RunUpdate {
 /**
  * The leasing worker's last word on an iteration: the run's next status, and the lease released. A cancel or pause asked
  * for while the iteration ran turns the run runnable instead, so the next tick acts on it. So does a change to the
- * engagement made meanwhile when the run would wait (not when it pauses): the iteration decided on what it read before
- * that change. False when the lease was lost.
+ * engagement made meanwhile when the run would wait (not when it pauses or backs off): the iteration decided on what it
+ * read before that change. False when the lease was lost.
  */
 export async function releaseRun(db: Executor, id: string, owner: string, u: RunUpdate): Promise<boolean> {
   const terminal = isTerminal(u.status);
   const pauseHandled = u.pauseHandled ?? false;
-  const wakes = u.status === 'waiting' && u.reason !== 'paused_by_user';
+  // A wait that set its own retry time (the edit-conflict backoff) already saw the change that woke it, so it keeps it.
+  const wakes = u.status === 'waiting' && u.reason !== 'paused_by_user' && !u.wakeAt;
   const reroute = sql`(NOT ${terminal}::boolean AND (cancel_requested OR (pause_requested AND NOT ${pauseHandled}::boolean)))
                OR (${wakes}::boolean AND wake_requested)`;
   const res = await sql`

@@ -86,6 +86,21 @@ describe('the agent worker', () => {
     expect(await worker.tick()).toBe('idle');
   });
 
+  it('still backs off for a minute when real edits cause the conflicts', async () => {
+    const { svc, e, db, run, worker } = await started();
+    // A person saves while each iteration decides, so each scope draft conflicts with a real edit.
+    hooks.beforeGraph = async () => { await svc.setScope(e.id, [], auditor); };
+    try {
+      for (let i = 0; i < 3; i++) await worker.tick();
+    } finally {
+      hooks.beforeGraph = null;
+    }
+    const r = (await getRun(db, run.id))!;
+    expect(r).toMatchObject({ status: 'waiting', statusReason: 'engagement being edited', conflictStreak: 0, wakeRequested: false });
+    expect(Date.parse(r.wakeAt!) - Date.now()).toBeGreaterThan(50_000);
+    expect(await worker.tick()).toBe('idle');
+  });
+
   it('hands the run to a person after three failed steps in a row', async () => {
     const { svc, db, run, worker } = await started();
     vi.spyOn(svc, 'runModuleAsAgent').mockRejectedValue(new Error('model endpoint unreachable'));
