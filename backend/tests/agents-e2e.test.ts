@@ -3,6 +3,7 @@ import { defaultAgentConfig } from '../src/agents/config';
 import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
+import { listSteps } from '../src/agents/run-repo';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
 import { verifyChain } from '../src/engine/trail';
@@ -74,6 +75,17 @@ describe('an agent run, end to end (offline)', () => {
     for (const b of agentEntries) expect(b.inputs).toMatchObject({ runId: run.id, onBehalfOf: 'auditor' });
     expect((await listSignatures(svc.db.kysely, id)).map((s) => s.userId).sort()).toEqual(['approver', 'approver', 'reviewer', 'reviewer', 'reviewer']);
     expect((await verifyIntegrity(svc.db.kysely, null)).signatures.problems).toEqual([]);
+
+    // Every decision is also a step: numbered without gaps, each with its decision recorded, and the gate openings and specialist drafts among them.
+    const steps = await listSteps(svc.db.kysely, run.id);
+    expect(steps.map((s) => s.seq)).toEqual(steps.map((_, i) => i + 1));
+    for (const s of steps) expect(s.decision).toBeTruthy();
+    const kinds = new Set(steps.map((s) => s.kind));
+    for (const k of ['delegate', 'qa', 'tool_call']) expect(kinds.has(k as never)).toBe(true);
+    expect(steps.filter((s) => s.kind === 'tool_call' && (s.decision as { tool?: string }).tool === 'open_gate')).toHaveLength(4); // scope, rcm, the one finding, report
+    // Steps that changed the engagement point at their trail bundle, and that bundle is the agent's.
+    const bundles = new Set((await readTrail(svc.db.kysely, id)).map((b) => b.id));
+    for (const s of steps.filter((x) => x.trailBundleId)) expect(bundles.has(s.trailBundleId!)).toBe(true);
   });
 
   it('redrafts after a rejection, hands over when the redraft changes nothing, and again after a second rejection [REQ-26]', async () => {

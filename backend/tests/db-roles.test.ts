@@ -7,12 +7,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { defaultAgentConfig } from '../src/agents/config';
 import { listGates } from '../src/agents/gate-repo';
 import { RULES_VERSION } from '../src/agents/policy/rules';
-import { createRun, getRun } from '../src/agents/run-repo';
+import { createRun, getRun, listSteps } from '../src/agents/run-repo';
 import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { connectPg, type Db } from '../src/db';
 import { createApiLogin } from '../src/db/api-login';
+import { listSignatures } from '../src/db/signature-repo';
 import { AuditService } from '../src/service';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { testDbWithUrl } from './db';
@@ -107,6 +108,10 @@ describe('the API database role', () => {
     await svc.signGate(gate.id, 'approve', 'In scope as proposed', reviewer, unattended);
     await worker.drain();
     expect(await getRun(api.kysely, run.id)).toMatchObject({ status: 'waiting', statusReason: 'awaiting rcm gate signature' });
+    // The rows were really written under the API role: steps, the gate (now closed by the signature), and the signature itself.
+    expect((await listSteps(api.kysely, run.id)).length).toBeGreaterThan(0);
+    expect((await listGates(api.kysely, e.id)).find((g) => g.id === gate.id)).toMatchObject({ state: 'approved' });
+    expect((await listSignatures(api.kysely, e.id)).map((s) => s.userId)).toContain('reviewer');
   }, 120_000);
 
   it('creates the login once and only changes its password afterwards; never touches other roles [REQ-20]', async () => {
