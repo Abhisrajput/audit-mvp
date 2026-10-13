@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { loadAgentConfig, type AgentConfig } from './agents/config';
 import { loadAuthConfig, type AuthConfig } from './auth/config';
 import type { CitationPolicy } from './engine/trust';
 import { loadStorageConfig, type StorageConfig } from './storage/config';
@@ -31,6 +32,19 @@ export const SECRET_NAMES = [
 ] as const;
 
 const invalid = (lines: string[]) => new Error(`Invalid configuration:\n${lines.join('\n')}`);
+
+/** Runs one loader, adding its problems to `problems` instead of throwing, so every problem is listed at once. */
+function tryLoad<T>(problems: string[], load: () => T): T | null {
+  try {
+    return load();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    problems.push(...message.replace(/^Invalid configuration:\n/, '').split('\n').filter(Boolean));
+    return null;
+  }
+}
+
+const METRICS_TOKEN_REQUIRED = '  - METRICS_TOKEN: required in production (Prometheus sends it as a bearer token)';
 
 /** Replaces each <NAME>_FILE with the file's content (trailing whitespace trimmed) as <NAME>. */
 export function resolveSecretFiles(env: NodeJS.ProcessEnv): void {
@@ -183,23 +197,36 @@ export interface ServerConfig {
 /** Runs every loader and throws once, listing every problem, so a deployment is fixed in one pass (REQ-25). */
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const problems: string[] = [];
-  const attempt = <T>(load: () => T): T | null => {
-    try {
-      return load();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      problems.push(...message.replace(/^Invalid configuration:\n/, '').split('\n').filter(Boolean));
-      return null;
-    }
-  };
-  const core = attempt(() => loadConfig(env));
-  // Only the API server needs the metrics token; CLIs (migrate, verify, ...) use loadConfig and don't.
-  if (env.NODE_ENV === 'production' && !env.METRICS_TOKEN) {
-    problems.push('  - METRICS_TOKEN: required in production (Prometheus sends it as a bearer token)');
-  }
-  const auth = attempt(() => loadAuthConfig(env));
-  const storage = attempt(() => loadStorageConfig(env));
-  const citationPolicy = attempt(() => loadCitationPolicy(env));
+  const core = tryLoad(problems, () => loadConfig(env));
+  // Only the API server and the agent worker need the metrics token; CLIs (migrate, verify, ...) use loadConfig and don't.
+  if (env.NODE_ENV === 'production' && !env.METRICS_TOKEN) problems.push(METRICS_TOKEN_REQUIRED);
+  const auth = tryLoad(problems, () => loadAuthConfig(env));
+  const storage = tryLoad(problems, () => loadStorageConfig(env));
+  const citationPolicy = tryLoad(problems, () => loadCitationPolicy(env));
   if (problems.length) throw invalid(problems);
   return { core: core!, auth: auth!, storage: storage!, citationPolicy: citationPolicy! };
+}
+
+export interface WorkerConfig {
+  core: Config;
+  citationPolicy: CitationPolicy;
+  agents: AgentConfig;
+  /** WORKER_PORT: where the worker serves /healthz, /readyz and /metrics (agent spec §6.4). */
+  port: number;
+}
+
+/**
+ * The agent worker's settings, every problem listed at once (REQ-25). It needs no sign-in or file-storage settings, but
+ * like the API it needs the metrics token in production, because it serves /metrics too.
+ */
+export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
+  const problems: string[] = [];
+  const core = tryLoad(problems, () => loadConfig(env));
+  if (env.NODE_ENV === 'production' && !env.METRICS_TOKEN) problems.push(METRICS_TOKEN_REQUIRED);
+  const citationPolicy = tryLoad(problems, () => loadCitationPolicy(env));
+  const agents = tryLoad(problems, () => loadAgentConfig(env));
+  const port = Number(env.WORKER_PORT || '3003');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push('  - WORKER_PORT: must be a port number (1-65535)');
+  if (problems.length) throw invalid(problems);
+  return { core: core!, citationPolicy: citationPolicy!, agents: agents!, port };
 }

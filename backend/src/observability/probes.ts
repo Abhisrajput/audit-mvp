@@ -18,6 +18,8 @@ export interface ProbeDeps {
   timeoutMs?: number;
   /** Report agent runs by status at each scrape. The API does; the worker leaves it to the API so it is never reported twice. */
   agentRuns?: boolean;
+  /** More readiness checks, already decided: name → 'ok', or why not (the worker reports 'stopping' during shutdown). */
+  extraChecks?: () => Record<string, string>;
 }
 
 /** A key no upload can have: head() answers null when the store is reachable and throws when it is not. */
@@ -54,6 +56,7 @@ export function probeRoutes(deps: ProbeDeps): Router {
     const checks: Record<string, string> = {
       database: await check('database', () => sql`select 1`.execute(deps.db.kysely), timeoutMs),
       storage: deps.blobs ? await check('storage', () => deps.blobs!.head(PROBE_KEY), timeoutMs) : 'not configured',
+      ...(deps.extraChecks?.() ?? {}),
     };
     const ok = Object.values(checks).every((v) => v === 'ok' || v === 'not configured');
     res.status(ok ? 200 : 503).set('Cache-Control', 'no-store').json({ ok, checks });

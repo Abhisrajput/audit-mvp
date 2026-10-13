@@ -6,7 +6,7 @@ import { loadEngagement } from '../db/engagement-repo';
 import { appendTrail, type Executor } from '../db/trail-repo';
 import type { User } from '../engine/types';
 import { AppError } from '../errors';
-import { runWithRequestId } from '../observability/context';
+import { runForAgentRun } from '../observability/context';
 import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { addSpend, budgetProblem, ModelMeter } from './budget';
@@ -88,7 +88,7 @@ export class AgentWorker {
       // Steps are counted once committed and only by the worker that hands the run back (spec §6.4). They are listed
       // while this worker still holds the run, so no step written after a takeover is counted here as well.
       const fromSeq = await lastStepSeq(db, run.id).catch(() => null);
-      const update = await runWithRequestId(run.id, () => this.iterate(run));
+      const update = await runForAgentRun(run.id, () => this.iterate(run));
       const committed = fromSeq === null ? [] : await listSteps(db, run.id, { afterSeq: fromSeq }).catch(() => []);
       if (await releaseRun(db, run.id, this.id, update)) observeSteps(committed, this.cfg.llm);
       else logger.warn({ runId: run.id }, 'agent run lease was lost before the step was handed back');

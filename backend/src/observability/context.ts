@@ -13,6 +13,8 @@ declare module 'express-serve-static-core' {
 
 interface RequestContext {
   requestId: string;
+  /** Set while the agent worker runs one step of a run: its log lines carry it as runId. */
+  runId?: string;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -21,6 +23,8 @@ const storage = new AsyncLocalStorage<RequestContext>();
 export const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/;
 
 export const currentRequestId = (): string | undefined => storage.getStore()?.requestId;
+
+export const currentContext = (): RequestContext | undefined => storage.getStore();
 
 /**
  * Gives each request an id: a trusted proxy's X-Request-Id when there is one (TRUST_PROXY > 0), otherwise a new UUID.
@@ -39,4 +43,12 @@ export function requestContext(opts: { trustProxy: number }): RequestHandler {
 /** Runs work outside an HTTP request (the agent worker) under a request id, so its logs and trail bundles carry it. */
 export function runWithRequestId<T>(requestId: string, fn: () => Promise<T>): Promise<T> {
   return storage.run({ requestId }, fn);
+}
+
+/**
+ * Runs one step of an agent run (spec §6.4): its log lines carry runId, and trail bundles it writes carry the run id
+ * as their request id, as they always have.
+ */
+export function runForAgentRun<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+  return storage.run({ requestId: runId, runId }, fn);
 }

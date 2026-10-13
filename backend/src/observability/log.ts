@@ -1,7 +1,7 @@
 import type { RequestHandler } from 'express';
 import pino from 'pino';
 import type { LogLevel } from '../config';
-import { currentRequestId } from './context';
+import { currentContext } from './context';
 
 // JSON logs on stdout. Secrets are redacted wherever they appear in a logged object (spec §7.6).
 // Tests run silent unless they capture logs (captureLogs), so test output stays clean.
@@ -23,16 +23,28 @@ const defaultLevel = (): LogLevel => {
   return process.env.NODE_ENV === 'test' ? 'silent' : 'info';
 };
 
+let service = 'audit-api';
+
+/** Names the process on every log line: 'audit-api' (the default) or 'audit-worker'. */
+export function setLogService(name: string) {
+  service = name;
+}
+
 export const logger = pino(
   {
     level: defaultLevel(),
-    base: { service: 'audit-api' },
+    base: null,
     redact: { paths: REDACTED_PATHS, censor: '[redacted]' },
-    // Lines logged while a request is being served carry its id. A line that names its own requestId
-    // (the access log, written after the request's async context has ended) keeps that one.
+    // Every line names its process. Lines logged while a request is served carry its id; lines logged while the worker
+    // runs a step carry the run's id too. A line that names its own requestId or runId (the access log, written after
+    // the request's async context has ended) keeps it.
     mixin: (obj) => {
-      const requestId = currentRequestId();
-      return requestId && !('requestId' in obj) ? { requestId } : {};
+      const ctx = currentContext();
+      return {
+        service,
+        ...(ctx && !('requestId' in obj) ? { requestId: ctx.requestId } : {}),
+        ...(ctx?.runId && !('runId' in obj) ? { runId: ctx.runId } : {}),
+      };
     },
   },
   { write: (line: string) => sink(line) },

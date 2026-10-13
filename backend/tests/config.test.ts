@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import pg from 'pg';
-import { loadConfig, loadServerConfig, resolveSecretFiles } from '../src/config';
+import { loadConfig, loadServerConfig, loadWorkerConfig, resolveSecretFiles } from '../src/config';
 import { poolConfig } from '../src/db';
 
 const URL = 'postgres://u:p@db.example.com:5432/audit';
@@ -128,5 +128,22 @@ describe('configuration', () => {
     const other: NodeJS.ProcessEnv = { PORT_FILE: tmpFile('1') };
     resolveSecretFiles(other);
     expect(other.PORT).toBeUndefined();
+  });
+});
+
+describe('worker configuration', () => {
+  const base = { DATABASE_URL: 'postgres://u:p@db:5432/audit' };
+
+  it('serves its probes on WORKER_PORT, 3003 by default [REQ-25]', () => {
+    expect(loadWorkerConfig(base).port).toBe(3003);
+    expect(loadWorkerConfig({ ...base, WORKER_PORT: '' }).port).toBe(3003);
+    expect(loadWorkerConfig({ ...base, WORKER_PORT: '9464' }).port).toBe(9464);
+    expect(loadWorkerConfig(base).agents.enabled).toBe(true);
+  });
+
+  it('lists every problem at once, and needs the metrics token in production [REQ-25]', () => {
+    expect(() => loadWorkerConfig({ ...base, NODE_ENV: 'production', WORKER_PORT: 'x', AGENT_MAX_STEPS: '0', ALLOW_UNVERIFIED_CITATIONS: 'true' })).toThrow(
+      /METRICS_TOKEN: required in production[\s\S]*ALLOW_UNVERIFIED_CITATIONS[\s\S]*AGENT_MAX_STEPS[\s\S]*WORKER_PORT/,
+    );
   });
 });

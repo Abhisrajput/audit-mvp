@@ -1,25 +1,26 @@
-import { loadCitationPolicy, loadConfig, prepareEnv } from '../config';
+import { loadWorkerConfig, prepareEnv } from '../config';
 import { connectPg } from '../db';
 import { pendingMigrations } from '../db/migrate';
 import { createProvider } from '../engine/llm/router';
 import { loadBundles } from '../knowledge/okf/bundle';
 import { prepareRegistry } from '../knowledge/packs';
 import { instrumentProvider } from '../observability/llm';
-import { logger, setLogLevel } from '../observability/log';
+import { logger, setLogLevel, setLogService } from '../observability/log';
 import { AuditService } from '../service';
-import { loadAgentConfig } from './config';
 import { AgentWorker } from './worker';
+import { workerProbeApp } from './worker-server';
 
 // The agent worker process: same image as the API, started with `node dist/agents/worker-cli.js` (npm run worker).
-// It connects as the API's database role and never migrates.
+// It connects as the API's database role and never migrates. Its probes and metrics are on WORKER_PORT (default 3003).
 
 async function main() {
   prepareEnv();
-  const config = loadConfig();
-  const citationPolicy = loadCitationPolicy();
-  const agents = loadAgentConfig();
+  setLogService('audit-worker');
+  const { core: config, citationPolicy, agents, port } = loadWorkerConfig();
   setLogLevel(config.logLevel);
-  const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl, max: agents.concurrency * 2 + 1 });
+  if (!config.metricsToken) logger.warn("METRICS_TOKEN is not set: the worker's /metrics is open. Set it outside local development.");
+  // One connection more than the loops need, for readiness checks while every loop is busy.
+  const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl, max: agents.concurrency * 2 + 2 });
   const pending = await pendingMigrations(db);
   if (pending.length) {
     await db.close();
@@ -28,12 +29,14 @@ async function main() {
   const registry = await prepareRegistry(db, loadBundles(config.packsDir), { production: process.env.NODE_ENV === 'production', log: (line) => logger.info(line) });
   const svc = new AuditService(db, registry, instrumentProvider(createProvider()), { citationPolicy });
   const worker = new AgentWorker(svc, agents);
+  let stopping = false;
+  const server = workerProbeApp({ db, metricsToken: config.metricsToken, stopping: () => stopping }).listen(port);
   if (!agents.enabled) logger.warn('AGENT_ENABLED=false: this worker takes no agent runs');
   worker.start();
-  logger.info(`Agent worker ${worker.id}: ${agents.concurrency} loop(s), polling every ${agents.pollMs} ms, provider ${svc.providerInfo.id}/${svc.providerInfo.model}`);
-  let stopping = false;
+  logger.info(`Agent worker ${worker.id}: ${agents.concurrency} loop(s), polling every ${agents.pollMs} ms, provider ${svc.providerInfo.id}/${svc.providerInfo.model}, probes and metrics on :${port}`);
   const shutdown = async () => {
     if (stopping) return;
+    // Readiness fails from here on, so no orchestrator waits on this worker.
     stopping = true;
     logger.info('Agent worker stopping');
     // Give an iteration in flight one lease to finish; after that its lease expires and another worker takes the run.
@@ -43,6 +46,7 @@ async function main() {
       logger.error('Agent worker did not stop within its lease; exiting');
       process.exit(1);
     }
+    server.close();
     await db.close();
     process.exit(0);
   };
