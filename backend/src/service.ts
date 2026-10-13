@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
+import { assertJustificationsUnchanged, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
 import { wakeWaitingRuns } from './agents/run-repo';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
@@ -17,12 +18,13 @@ import { Bm25Index, clauseText, controlText } from './engine/grounding';
 import type { LlmProvider } from './engine/llm/provider';
 import { OFFLINE } from './engine/llm/router';
 import { ModuleContext, type Grounding } from './engine/module';
+import type { AuditModule } from './engine/module';
 import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
-import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EvalReport } from './eval/harness';
 
@@ -58,6 +60,21 @@ export interface AgentEvent {
 export interface MutationOptions {
   expectedVersion?: number;
 }
+
+/** An agent acting for a run: recorded as `agent:<agent>`, on behalf of the person who started the run. */
+export interface AgentActing {
+  runId: string;
+  agent: string;
+  startedBy: User;
+}
+
+/** Agent writes always state the version they were built on. `rows` limits a Gap Writer redraft to those RCM rows. */
+export interface AgentWriteOptions {
+  expectedVersion: number;
+  rows?: string[];
+}
+
+export type TestPlanPatch = Partial<Pick<TestPlan, 'attribute' | 'population' | 'sampleSize' | 'selectionMethod' | 'evidenceToRequest' | 'procedure' | 'notTestedJustification'>>;
 
 export type SignAction = 'review' | 'approve' | 'reject';
 
@@ -184,48 +201,25 @@ export class AuditService {
 
   // ---------- Module orchestration ----------
 
+  private moduleById(moduleId: string) {
+    try {
+      return getModule(moduleId);
+    } catch {
+      throw new AppError(404, `Unknown module ${moduleId}`);
+    }
+  }
+
   async runModule(engagementId: string, moduleId: string, actor: User, input: Record<string, unknown> = {}, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'run modules');
-    const mod = (() => {
-      try {
-        return getModule(moduleId);
-      } catch {
-        throw new AppError(404, `Unknown module ${moduleId}`);
-      }
-    })();
-
+    const mod = this.moduleById(moduleId);
     const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const blocker = mod.precondition(e);
       if (blocker) throw new AppError(409, blocker);
-
-      const startedAt = new Date().toISOString();
       // Report Writer prints each signature with its status, which only the signatures table can tell, so it reads
       // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
       // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
       const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id), await lastRevisionTimes(trx, e.id)) : e;
-      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
-      ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
-      const output = await mod.run(ctx);
-      ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
-
-      const bundle: UnsealedBundle = {
-        id: `RUN-${crypto.randomBytes(4).toString('hex')}`,
-        engagementId: e.id,
-        moduleId: mod.id,
-        moduleVersion: mod.version,
-        engineVersion: ENGINE_VERSION,
-        packVersions: this.registry.versions(e.packIds),
-        provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
-        promptHash: ctx.promptHash,
-        actor: actor.id,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        inputs: { moduleInput: input, stage: e.stage },
-        retrievalSet: ctx.retrievalSet,
-        executionLog: ctx.log,
-        qaActions: ctx.qa,
-        output,
-      };
+      const { output, bundle } = await this.executeModule(mod, view, actor, input);
       emit(structuredClone(bundle));
       mod.apply(e, output, bundle.id);
       // Whoever runs Gap Writer prepared the findings it drafted, so they may not sign them.
@@ -233,6 +227,98 @@ export class AuditService {
       return e;
     });
     return { bundle: sealed[0], engagement };
+  }
+
+  /** Runs one module on `view` and builds its trail bundle. Work done for an agent run is recorded as the agent's. */
+  private async executeModule(mod: AuditModule<unknown>, view: Engagement, actor: User, input: Record<string, unknown>, acting?: AgentActing) {
+    const startedAt = new Date().toISOString();
+    const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
+    ctx.step('start', `${mod.name} v${mod.version} on ${view.id}`);
+    const output = await mod.run(ctx);
+    ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
+    const bundle: UnsealedBundle = {
+      id: `RUN-${crypto.randomBytes(4).toString('hex')}`,
+      engagementId: view.id,
+      moduleId: mod.id,
+      moduleVersion: mod.version,
+      engineVersion: ENGINE_VERSION,
+      packVersions: this.registry.versions(view.packIds),
+      provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
+      promptHash: ctx.promptHash,
+      actor: acting ? `agent:${acting.agent}` : actor.id,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      inputs: acting ? { moduleInput: input, stage: view.stage, runId: acting.runId, onBehalfOf: actor.id } : { moduleInput: input, stage: view.stage },
+      retrievalSet: ctx.retrievalSet,
+      executionLog: ctx.log,
+      qaActions: ctx.qa,
+      output,
+    };
+    return { output, bundle };
+  }
+
+  /**
+   * A specialist's module run for an agent (spec §2): the module, and any model call it makes, runs on an unlocked
+   * snapshot, and its result is applied only if nobody changed the engagement meanwhile. Redrafts keep people's decisions
+   * (rails.ts), and the rails are checked before anything is saved.
+   */
+  async runModuleAsAgent(engagementId: string, moduleId: string, acting: AgentActing, opts: AgentWriteOptions) {
+    const mod = this.moduleById(moduleId);
+    const loaded = await loadEngagement(this.db.kysely, engagementId);
+    if (!loaded) throw new AppError(404, `Engagement ${engagementId} not found`);
+    if (loaded.version !== opts.expectedVersion) {
+      throw new AppError(409, `Engagement ${engagementId} is at version ${loaded.version}, not ${opts.expectedVersion}; reload and try again`, 'VERSION_CONFLICT');
+    }
+    const blocker = mod.precondition(loaded.engagement);
+    if (blocker) throw new AppError(409, blocker);
+    const snapshot = loaded.engagement;
+    const view = mod.id === 'report'
+      ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
+      : snapshot;
+    const input = opts.rows ? { rows: opts.rows } : {};
+    const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting);
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, (e, emit) => {
+      const before = structuredClone(e);
+      emit(structuredClone(bundle));
+      mod.apply(e, output, bundle.id);
+      if (mod.id === 'scope' && before.scope.length) keepScopeDecisions(before.scope, e.scope);
+      if (mod.id === 'gaps' && opts.rows) e.findings = mergeFindings(before.findings, e.findings, opts.rows, e.rcm.map((r) => r.id));
+      // The person who started the run is the accountable preparer of what the agent drafted, so they may not sign it.
+      for (const f of e.findings) if (f.bundleId === bundle.id) f.preparedBy = [acting.startedBy.id];
+      assertWithinRails(before, e);
+      return e;
+    });
+    return { bundle: sealed[0], engagement };
+  }
+
+  /** Saves drafted test plans for an agent. The agent never sets or clears a reason not to test a row. */
+  async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions) {
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, (e, emit) => {
+      assertJustificationsUnchanged(e.testPlans, plans, e.rcm.map((r) => r.id));
+      e.testPlans = plans;
+      emit(this.agentBundle(e, {
+        moduleId: 'agent:test-plans', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
+        inputs: { rows: Object.keys(plans) }, output: plans,
+      }));
+      return e;
+    });
+    return { bundle: sealed[0], engagement };
+  }
+
+  /** A person edits one row's test plan, including the decision not to test it (an empty reason clears that decision). */
+  async editTestPlan(engagementId: string, rowId: string, patch: TestPlanPatch, actor: User, opts: MutationOptions = {}): Promise<TestPlan> {
+    this.require(actor, PREPARER_ROLES, 'edit test plans');
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
+      const current = e.testPlans[rowId];
+      if (!current) throw new AppError(404, `There is no test plan for ${rowId} yet`);
+      const next: TestPlan = { ...current, ...patch, editedBy: actor.id, editedAt: new Date().toISOString() };
+      if (!next.notTestedJustification?.trim()) delete next.notTestedJustification;
+      e.testPlans = { ...e.testPlans, [rowId]: next };
+      emit(this.humanBundle(e, 'human:test-plan-edit', actor, { rowId, patch }, next));
+      return next;
+    });
+    return result;
   }
 
   // ---------- Human steps (also written to the trail) ----------
