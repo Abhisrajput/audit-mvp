@@ -149,6 +149,23 @@ export interface TestResult {
   qaFlags: string[];
 }
 
+/** A drafted test plan for one RCM row (agent spec §3.1). Auditors may edit it; only an auditor sets notTestedJustification. */
+export interface TestPlan {
+  rowId: string;
+  /** SHA-256 of the RCM row the plan was drafted from; a changed row gets a fresh draft. */
+  rowHash: string;
+  attribute: string;
+  population: string;
+  sampleSize: number;
+  selectionMethod: 'random' | 'all' | 'judgemental';
+  evidenceToRequest: string[];
+  procedure: string;
+  /** Set by an auditor only: why this row will not be tested. The agent never sets or clears it. */
+  notTestedJustification?: string;
+  editedBy?: string;
+  editedAt?: string;
+}
+
 export type FindingStatus = 'draft' | 'blocked' | 'reviewed' | 'approved' | 'rejected';
 
 export interface SignOff {
@@ -222,6 +239,8 @@ export interface Engagement {
   rcm: RcmRow[];
   testInputs: Record<string, TestInput>;
   testResults: Record<string, TestResult>;
+  /** Test plans by RCM row id. */
+  testPlans: Record<string, TestPlan>;
   findings: Finding[];
   report: AuditReport | null;
   /** Optimistic-concurrency version from the database; absent on objects not yet saved. */

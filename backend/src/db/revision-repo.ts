@@ -1,5 +1,6 @@
-import type { Finding } from '../engine/types';
-import { findingContentHash } from '../signing/content-hash';
+import type { WorkpaperKind } from '../agents/types';
+import type { Engagement, Finding } from '../engine/types';
+import { findingContentHash, workpaperContentHash } from '../signing/content-hash';
 import type { Executor } from './trail-repo';
 
 export interface FindingRevision {
@@ -47,4 +48,30 @@ export async function lastRevisionTimes(db: Executor, engagementId: string): Pro
     .groupBy('finding_id')
     .execute();
   return new Map(rows.map((r) => [r.finding_id, new Date(r.last as unknown as string).toISOString()]));
+}
+
+export const WORKPAPER_KINDS: readonly WorkpaperKind[] = ['scope', 'rcm', 'test_plans', 'report'];
+
+const isEmpty = (kind: WorkpaperKind, e: Engagement) =>
+  kind === 'scope' ? !e.scope.length : kind === 'rcm' ? !e.rcm.length : kind === 'test_plans' ? !Object.keys(e.testPlans ?? {}).length : !e.report;
+
+/** Appends a revision for each workpaper whose content differs from its latest recorded revision. Empty workpapers are skipped. */
+export async function recordWorkpaperRevisions(db: Executor, e: Engagement): Promise<void> {
+  for (const kind of WORKPAPER_KINDS) {
+    if (isEmpty(kind, e)) continue;
+    const hash = workpaperContentHash(kind, e);
+    const last = await db
+      .selectFrom('workpaper_revisions')
+      .select(['revision', 'content_hash'])
+      .where('engagement_id', '=', e.id)
+      .where('kind', '=', kind)
+      .orderBy('revision', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (last?.content_hash === hash) continue;
+    await db
+      .insertInto('workpaper_revisions')
+      .values({ engagement_id: e.id, kind, revision: (last?.revision ?? 0) + 1, content_hash: hash })
+      .execute();
+  }
 }

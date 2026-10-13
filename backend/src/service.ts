@@ -155,6 +155,7 @@ export class AuditService {
       rcm: [],
       testInputs: {},
       testResults: {},
+      testPlans: {},
       findings: [],
       report: null,
     };

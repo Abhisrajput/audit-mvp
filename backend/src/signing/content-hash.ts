@@ -1,3 +1,4 @@
+import type { WorkpaperKind } from '../agents/types';
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { SignatureRow } from '../db/signature-repo';
 import type { Engagement, Finding, SignOff } from '../engine/types';
@@ -70,4 +71,14 @@ export function withSignatureStatus(e: Engagement, rows: SignatureRow[], revised
 export function signatureState(s: SignOff): 'valid' | 'broken' | 'legacy' {
   if (s.legacy || !s.signatureId) return 'legacy';
   return s.broken ? 'broken' : 'valid';
+}
+
+/** SHA-256 of a workpaper's content: what a gate and its signature are bound to (agent spec §4.4). */
+export function workpaperContentHash(kind: WorkpaperKind, e: Engagement): string {
+  const content =
+    kind === 'scope' ? e.scope
+    : kind === 'rcm' ? e.rcm
+    : kind === 'test_plans' ? e.testPlans ?? {}
+    : e.report ? { markdown: e.report.markdown, includedFindingIds: e.report.includedFindingIds, excludedFindingIds: e.report.excludedFindingIds } : null;
+  return sha256(canonicalJson({ kind, content }));
 }

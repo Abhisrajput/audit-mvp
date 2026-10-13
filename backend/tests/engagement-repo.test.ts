@@ -14,7 +14,7 @@ const finding = (id: string, status: Finding['status'] = 'draft'): Finding => ({
 const engagement = (id = 'ENG-1'): Engagement => ({
   id, name: 'Test', entity: 'Demo', site: 'Plant', periodFrom: '2026-01-01', periodTo: '2026-06-30', auditType: 'Food safety',
   scopeStatement: 'HACCP', packIds: ['food', 'common'], createdBy: 'auditor', createdAt: '2026-10-11T08:00:00.123Z',
-  stage: 'findings', scope: [], rcm: [], testInputs: {}, testResults: {}, findings: [finding('F-1'), finding('F-2', 'approved')], report: null,
+  stage: 'findings', scope: [], rcm: [], testInputs: {}, testResults: {}, testPlans: {}, findings: [finding('F-1'), finding('F-2', 'approved')], report: null,
 });
 
 describe('engagement repository', () => {
