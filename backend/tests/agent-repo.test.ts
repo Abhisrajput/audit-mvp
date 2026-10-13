@@ -53,6 +53,24 @@ describe('agent runs', () => {
     expect((await markRunnable(db, run.id)).status).toBe('runnable');
   });
 
+  it('keep a change made while the run is running, so it does not then wait on stale work [REQ-26]', async () => {
+    const { svc, db, e, run } = await engagementWithRun();
+    await leaseNext(db, 'w1', 60_000);
+    await svc.runModule(e.id, 'scope', auditor);
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'running', wakeRequested: true });
+    await releaseRun(db, run.id, 'w1', { status: 'waiting', reason: 'awaiting scope gate signature', wakeAt: new Date(Date.now() + 60_000) });
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'runnable', statusReason: '', wakeAt: null, wakeRequested: false });
+    // With no change meanwhile, the run waits as it said; a pause is never undone by a change.
+    await leaseNext(db, 'w1', 60_000);
+    await releaseRun(db, run.id, 'w1', { status: 'waiting', reason: 'awaiting scope gate signature' });
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'waiting', wakeRequested: false });
+    await svc.runModule(e.id, 'scope', auditor);
+    await leaseNext(db, 'w1', 60_000);
+    await svc.runModule(e.id, 'scope', auditor);
+    await releaseRun(db, run.id, 'w1', { status: 'waiting', reason: 'paused_by_user', pauseHandled: true });
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'waiting', statusReason: 'paused_by_user', wakeRequested: false });
+  });
+
   it('turn a cancel asked for mid-iteration into a runnable run, for the worker to act on', async () => {
     const { db, run } = await engagementWithRun();
     await leaseNext(db, 'w1', 60_000);

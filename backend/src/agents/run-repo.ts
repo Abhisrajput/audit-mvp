@@ -23,6 +23,8 @@ export interface AgentRun {
   startedBy: string;
   cancelRequested: boolean;
   pauseRequested: boolean;
+  /** The engagement changed while a worker held the run; cleared when the worker hands the run back. */
+  wakeRequested: boolean;
   failureStreak: number;
   conflictStreak: number;
   wakeAt: string | null;
@@ -42,7 +44,7 @@ function toRun(r: Selectable<AgentRunsTable>): AgentRun {
   return {
     id: r.id, engagementId: r.engagement_id, goal: r.goal, status: r.status, statusReason: r.status_reason, policy: r.policy,
     policyVersion: r.policy_version, budget: r.budget, spent: r.spent, startedBy: r.started_by, cancelRequested: r.cancel_requested,
-    pauseRequested: r.pause_requested, failureStreak: r.failure_streak, conflictStreak: r.conflict_streak, wakeAt: isoOrNull(r.wake_at),
+    pauseRequested: r.pause_requested, wakeRequested: r.wake_requested, failureStreak: r.failure_streak, conflictStreak: r.conflict_streak, wakeAt: isoOrNull(r.wake_at),
     leaseOwner: r.lease_owner, leaseUntil: isoOrNull(r.lease_until), version: r.version, createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at), endedAt: isoOrNull(r.ended_at),
   };
@@ -88,7 +90,7 @@ export async function leaseNext(db: Executor, owner: string, leaseMs: number): P
   const { rows } = await sql<Selectable<AgentRunsTable>>`
     UPDATE agent_runs
     SET status = 'running', lease_owner = ${owner}, lease_until = now() + ${leaseMs}::int * interval '1 millisecond',
-        wake_at = NULL, updated_at = now(), version = version + 1
+        wake_at = NULL, wake_requested = false, updated_at = now(), version = version + 1
     WHERE id = (
       SELECT id FROM agent_runs
       WHERE status = 'runnable'
@@ -122,19 +124,23 @@ export interface RunUpdate {
 
 /**
  * The leasing worker's last word on an iteration: the run's next status, and the lease released. A cancel or pause asked
- * for while the iteration ran turns the run runnable instead, so the next tick acts on it. False when the lease was lost.
+ * for while the iteration ran turns the run runnable instead, so the next tick acts on it. So does a change to the
+ * engagement made meanwhile when the run would wait (not when it pauses): the iteration decided on what it read before
+ * that change. False when the lease was lost.
  */
 export async function releaseRun(db: Executor, id: string, owner: string, u: RunUpdate): Promise<boolean> {
   const terminal = isTerminal(u.status);
   const pauseHandled = u.pauseHandled ?? false;
+  const wakes = u.status === 'waiting' && u.reason !== 'paused_by_user';
+  const reroute = sql`(NOT ${terminal}::boolean AND (cancel_requested OR (pause_requested AND NOT ${pauseHandled}::boolean)))
+               OR (${wakes}::boolean AND wake_requested)`;
   const res = await sql`
     UPDATE agent_runs SET
-      status = CASE WHEN NOT ${terminal}::boolean AND (cancel_requested OR (pause_requested AND NOT ${pauseHandled}::boolean))
-               THEN 'runnable' ELSE ${u.status}::text END,
-      status_reason = CASE WHEN NOT ${terminal}::boolean AND (cancel_requested OR (pause_requested AND NOT ${pauseHandled}::boolean))
-               THEN '' ELSE ${u.reason ?? ''}::text END,
+      status = CASE WHEN ${reroute} THEN 'runnable' ELSE ${u.status}::text END,
+      status_reason = CASE WHEN ${reroute} THEN '' ELSE ${u.reason ?? ''}::text END,
       pause_requested = CASE WHEN ${pauseHandled}::boolean THEN false ELSE pause_requested END,
-      wake_at = ${u.wakeAt ? u.wakeAt.toISOString() : null}::timestamptz,
+      wake_at = CASE WHEN ${reroute} THEN NULL ELSE ${u.wakeAt ? u.wakeAt.toISOString() : null}::timestamptz END,
+      wake_requested = false,
       spent = COALESCE(${u.spent ? JSON.stringify(u.spent) : null}::jsonb, spent),
       failure_streak = COALESCE(${u.failureStreak ?? null}::int, failure_streak),
       conflict_streak = COALESCE(${u.conflictStreak ?? null}::int, conflict_streak),
@@ -206,8 +212,19 @@ export async function setRunBudget(db: Executor, id: string, budget: Budget): Pr
   return updateRun(db, run, { budget: JSON.stringify(budget), ...(resume ? { status: 'runnable' as const, status_reason: '' } : {}) });
 }
 
-/** Any change to the engagement wakes its waiting run, which then re-derives where it stands. A paused run stays paused. */
+/**
+ * Any change to the engagement wakes its waiting run, which then re-derives where it stands. A paused run stays paused.
+ * A run a worker holds is flagged instead, so its iteration, which read the engagement before this change, does not
+ * then wait (releaseRun). The caller holds the engagement lock, so the order is engagement, then run.
+ */
 export async function wakeWaitingRuns(db: Executor, engagementId: string): Promise<void> {
+  await db
+    .updateTable('agent_runs')
+    .set({ wake_requested: true })
+    .where('engagement_id', '=', engagementId)
+    .where('status', '=', 'running')
+    .where('wake_requested', '=', false)
+    .execute();
   await db
     .updateTable('agent_runs')
     .set({ status: 'runnable', status_reason: '', wake_at: null, updated_at: now(), version: sql<number>`version + 1` })

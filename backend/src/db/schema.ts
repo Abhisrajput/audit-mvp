@@ -265,6 +265,7 @@ export interface AgentRunsTable {
   started_by: string;
   cancel_requested: Flag;
   pause_requested: Flag;
+  wake_requested: Flag;
   failure_streak: Count;
   conflict_streak: Count;
   wake_at: NullableTimestamp;

@@ -12,6 +12,7 @@ import { rootBasis } from '../src/agents/subjects';
 import type { Action, QaReport } from '../src/agents/types';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
+import type { Engagement } from '../src/engine/types';
 import { auditor, NEW_ENGAGEMENT, newService } from './helpers';
 
 async function setup() {
@@ -22,9 +23,9 @@ async function setup() {
   // The executor writes only while its worker holds the run's lease, so lease the run the way a worker does.
   const run = (await leaseNext(svc.db.kysely, 'w1', 60_000))!;
   /** Applies one action the way the worker does, against the engagement as it is now. */
-  const apply = async (action: Action, qa: QaReport | null = null) => {
+  const apply = async (action: Action, qa: QaReport | null = null, engagement?: Engagement) => {
     const ctx: ExecutorContext = {
-      db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: await svc.engagement(e.id),
+      db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: engagement ?? await svc.engagement(e.id),
       gates: await listGates(svc.db.kysely, e.id), menu: { stage: 'scope', actions: [action], qa, qaThreshold: 70 },
     };
     return applyDecision(ctx, { action, rationale: 'test', policy: 'rules', policyVersion: RULES_VERSION });
@@ -62,6 +63,20 @@ describe('the executor', () => {
     const opened = (await steps()).at(-1)!;
     expect(opened).toMatchObject({ kind: 'tool_call', agent: 'supervisor', decision: { tool: 'open_gate', kind: 'scope' } });
     expect((await readTrail(svc.db.kysely, e.id)).find((b) => b.id === opened.trailBundleId)!.moduleId).toBe('agent:gate-open');
+  });
+
+  it('opens no gate on content read before someone changed the engagement [REQ-27]', async () => {
+    const { svc, e, apply, steps } = await setup();
+    await apply({ type: 'delegate', specialist: 'scope', subjectKey: 'scope' });
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
+    const report = (await steps()).at(-1)!.decision as QaReport;
+    const read = await svc.engagement(e.id);
+    const first = read.scope[0];
+    await svc.setScope(e.id, [{ controlId: first.controlId, included: !first.included }], auditor);
+    const before = (await steps()).length;
+    await expect(apply({ type: 'open_gate', subjectKey: 'scope' }, report, read)).rejects.toMatchObject({ status: 409, code: 'VERSION_CONFLICT' });
+    expect(await listGates(svc.db.kysely, e.id)).toEqual([]);
+    expect(await steps()).toHaveLength(before);
   });
 
   it('drafts test plans as the test-plan agent', async () => {

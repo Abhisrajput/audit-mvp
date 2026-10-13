@@ -9,7 +9,7 @@ import { AgentWorker, chooseDecision } from '../src/agents/worker';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
 import { AppError } from '../src/errors';
-import { auditor, NEW_ENGAGEMENT, newService } from './helpers';
+import { auditor, NEW_ENGAGEMENT, newService, reviewer, unattended } from './helpers';
 
 // Lets a test act between the worker's reconcile and its decision (the graph input is loaded in between).
 const hooks = vi.hoisted(() => ({ beforeGraph: null as null | (() => Promise<void>) }));
@@ -134,6 +134,40 @@ describe('the agent worker', () => {
     }
     expect(await listSteps(db, run.id)).toHaveLength(0);
     expect(await getRun(db, run.id)).toMatchObject({ status: 'running', leaseOwner: 'thief' });
+  });
+
+  it('does not wait for a test result that was recorded while it was deciding [REQ-26]', async () => {
+    const { svc, e, db, run, worker } = await started();
+    const signOpenGate = async () => {
+      const gate = (await listGates(db, e.id)).find((g) => g.state === 'open')!;
+      await svc.signGate(gate.id, 'approve', '', reviewer, unattended);
+    };
+    await worker.drain();
+    await signOpenGate();
+    await worker.drain();
+    await signOpenGate();
+    await worker.drain();
+    const rows = (await svc.engagement(e.id)).rcm.map((r) => r.id);
+    const passed = { designAdequate: true, observation: 'All 20 items reviewed', evidenceRefs: ['EV-1'], sampleTested: 20, exceptions: 0 };
+    for (const id of rows.slice(1)) await svc.recordTest(e.id, id, passed, auditor);
+    await worker.drain();
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'waiting', statusReason: 'awaiting test results for 1 control(s)' });
+    // An edit to a recorded result wakes the run; the auditor then records the last result after the worker has read
+    // the engagement and before it decides to wait.
+    await svc.recordTest(e.id, rows[1], { ...passed, observation: 'All 20 items reviewed again' }, auditor);
+    expect((await getRun(db, run.id))!.status).toBe('runnable');
+    hooks.beforeGraph = async () => {
+      hooks.beforeGraph = null;
+      await svc.recordTest(e.id, rows[0], passed, auditor);
+    };
+    try {
+      expect(await worker.tick()).toBe('worked');
+    } finally {
+      hooks.beforeGraph = null;
+    }
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'runnable', wakeRequested: false });
+    await worker.drain();
+    expect((await getRun(db, run.id))!.statusReason).not.toMatch(/awaiting test results/);
   });
 
   it('commits no redraft once another worker has taken the run during the specialist call [REQ-29]', async () => {

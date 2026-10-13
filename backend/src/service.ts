@@ -170,7 +170,8 @@ export class AuditService {
       const pending: UnsealedBundle[] = [];
       const result = await fn(loaded.engagement, (b) => pending.push(b), trx);
       await saveEngagement(trx, loaded);
-      // Any change wakes the engagement's waiting agent run, in this same transaction (spec §6.2).
+      // Any change wakes the engagement's waiting agent run, in this same transaction (spec §6.2). This comes before the
+      // trail lock, since a worker may hold the run row while it waits for that lock.
       await wakeWaitingRuns(trx, engagementId);
       const sealed: TrailBundle[] = [];
       for (const b of pending) sealed.push(await appendTrail(trx, b));
@@ -552,6 +553,8 @@ export class AuditService {
       }
       // The signed content must be in the workpaper's history (verify checks it); this is a no-op when it already is.
       await recordWorkpaperRevisions(trx, e);
+      // Wake the run before taking the trail lock: a worker may hold the run row while it waits for that lock.
+      await wakeWaitingRuns(trx, e.id);
       const meaning = action === 'approve' ? 'Approved' : 'Rejected';
       const at = new Date().toISOString();
       const reauth: NonNullable<SignOff['reauth']> = reauthed ? { method: reauthed.reauthMethod, at: reauthed.reauthAt } : { method: 'none', at: null };
@@ -567,9 +570,7 @@ export class AuditService {
       if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
         throw new AppError(409, 'This signing request is no longer valid', 'INTENT_EXPIRED');
       }
-      const closed = await closeGate(trx, gateId, action === 'approve' ? 'approved' : 'rejected', signatureId, comment);
-      await wakeWaitingRuns(trx, e.id);
-      return closed;
+      return closeGate(trx, gateId, action === 'approve' ? 'approved' : 'rejected', signatureId, comment);
     });
   }
 

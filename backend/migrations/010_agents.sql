@@ -31,6 +31,8 @@ CREATE TABLE agent_runs (
   started_by       text NOT NULL REFERENCES users (id),
   cancel_requested boolean NOT NULL DEFAULT false,
   pause_requested  boolean NOT NULL DEFAULT false,
+  -- Someone changed the engagement while a worker held the run: its next release goes runnable, not waiting.
+  wake_requested   boolean NOT NULL DEFAULT false,
   failure_streak   integer NOT NULL DEFAULT 0,
   conflict_streak  integer NOT NULL DEFAULT 0,
   wake_at          timestamptz,

@@ -3,6 +3,7 @@ import type { DB } from '../db/schema';
 import { loadEngagement } from '../db/engagement-repo';
 import { appendTrail } from '../db/trail-repo';
 import type { Engagement, User } from '../engine/types';
+import { AppError } from '../errors';
 import { insertGate, type Gate } from './gate-repo';
 import { latestGateId, redraftBasis } from './graph';
 import type { AgentPort } from './port';
@@ -78,8 +79,13 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       const qa = ctx.menu.qa;
       if (!qa || qa.subjectKey !== s.key || qa.subjectHash !== s.hash) throw new Error(`${a.subjectKey} has no QA report for its current content`);
       await db.transaction().execute(async (trx) => {
-        // Lock order is engagement, then run, then gate.
-        await loadEngagement(trx, e.id, { forUpdate: true });
+        // Lock order is engagement, then run, then gate. The gate is bound to the content read at the start of this
+        // iteration, so it opens only if nobody has changed the engagement since.
+        const loaded = await loadEngagement(trx, e.id, { forUpdate: true });
+        if (!loaded) throw new AppError(404, `Engagement ${e.id} not found`);
+        if (loaded.version !== e.version) {
+          throw new AppError(409, `Engagement ${e.id} is at version ${loaded.version}, not ${e.version}; reload and try again`, 'VERSION_CONFLICT');
+        }
         await assertLease(trx, run.id, run.leaseOwner!);
         const gate = await insertGate(trx, {
           engagementId: e.id, runId: run.id, kind, subjectKey: s.key, subjectId: s.subjectId, subjectHash: s.hash, basisHash: s.basis, qaReport: qa,
