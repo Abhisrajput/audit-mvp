@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MalformedOutputError, type GenerateRequest, type GenerateResult, type LlmProvider } from '../../engine/llm/provider';
+import { MalformedOutputError, ModelStoppedError, type GenerateRequest, type GenerateResult, type LlmProvider } from '../../engine/llm/provider';
 import type { ModelMeter } from '../budget';
 import type { AgentLlmConfig, ModelRole } from '../config';
 import type { Spent } from '../types';
@@ -81,17 +81,21 @@ export class AgentModels {
           if (err instanceof MalformedOutputError) throw err;
           throw new MalformedOutputError((err as Error).message);
         }
+        if (err instanceof ModelStoppedError) {
+          // A refusal or a truncation ran on the API and is billed: settle at what it used, and do not retry, since
+          // a truncation would only repeat. The caller falls back like any other model failure.
+          const actual = err.usage ? this.actualOf(err.usage, s.model, s.model) : estimate;
+          await this.meter.settle(estimate, actual);
+          this.note(actual, s.model);
+          throw new ModelUnavailableError(`${s.model} stopped without an answer (${err.reason})`);
+        }
         // An API error or a timeout is not billed.
         await this.meter.settle(estimate, {});
         last = err instanceof Error ? err.message : String(err);
         continue;
       }
       const actual = res.usage
-        ? {
-            tokensIn: res.usage.inputTokens,
-            tokensOut: res.usage.outputTokens,
-            costUsd: callCost(priceFor(this.cfg.prices, res.servedModel, s.model), res.usage.inputTokens, res.usage.outputTokens),
-          }
+        ? this.actualOf(res.usage, res.servedModel, s.model)
         : estimate;
       await this.meter.settle(estimate, actual);
       this.note(actual, res.servedModel);
@@ -122,6 +126,14 @@ export class AgentModels {
     const used = this.used;
     this.used = none();
     return used;
+  }
+
+  private actualOf(usage: { inputTokens: number; outputTokens: number }, served: string, asked: string) {
+    return {
+      tokensIn: usage.inputTokens,
+      tokensOut: usage.outputTokens,
+      costUsd: callCost(priceFor(this.cfg.prices, served, asked), usage.inputTokens, usage.outputTokens),
+    };
   }
 
   private note(s: Pick<Spent, 'tokensIn' | 'tokensOut' | 'costUsd'>, model: string) {

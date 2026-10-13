@@ -7,7 +7,7 @@ import { DEFAULT_PRICES, estimateCall, priceFor } from '../src/agents/llm/prices
 import { AppError } from '../src/errors';
 import { NO_SPEND, type Budget, type Spent } from '../src/agents/types';
 import { acceptsServerFallback } from '../src/engine/llm/anthropic';
-import { MalformedOutputError, type GenerateRequest } from '../src/engine/llm/provider';
+import { MalformedOutputError, ModelStoppedError, type GenerateRequest } from '../src/engine/llm/provider';
 import { FakeProvider, TEST_LLM } from './helpers';
 
 const Out = z.object({ answer: z.string() });
@@ -146,5 +146,21 @@ describe('agent model calls [REQ-29]', () => {
     await expect(models.generate('policy', ASK)).rejects.toMatchObject({ code: 'LEASE_LOST' });
     expect(fake.requests).toHaveLength(1);
     expect(written).toEqual([ESTIMATE]);
+  });
+
+  it.each(['max_tokens', 'refusal'] as const)('charges a %s stop at its real usage and does not retry it', async (reason) => {
+    const { fake, models, written, waits } = setup(() => { throw new ModelStoppedError('stopped', reason, { inputTokens: 1000, outputTokens: 200 }); });
+    await expect(models.generate('qa', ASK)).rejects.toBeInstanceOf(ModelUnavailableError);
+    expect(fake.requests).toHaveLength(1);
+    expect(waits).toEqual([]);
+    expect(written).toEqual([ESTIMATE, USED]);
+    expect(models.take()).toMatchObject({ tokensIn: 1000, tokensOut: 200 });
+  });
+
+  it('charges a stop that reports no usage at its estimate', async () => {
+    const { fake, models, written } = setup(() => { throw new ModelStoppedError('stopped', 'max_tokens'); });
+    await expect(models.generate('qa', ASK)).rejects.toBeInstanceOf(ModelUnavailableError);
+    expect(fake.requests).toHaveLength(1);
+    expect(written.at(-1)).toEqual(ESTIMATE);
   });
 });
