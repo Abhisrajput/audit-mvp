@@ -21,6 +21,10 @@ export type ErrorCode =
   | 'CANCELLED'
   | 'RECORD_IMMUTABLE'
   | 'RATE_LIMITED'
+  | 'RUN_ACTIVE'
+  | 'AGENT_DISABLED'
+  | 'GATE_STALE'
+  | 'AGENT_FORBIDDEN'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

@@ -367,7 +367,7 @@ export class AuditService {
       const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig, trust);
       emit(bundle);
       await insertSignature(trx, {
-        id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
+        id: sig.signatureId!, engagementId: e.id, findingId, subjectKind: 'finding', workpaper: null, gateId: null, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
         contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
       });
       // The signing request is marked signed in this same transaction, so it is never left 'claimed' after a signature commits.

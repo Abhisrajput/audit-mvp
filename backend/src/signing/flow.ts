@@ -15,7 +15,7 @@ export const SKEW_MS = 10_000;
 export type SignOutcome = { ok: true } | { ok: false; code: ErrorCode; message: string };
 type Actor = { id: string; name: string; role: string | null };
 
-const inputsOf = (intent: SignIntent) => ({ intentId: intent.id, engagementId: intent.engagementId, findingId: intent.findingId, action: intent.action });
+const inputsOf = (intent: SignIntent) => ({ intentId: intent.id, engagementId: intent.engagementId, findingId: intent.findingId, gateId: intent.gateId, action: intent.action });
 
 /** Shown when a request that already ended (or is being completed) is used again. Nothing is recorded for it. */
 export const NO_LONGER_VALID: SignOutcome = {
@@ -76,6 +76,9 @@ export async function completeSigning(
   const CLAIMED = ['claimed'] as const;
   if (now.getTime() > Date.parse(intent.expiresAt)) {
     return failIntent(svc, intent, actor, 'INTENT_EXPIRED', 'The signing request expired. Start signing again from the finding.', CLAIMED);
+  }
+  if (intent.subjectKind !== 'finding' || !intent.findingId) {
+    return failIntent(svc, intent, actor, 'INTERNAL', 'This signing request is not for a finding.', CLAIMED);
   }
   try {
     await svc.signOff(intent.engagementId, intent.findingId, intent.action, intent.comment, actor, {}, {

@@ -1,4 +1,5 @@
 import type { ColumnType, Generated } from 'kysely';
+import type { Budget, GateKind, GateState, QaReport, RunStatus, SignableWorkpaper, Spent, StepKind, WorkpaperKind } from '../agents/types';
 import type { EvalReport } from '../eval/harness';
 import type { AuditReport, Role, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestInput, TestResult } from '../engine/types';
 
@@ -106,7 +107,11 @@ type NullableText = ColumnType<string | null, string | null | undefined, string 
 export interface SignaturesTable {
   id: string;
   engagement_id: string;
-  finding_id: string;
+  /** null for a workpaper signature. */
+  finding_id: string | null;
+  subject_kind: ColumnType<'finding' | 'workpaper', 'finding' | 'workpaper' | undefined, never>;
+  workpaper: ColumnType<SignableWorkpaper | null, SignableWorkpaper | null | undefined, never>;
+  gate_id: NullableText;
   user_id: string;
   user_name: string;
   role: string;
@@ -124,7 +129,10 @@ export interface SignIntentsTable {
   id: string;
   user_id: string;
   engagement_id: string;
-  finding_id: string;
+  finding_id: string | null;
+  subject_kind: ColumnType<'finding' | 'workpaper', 'finding' | 'workpaper' | undefined, never>;
+  workpaper: ColumnType<SignableWorkpaper | null, SignableWorkpaper | null | undefined, never>;
+  gate_id: NullableText;
   action: 'review' | 'approve' | 'reject';
   comment: string;
   content_hash: string;
@@ -232,6 +240,75 @@ export interface KgEdgesTable {
   created_at: DefaultedTimestamp;
 }
 
+export interface WorkpaperRevisionsTable {
+  engagement_id: string;
+  kind: WorkpaperKind;
+  revision: number;
+  content_hash: string;
+  recorded_at: Generated<Date>;
+}
+
+type Flag = ColumnType<boolean, boolean | undefined, boolean>;
+type Count = ColumnType<number, number | undefined, number>;
+
+export interface AgentRunsTable {
+  id: string;
+  engagement_id: string;
+  goal: ColumnType<'engagement', 'engagement' | undefined, never>;
+  status: RunStatus;
+  status_reason: ColumnType<string, string | undefined, string>;
+  policy: 'llm' | 'rules';
+  policy_version: string;
+  budget: Json<Budget>;
+  spent: ColumnType<Spent, string | undefined, string>;
+  started_by: string;
+  cancel_requested: Flag;
+  pause_requested: Flag;
+  failure_streak: Count;
+  conflict_streak: Count;
+  wake_at: NullableTimestamp;
+  lease_owner: NullableText;
+  lease_until: NullableTimestamp;
+  version: Count;
+  created_at: Generated<Date>;
+  updated_at: DefaultedTimestamp;
+  ended_at: NullableTimestamp;
+}
+
+export interface AgentStepsTable {
+  run_id: string;
+  seq: number;
+  kind: StepKind;
+  agent: string;
+  decision: ColumnType<unknown, string, never>;
+  model: ColumnType<string | null, string | null | undefined, never>;
+  tokens_in: ColumnType<number, number | undefined, never>;
+  tokens_out: ColumnType<number, number | undefined, never>;
+  cost_usd: ColumnType<number, number | undefined, never>;
+  duration_ms: ColumnType<number, number | undefined, never>;
+  trail_bundle_id: ColumnType<string | null, string | null | undefined, never>;
+  created_at: Generated<Date>;
+}
+
+export interface GatesTable {
+  id: string;
+  seq: Generated<number>;
+  engagement_id: string;
+  run_id: string;
+  kind: GateKind;
+  subject_key: string;
+  subject_id: string;
+  subject_hash: string;
+  basis_hash: string;
+  qa_report: ColumnType<QaReport | null, string, never>;
+  attempt: number;
+  state: ColumnType<GateState, GateState | undefined, GateState>;
+  signature_id: NullableText;
+  comment: ColumnType<string, string | undefined, string>;
+  opened_at: Generated<Date>;
+  closed_at: NullableTimestamp;
+}
+
 export interface DB {
   engagements: EngagementsTable;
   engagement_work: EngagementWorkTable;
@@ -251,4 +328,8 @@ export interface DB {
   kg_nodes: KgNodesTable;
   kg_node_versions: KgNodeVersionsTable;
   kg_edges: KgEdgesTable;
+  workpaper_revisions: WorkpaperRevisionsTable;
+  agent_runs: AgentRunsTable;
+  agent_steps: AgentStepsTable;
+  gates: GatesTable;
 }
