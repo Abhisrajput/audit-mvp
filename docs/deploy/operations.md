@@ -128,6 +128,11 @@ Exit 1 means escalate as a data-integrity incident. Do not edit data to make it 
   - `budget_exhausted: …`: an audit manager raises the budget in the panel, and the run resumes.
   - `gate_rejected_twice: …`: edit the workpaper or finding by hand, then press Resume. It goes through QA and a fresh gate.
   - `agent_forbidden: …`: the rails refused an action. Read the run's last steps, then resume or cancel, and report it: the rails should never need to.
+  - `rework produced no change: …`: the agent redrafted and nothing changed. Edit the subject by hand, then press Resume.
+  - `QA found … issue(s)` / `QA found blocking issues …` / `QA scored …`: the draft failed QA. Fix what QA lists by hand, then press Resume; it goes through QA again.
+  - `finding … was approved on test results that have since changed`: decide in Findings what to do with the finding (reject it, or have it redrafted), then press Resume.
+  - `The … specialist already ran for … and it is still not ready`: the specialist's one pass did not fix it. Check and edit it by hand, then press Resume.
+  - `the person who started this run can no longer prepare audit work`: Resume cannot help, because the run acts as that person. Start a new run.
   - `error: …`: three iterations in a row failed. Find the cause in the worker's logs by `runId`, fix it, then resume.
 - **A run that waits** for test results or a gate signature moves on by itself when the test is recorded, when a reason not to test is given in Test plans, or when the gate is signed.
 - **A worker that stops mid-step.** Another worker takes the run once its 60-second lease expires. The abandoned step counts as a failed one, and three in a row hand the run to a person.
