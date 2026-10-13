@@ -1,7 +1,7 @@
 import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
-import { closeGate, insertGate, listGates, supersedeOpenGates } from '../src/agents/gate-repo';
-import { appendStep, createRun, getRun, leaseNext, listSteps, markRunnable, releaseRun, requestCancel, requestPause } from '../src/agents/run-repo';
+import { closeFindingGate, closeGate, insertGate, listGates, supersedeOpenGates } from '../src/agents/gate-repo';
+import { appendStep, assertLease, createRun, getRun, leaseNext, listSteps, markRunnable, releaseRun, requestCancel, requestPause } from '../src/agents/run-repo';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { appendTrail } from '../src/db/trail-repo';
 import { runWithRequestId } from '../src/observability/context';
@@ -106,5 +106,52 @@ describe('agent trail entries', () => {
         appendTrail(trx, svc.agentBundle(e, { moduleId: 'agent:decision', agent: 'supervisor', runId: run.id, onBehalfOf: 'auditor', inputs: { stage: 'scope' }, output: { ok: true } }))));
     expect(sealed).toMatchObject({ actor: 'agent:supervisor', moduleId: 'agent:decision', requestId: run.id, inputs: { stage: 'scope', runId: run.id, onBehalfOf: 'auditor' } });
     expect(sealed.id).toMatch(/^AGT-[0-9a-f]{8}$/);
+  });
+});
+
+describe('agent run fixes', () => {
+  it('lets only one of two concurrent cancels win, the other a 409 [REQ-28]', async () => {
+    const { db, run } = await engagementWithRun();
+    const res = await Promise.allSettled([requestCancel(db, run.id), requestCancel(db, run.id)]);
+    expect(res.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = res.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(lost.reason).toMatchObject({ status: 409 });
+    expect((await getRun(db, run.id))!.status).toBe('cancelled');
+  });
+
+  it('fences writes to the lease holder', async () => {
+    const { db, run } = await engagementWithRun();
+    await leaseNext(db, 'w1', 60_000);
+    await expect(assertLease(db, run.id, 'w1')).resolves.toBeUndefined();
+    await expect(assertLease(db, run.id, 'w2')).rejects.toMatchObject({ status: 409 });
+    await releaseRun(db, run.id, 'w1', { status: 'waiting', reason: 'x' });
+    await expect(assertLease(db, run.id, 'w1')).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('cancel and pause a running run whose lease has expired', async () => {
+    const { db, run } = await engagementWithRun();
+    await leaseNext(db, 'w1', 60_000);
+    await sql`UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = ${run.id}`.execute(db);
+    expect(await requestCancel(db, run.id)).toMatchObject({ status: 'cancelled', leaseOwner: null, leaseUntil: null });
+  });
+
+  it('pauses an expired-lease run at once', async () => {
+    const { db, run } = await engagementWithRun();
+    await leaseNext(db, 'w1', 60_000);
+    await sql`UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = ${run.id}`.execute(db);
+    expect(await requestPause(db, run.id)).toMatchObject({ status: 'waiting', statusReason: 'paused_by_user', leaseOwner: null });
+  });
+
+  it('closes a finding gate only for the content it showed, and ignores one already superseded', async () => {
+    const { db, e, run } = await engagementWithRun();
+    const fg = { ...newGate(e.id, run.id), kind: 'finding' as const, subjectKey: 'finding:F1', subjectId: 'F1', subjectHash: 'h1' };
+    await insertGate(db, fg);
+    await closeFindingGate(db, e.id, 'F1', 'other', 'approved', 'SIG-1', '');
+    expect((await listGates(db, e.id))[0].state).toBe('superseded');
+    await closeFindingGate(db, e.id, 'F1', 'h1', 'approved', 'SIG-1', '');
+    expect((await listGates(db, e.id))[0].state).toBe('superseded');
+    await insertGate(db, fg);
+    await closeFindingGate(db, e.id, 'F1', 'h1', 'approved', 'SIG-2', 'ok');
+    expect((await listGates(db, e.id))[1]).toMatchObject({ state: 'approved', signatureId: 'SIG-2' });
   });
 });

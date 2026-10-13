@@ -110,7 +110,7 @@ export async function renewLease(db: Executor, id: string, owner: string, leaseM
 }
 
 export interface RunUpdate {
-  status: RunStatus;
+  status: Exclude<RunStatus, 'running'>;
   reason?: string;
   wakeAt?: Date | null;
   spent?: Spent;
@@ -144,6 +144,15 @@ export async function releaseRun(db: Executor, id: string, owner: string, u: Run
   return Number(res.numAffectedRows ?? 0) === 1;
 }
 
+/**
+ * Fences a worker's writes: throws unless this worker still holds the run's lease, and locks the row for the rest of the
+ * transaction. Call it first inside every iteration transaction that writes steps or gates.
+ */
+export async function assertLease(db: Executor, runId: string, owner: string): Promise<void> {
+  const row = await db.selectFrom('agent_runs').select('id').where('id', '=', runId).where('lease_owner', '=', owner).where('status', '=', 'running').forUpdate().executeTakeFirst();
+  if (!row) throw new AppError(409, `Agent run ${runId} is no longer held by this worker`);
+}
+
 async function lockedLiveRun(db: Executor, id: string): Promise<AgentRun> {
   const run = await getRun(db, id, { forUpdate: true });
   if (!run) throw new AppError(404, `Agent run ${id} not found`);
@@ -151,43 +160,50 @@ async function lockedLiveRun(db: Executor, id: string): Promise<AgentRun> {
   return run;
 }
 
-async function updateRun(db: Executor, id: string, set: Updateable<AgentRunsTable>): Promise<AgentRun> {
+/** Updates the run only if it is still at the version that was read; otherwise someone else changed it meanwhile. */
+async function updateRun(db: Executor, run: AgentRun, set: Updateable<AgentRunsTable>): Promise<AgentRun> {
   const row = await db
     .updateTable('agent_runs')
     .set({ ...set, updated_at: now(), version: sql<number>`version + 1` })
-    .where('id', '=', id)
+    .where('id', '=', run.id)
+    .where('version', '=', run.version)
     .returningAll()
-    .executeTakeFirstOrThrow();
+    .executeTakeFirst();
+  if (!row) throw new AppError(409, `Agent run ${run.id} changed meanwhile; reload and try again`);
   return toRun(row);
 }
+
+/** A running run is held only while its lease is live; once the lease has expired its worker is gone. */
+const isHeld = (run: AgentRun) => run.status === 'running' && !(run.leaseUntil && Date.parse(run.leaseUntil) < Date.now());
 
 /** Cancels at once when no worker holds the run (its open gates are superseded); otherwise on the worker's next look. */
 export async function requestCancel(db: Executor, id: string): Promise<AgentRun> {
   const run = await lockedLiveRun(db, id);
-  if (run.status === 'running') return updateRun(db, id, { cancel_requested: true });
+  if (isHeld(run)) return updateRun(db, run, { cancel_requested: true });
+  const updated = await updateRun(db, run, { status: 'cancelled', status_reason: 'cancelled_by_user', wake_at: null, ended_at: now(), lease_owner: null, lease_until: null });
   await supersedeOpenGates(db, id);
-  return updateRun(db, id, { status: 'cancelled', status_reason: 'cancelled_by_user', wake_at: null, ended_at: now() });
+  return updated;
 }
 
 /** Pauses at once when no worker holds the run; otherwise on the worker's next look. A paused run waits until resumed. */
 export async function requestPause(db: Executor, id: string): Promise<AgentRun> {
   const run = await lockedLiveRun(db, id);
-  if (run.status === 'running') return updateRun(db, id, { pause_requested: true });
-  return updateRun(db, id, { status: 'waiting', status_reason: 'paused_by_user', wake_at: null });
+  if (isHeld(run)) return updateRun(db, run, { pause_requested: true });
+  return updateRun(db, run, { status: 'waiting', status_reason: 'paused_by_user', wake_at: null, lease_owner: null, lease_until: null });
 }
 
 /** Resumes a waiting or escalated run. */
 export async function markRunnable(db: Executor, id: string): Promise<AgentRun> {
   const run = await lockedLiveRun(db, id);
   if (run.status === 'running' || run.status === 'runnable') throw new AppError(409, `Agent run ${id} is already ${run.status}`);
-  return updateRun(db, id, { status: 'runnable', status_reason: '', pause_requested: false, failure_streak: 0, conflict_streak: 0, wake_at: null });
+  return updateRun(db, run, { status: 'runnable', status_reason: '', pause_requested: false, failure_streak: 0, conflict_streak: 0, wake_at: null });
 }
 
 /** Sets a new budget. A run stopped by its budget resumes. */
 export async function setRunBudget(db: Executor, id: string, budget: Budget): Promise<AgentRun> {
   const run = await lockedLiveRun(db, id);
   const resume = run.status === 'needs_human' && run.statusReason.startsWith('budget_exhausted');
-  return updateRun(db, id, { budget: JSON.stringify(budget), ...(resume ? { status: 'runnable' as const, status_reason: '' } : {}) });
+  return updateRun(db, run, { budget: JSON.stringify(budget), ...(resume ? { status: 'runnable' as const, status_reason: '' } : {}) });
 }
 
 /** Any change to the engagement wakes its waiting run, which then re-derives where it stands. A paused run stays paused. */

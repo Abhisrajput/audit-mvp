@@ -102,8 +102,10 @@ export async function closeFindingGate(
     .where('kind', '=', 'finding')
     .where('subject_id', '=', findingId)
     .where('state', '=', 'open')
+    .forUpdate()
     .executeTakeFirst();
   if (!g) return;
   if (g.subject_hash !== contentHash) return supersedeGate(db, g.id);
-  await closeGate(db, g.id, state, signatureId, comment);
+  // The row is locked and open, so this update cannot lose a race; a gate closed meanwhile never reaches it.
+  await db.updateTable('gates').set({ state, signature_id: signatureId, comment, closed_at: new Date().toISOString() }).where('id', '=', g.id).where('state', '=', 'open').execute();
 }
