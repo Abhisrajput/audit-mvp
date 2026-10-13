@@ -3,14 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { defaultAgentConfig, type AgentConfig } from '../src/agents/config';
 import { listGates } from '../src/agents/gate-repo';
 import { ModelMeter } from '../src/agents/budget';
+import { LLM_POLICY_VERSION } from '../src/agents/policy/llm';
 import { RULES_VERSION } from '../src/agents/policy/rules';
+import { startRun } from '../src/agents/runs';
 import { createRun, getRun, leaseNext, listSteps, markRunnable, recordSpend, requestCancel, requestPause } from '../src/agents/run-repo';
 import type { Action, Menu, Policy } from '../src/agents/types';
 import { AgentWorker, chooseDecision } from '../src/agents/worker';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
 import { AppError } from '../src/errors';
-import { auditor, NEW_ENGAGEMENT, newService, reviewer, unattended } from './helpers';
+import { auditor, FakeProvider, NEW_ENGAGEMENT, newService, noWait, reviewer, TEST_LLM, unattended } from './helpers';
 
 // Lets a test act between the worker's reconcile and its decision (the graph input is loaded in between).
 const hooks = vi.hoisted(() => ({ beforeGraph: null as null | (() => Promise<void>) }));
@@ -33,6 +35,20 @@ async function started(budget = defaultAgentConfig().budget) {
 }
 
 describe('the agent worker', () => {
+  it('runs on the model policy when the deployment has a model, and records it on the run and its decisions [REQ-28]', async () => {
+    const fake = new FakeProvider(() => ({ items: [] }));
+    const svc = await newService(fake);
+    await ensureDevUsers(svc.db.kysely);
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const { run } = await startRun(svc, cfg({ llm: TEST_LLM }), e.id, auditor);
+    expect(run).toMatchObject({ policy: 'llm', policyVersion: LLM_POLICY_VERSION });
+    await new AgentWorker(svc, cfg({ llm: TEST_LLM }), { id: 'w1', wait: noWait }).tick();
+    const [decision, delegate] = await listSteps(svc.db.kysely, run.id);
+    expect(decision).toMatchObject({ kind: 'decision', decision: { policy: 'forced', policyVersion: LLM_POLICY_VERSION } });
+    expect(delegate).toMatchObject({ kind: 'delegate', model: 'fake-1' });
+    expect(delegate.tokensIn).toBeGreaterThan(0);
+  });
+
   it('hands the run to a person when its workers keep dying mid-step [REQ-29]', async () => {
     const { db, run, worker } = await started();
     for (const dead of ['dead-1', 'dead-2', 'dead-3']) {

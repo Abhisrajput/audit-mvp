@@ -15,6 +15,7 @@ import { AgentModels } from './llm/models';
 import { applyDecision, type Outcome } from './executor';
 import { listGates, supersedeOpenGates } from './gate-repo';
 import { allowedActions } from './graph';
+import { LlmPolicy } from './policy/llm';
 import { RulesPolicy } from './policy/rules';
 import { agentPort, type AgentPort } from './port';
 import { appendStep, assertLease, leaseNext, recordSpend, releaseRun, renewLease, type AgentRun, type LeasedRun, type RunUpdate } from './run-repo';
@@ -29,12 +30,18 @@ const CONFLICT_BACKOFF_MS = 60_000;
 const MAX_STREAK = 3;
 
 /** The decision for this menu: forced when one action is allowed, else the policy's, else (off the menu) the rules'. */
-export async function chooseDecision(policy: Policy, menu: Menu): Promise<Decision> {
+export async function chooseDecision(policy: Policy, menu: Menu, models?: AgentModels): Promise<Decision> {
   if (menu.actions.length === 1) return { action: menu.actions[0], rationale: 'The only allowed action', policy: 'forced', policyVersion: policy.version };
-  const parsed = DecisionSchema.safeParse(await policy.decide(menu));
+  const proposed = await policy.decide(menu, models);
+  const parsed = DecisionSchema.safeParse(proposed);
   if (parsed.success && menu.actions.some((a) => sameAction(a, parsed.data.action))) return parsed.data;
+  // A last line of defence: whatever a policy returns, only a menu entry is ever applied.
   const fallback = await new RulesPolicy().decide(menu);
-  return { ...fallback, rationale: `${fallback.rationale} (the ${policy.kind} policy chose an action that is not allowed)`.slice(0, 500) };
+  return {
+    ...fallback,
+    rationale: `${fallback.rationale} (the ${policy.kind} policy chose an action that is not allowed)`.slice(0, 500),
+    attempts: [...(parsed.success ? parsed.data.attempts ?? [] : []), { outcome: 'off_menu', model: null, detail: 'the policy returned an action that is not on the menu' }],
+  };
 }
 
 const statusOf = (o: Outcome): Pick<RunUpdate, 'status' | 'reason'> =>
@@ -59,7 +66,8 @@ export class AgentWorker {
 
   constructor(private readonly svc: AuditService, private readonly cfg: AgentConfig, opts: WorkerOptions = {}) {
     this.id = opts.id ?? `${os.hostname()}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
-    this.policy = opts.policy ?? new RulesPolicy();
+    // A deployment with a model provider decides with the model; one without uses the rules (Ruling 7).
+    this.policy = opts.policy ?? (svc.llm ? new LlmPolicy() : new RulesPolicy());
     this.port = agentPort(svc);
     this.wait = opts.wait;
   }
@@ -156,14 +164,19 @@ export class AgentWorker {
       });
       const gates = await listGates(db, e.id);
       const menu = allowedActions(await loadGraphInput(db, run, e, gates, this.cfg.qaThreshold));
-      const decision = await chooseDecision(this.policy, menu);
+      const decision = await chooseDecision(this.policy, menu, models);
+      const used = models.take();
+      const servedBy = [...(decision.attempts ?? [])].reverse().find((x) => x.model)?.model ?? decision.policyVersion;
       await db.transaction().execute(async (trx) => {
         await assertLease(trx, run.id, this.id);
         const sealed = await appendTrail(trx, this.port.agentBundle(e, {
           moduleId: 'agent:decision', agent: 'supervisor', runId: run.id, onBehalfOf: starter.id,
-          provider: { id: decision.policy, model: decision.policyVersion }, inputs: { stage: menu.stage, menu: menu.actions }, output: decision,
+          provider: { id: decision.policy, model: servedBy }, inputs: { stage: menu.stage, menu: menu.actions }, output: decision,
         }));
-        await appendStep(trx, run.id, { kind: 'decision', agent: 'supervisor', decision, model: decision.policyVersion, trailBundleId: sealed.id });
+        await appendStep(trx, run.id, {
+          kind: 'decision', agent: 'supervisor', decision, model: used.model ?? decision.policyVersion,
+          tokensIn: used.tokensIn, tokensOut: used.tokensOut, costUsd: used.costUsd, trailBundleId: sealed.id,
+        });
       });
       const outcome = await applyDecision({ db, port: this.port, run, starter, engagement: e, gates, menu, models }, decision);
       return { ...statusOf(outcome), spent: addSpend(meter.spent, { steps: 1 }), failureStreak: 0, conflictStreak: 0 };

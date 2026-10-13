@@ -6,6 +6,7 @@ import { AppError } from '../errors';
 import type { AuditService } from '../service';
 import { lowerBudget } from './budget';
 import type { AgentConfig } from './config';
+import { LLM_POLICY_VERSION } from './policy/llm';
 import { RULES_VERSION } from './policy/rules';
 import { createRun, getRun, markRunnable, requestCancel, requestPause, setRunBudget, type AgentRun } from './run-repo';
 import type { Budget } from './types';
@@ -35,7 +36,9 @@ export async function startRun(svc: AuditService, cfg: AgentConfig, engagementId
   const e = await svc.engagement(engagementId);
   const budget = lowerBudget(cfg.budget, requested);
   const run = await svc.db.kysely.transaction().execute(async (trx) => {
-    const created = await createRun(trx, { engagementId, startedBy: actor.id, policy: 'rules', policyVersion: RULES_VERSION, budget });
+    // The worker decides with the model when the deployment has one (Ruling 7); the run records which it expects.
+    const policy = svc.llm ? { policy: 'llm' as const, policyVersion: LLM_POLICY_VERSION } : { policy: 'rules' as const, policyVersion: RULES_VERSION };
+    const created = await createRun(trx, { engagementId, startedBy: actor.id, ...policy, budget });
     await appendTrail(trx, svc.humanBundle(e, 'human:agent-run-start', actor, { budget }, { runId: created.id }));
     return created;
   });
