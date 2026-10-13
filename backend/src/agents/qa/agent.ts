@@ -37,13 +37,13 @@ const toRequest = (l: z.infer<typeof LookupAnswer>['lookups'][number]): LookupRe
 
 /** One tool result as text. Every string in it came from a document, a filename or the graph, so each goes in its own data block. */
 function lookupText(l: LookupResult): string {
-  const head = `Lookup ${l.tool} ${asData('lookup-args', l.args)}`;
-  if (l.refused) return `${head} was refused: ${l.refused}`;
+  const head = `Lookup ${asData('lookup-tool', l.tool)} ${asData('lookup-args', l.args)}`;
+  if (l.refused) return `${head} was refused: ${asData('lookup-refusal', l.refused)}`;
   const r = l.result as KnowledgeHit[] | Neighbourhood;
   if (Array.isArray(r)) {
-    return [head, ...r.map((h) => `- ${h.id} (${h.kind}, ${h.citable ? 'citable' : 'not citable'}): ${asData('lookup-title', h.title)} ${asData('lookup-snippet', h.snippet)} ${asData('lookup-source', h.source)}`)].join('\n');
+    return [head, ...r.map((h) => `- ${asData('lookup-id', h.id)} (${h.kind}, ${h.citable ? 'citable' : 'not citable'}): ${asData('lookup-title', h.title)} ${asData('lookup-snippet', h.snippet)} ${asData('lookup-source', h.source)}`)].join('\n');
   }
-  const node = (n: GraphNode) => `${n.nodeId} (${n.type}, ${n.citable ? 'citable' : 'not citable'}): ${asData('lookup-node-title', n.title)}`;
+  const node = (n: GraphNode) => `${asData('lookup-node-id', n.nodeId)} (${asData('lookup-node-type', n.type)}, ${n.citable ? 'citable' : 'not citable'}): ${asData('lookup-node-title', n.title)}`;
   return [head, r.node ? `Concept ${node(r.node)}` : 'No such concept.', ...r.neighbours.map((n) => `- ${n.direction} ${asData('lookup-rel', n.rel)} ${node(n.node)}`)].join('\n');
 }
 
