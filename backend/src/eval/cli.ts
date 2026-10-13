@@ -6,17 +6,15 @@ import { createMemoryDb } from '../db/pglite';
 import { compilePacks } from '../knowledge/graph/compile';
 import { loadBundles } from '../knowledge/okf/bundle';
 import { registryFromGraph } from '../knowledge/packs';
-import { evalMarkdown, runEval } from './harness';
+import { evalArgs, evalMarkdown, runEval } from './harness';
 
-// Usage: npm run eval [-- --provider anthropic] [--packs food,pharma] [--update-traces]
+// Usage: npm run eval [-- --provider anthropic] [--packs food,pharma] [--update-traces] [--agent-llm]
+// --agent-llm also runs each agent scenario with the provider's model (informational and paid, on a $2 budget per scenario).
 async function main() {
   prepareEnv();
   const policy = loadCitationPolicy();
-  const args = process.argv.slice(2);
-  const arg = (name: string) => {
-    const i = args.indexOf(`--${name}`);
-    return i >= 0 ? args[i + 1] : undefined;
-  };
+  const args = evalArgs(process.argv.slice(2));
+  if (args.agentLlm && args.provider === 'offline') throw new Error('--agent-llm needs a model provider (--provider anthropic)');
   // Eval qualifies the registry the API serves: compiled into a graph (a throwaway in-process database) and read back.
   const bundles = loadBundles();
   const graph = await createMemoryDb();
@@ -27,7 +25,7 @@ async function main() {
   } finally {
     await graph.close();
   }
-  const report = await runEval(registry, createProvider(arg('provider') ?? 'offline'), arg('packs')?.split(','), policy, { agentTraces: true, updateTraces: args.includes('--update-traces') });
+  const report = await runEval(registry, createProvider(args.provider), args.packs, policy, { agentTraces: true, updateTraces: args.updateTraces, agentLlm: args.agentLlm });
   const outDir = path.resolve(__dirname, '../../validation-output');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'eval-latest.json'), JSON.stringify(report, null, 2));

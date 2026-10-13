@@ -4,9 +4,12 @@ import { RULES_VERSION } from '../src/agents/policy/rules';
 import { createRun, leaseNext } from '../src/agents/run-repo';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { createMemoryDb } from '../src/db/pglite';
-import { loadTraceFiles, runAgentTraces, traceDifference, traceEntry } from '../src/eval/agent-traces';
+import { INFORMATIONAL_LLM_BUDGET, loadTraceFiles, runAgentTraces, traceDifference, traceEntry, type ScenarioRunner } from '../src/eval/agent-traces';
+import { evalArgs, tallyCases } from '../src/eval/harness';
+import type { Budget } from '../src/agents/types';
+import type { LlmProvider } from '../src/engine/llm/provider';
 import { AuditService } from '../src/service';
-import { auditor, LENIENT, NEW_ENGAGEMENT, registry } from './helpers';
+import { auditor, FakeProvider, LENIENT, NEW_ENGAGEMENT, registry } from './helpers';
 
 describe('agent golden traces', () => {
   it('can lease an agent run on the in-process database that eval uses', async () => {
@@ -60,4 +63,54 @@ describe('agent golden traces', () => {
     expect(results.map((r) => r.id).sort()).toEqual(['agent:food-haccp', 'agent:pharma-data-integrity']);
     expect(results.filter((r) => !r.passed)).toEqual([]);
   }, 300_000);
+
+  describe('informational model-driven runs', () => {
+    const model = new FakeProvider(() => { throw new Error('no model in tests'); });
+    // Golden runs replay their stored trace; model runs throw, as a paid run that goes wrong might.
+    function scripted() {
+      const calls: { scenario: string; llm: LlmProvider | null; budget?: Budget }[] = [];
+      const runScenario: ScenarioRunner = async (_registry, scenario, llm, budget) => {
+        calls.push({ scenario: scenario.id, llm, budget });
+        if (llm) throw new Error('model run blew up');
+        const golden = loadTraceFiles().find((f) => f.data.scenario.id === scenario.id)!;
+        return { trace: golden.data.trace, reachedReportGate: true, detail: 'reached the report gate' };
+      };
+      return { calls, runScenario };
+    }
+
+    it('reports an error in a model run under its own informational case, never failing the golden case', async () => {
+      const { calls, runScenario } = scripted();
+      const results = await runAgentTraces(registry, { llm: model, runScenario });
+      expect(results.map((r) => r.id)).toEqual(['agent:food-haccp', 'agent-llm:food-haccp', 'agent:pharma-data-integrity', 'agent-llm:pharma-data-integrity']);
+      const golden = results.filter((r) => r.id.startsWith('agent:'));
+      expect(golden.every((r) => r.passed && !r.informational)).toBe(true);
+      const info = results.filter((r) => r.id.startsWith('agent-llm:'));
+      for (const r of info) expect(r).toMatchObject({ kind: 'agent-trace-llm', informational: true, passed: false, detail: expect.stringContaining('model run blew up') });
+      // Model runs get a budget of their own, far below a production run's.
+      expect(calls.filter((c) => c.llm).map((c) => c.budget)).toEqual([INFORMATIONAL_LLM_BUDGET, INFORMATIONAL_LLM_BUDGET]);
+      expect(INFORMATIONAL_LLM_BUDGET).toMatchObject({ maxCostUsd: 2, maxTokens: 200_000 });
+    });
+
+    it('runs no model-driven scenario unless a model is passed for them', async () => {
+      const { calls, runScenario } = scripted();
+      const results = await runAgentTraces(registry, { runScenario });
+      expect(results.map((r) => r.id)).toEqual(['agent:food-haccp', 'agent:pharma-data-integrity']);
+      expect(calls.every((c) => c.llm === null)).toBe(true);
+    });
+
+    it('asks for model-driven runs only with --agent-llm, not because a provider is given', () => {
+      expect(evalArgs(['--provider', 'anthropic'])).toEqual({ provider: 'anthropic', packs: undefined, updateTraces: false, agentLlm: false });
+      expect(evalArgs(['--provider', 'anthropic', '--agent-llm', '--packs', 'food,pharma'])).toEqual({ provider: 'anthropic', packs: ['food', 'pharma'], updateTraces: false, agentLlm: true });
+      expect(evalArgs([])).toEqual({ provider: 'offline', packs: undefined, updateTraces: false, agentLlm: false });
+    });
+
+    it('leaves informational cases out of the totals', () => {
+      const tally = tallyCases([
+        { id: 'agent:a', packId: 'food', kind: 'agent-trace', description: '', passed: true, detail: '' },
+        { id: 'agent-llm:a', packId: 'food', kind: 'agent-trace-llm', description: '', passed: true, informational: true, detail: '' },
+        { id: 'agent-llm:b', packId: 'food', kind: 'agent-trace-llm', description: '', passed: false, informational: true, detail: '' },
+      ]);
+      expect(tally).toEqual({ total: 1, passed: 1, byKind: { 'agent-trace': { total: 1, passed: 1 } } });
+    });
+  });
 });

@@ -41,6 +41,11 @@ export interface LookupResult {
   refused?: string;
 }
 
+/** How much of a refused lookup's raw arguments is kept: the trail is permanent, and a model's output is not bounded. */
+export const MAX_REFUSED_ARGS_CHARS = 500;
+
+const rawArgs = (args: unknown): string => (JSON.stringify(args ?? null) ?? String(args)).slice(0, MAX_REFUSED_ARGS_CHARS);
+
 const idsOf = (result: KnowledgeHit[] | Neighbourhood): string[] =>
   Array.isArray(result) ? result.map((h) => h.id) : [...(result.node ? [result.node.nodeId] : []), ...result.neighbours.map((n) => n.node.nodeId)];
 
@@ -54,10 +59,19 @@ export class Toolbox {
   async call(tool: ToolName, args: unknown): Promise<KnowledgeHit[] | Neighbourhood> {
     if (!mayUse(this.agent, tool)) throw new AppError(403, `The ${this.agent} agent may not use ${tool}`, 'AGENT_FORBIDDEN');
     const { db, starter, engagement } = this.ctx;
-    const result = tool === 'search_knowledge'
-      ? await searchKnowledge(db, starter, engagement.id, SearchArgs.parse(args))
-      : await nodeNeighbourhood(db, starter, NeighbourhoodArgs.parse(args));
-    await this.record({ tool, args, resultIds: idsOf(result) });
+    let parsed: unknown;
+    let result: KnowledgeHit[] | Neighbourhood;
+    if (tool === 'search_knowledge') {
+      const a = SearchArgs.parse(args);
+      parsed = a;
+      result = await searchKnowledge(db, starter, engagement.id, a);
+    } else {
+      const a = NeighbourhoodArgs.parse(args);
+      parsed = a;
+      result = await nodeNeighbourhood(db, starter, a);
+    }
+    // The arguments the tool ran with, as parsed: bounded by the tool's schema.
+    await this.record({ tool, args: parsed, resultIds: idsOf(result) });
     return result;
   }
 
@@ -69,8 +83,10 @@ export class Toolbox {
     const out: LookupResult[] = [];
     for (const r of requests.slice(0, max)) {
       if (!mayUse(this.agent, r.tool)) {
-        const refused = `${r.tool} is not on the ${this.agent} agent's allow-list`;
-        await this.record({ tool: r.tool, args: r.args, resultIds: [], refused });
+        // The tool's name came from the model too, so it is bounded like its arguments.
+        const name = r.tool.slice(0, 100);
+        const refused = `${name} is not on the ${this.agent} agent's allow-list`;
+        await this.record({ tool: name, args: rawArgs(r.args), resultIds: [], refused });
         out.push({ ...r, refused });
         continue;
       }
@@ -78,7 +94,7 @@ export class Toolbox {
       const parsed = (tool === 'search_knowledge' ? SearchArgs : NeighbourhoodArgs).safeParse(r.args);
       if (!parsed.success) {
         const refused = `the arguments for ${tool} were not valid`;
-        await this.record({ tool, args: r.args, resultIds: [], refused });
+        await this.record({ tool, args: rawArgs(r.args), resultIds: [], refused });
         out.push({ ...r, refused });
         continue;
       }

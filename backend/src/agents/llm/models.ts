@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MalformedOutputError, ModelStoppedError, type GenerateRequest, type GenerateResult, type LlmProvider } from '../../engine/llm/provider';
+import { MalformedOutputError, ModelStoppedError, ModelTimeoutError, type GenerateRequest, type GenerateResult, type LlmProvider } from '../../engine/llm/provider';
 import type { ModelMeter } from '../budget';
 import type { AgentLlmConfig, ModelRole } from '../config';
 import type { Spent } from '../types';
@@ -75,9 +75,11 @@ export class AgentModels {
         res = await provider.generate({ ...req, model: s.model, maxTokens: s.maxTokens, effort: s.effort, timeoutMs: this.cfg.timeoutMs, sdkRetries: 0 });
       } catch (err) {
         if (err instanceof MalformedOutputError || err instanceof z.ZodError) {
-          // The model answered, so the call was paid for: the estimate stands.
-          await this.meter.settle(estimate, estimate);
-          this.note(estimate, s.model);
+          // The model answered, so the call was paid for: settle at what it used, or keep the estimate when the
+          // provider could not say.
+          const actual = err instanceof MalformedOutputError && err.usage ? this.actualOf(err.usage, s.model, s.model) : estimate;
+          await this.meter.settle(estimate, actual);
+          this.note(actual, s.model);
           if (err instanceof MalformedOutputError) throw err;
           throw new MalformedOutputError((err as Error).message);
         }
@@ -89,9 +91,16 @@ export class AgentModels {
           this.note(actual, s.model);
           throw new ModelUnavailableError(`${s.model} stopped without an answer (${err.reason})`);
         }
-        // An API error or a timeout is not billed.
-        await this.meter.settle(estimate, {});
         last = err instanceof Error ? err.message : String(err);
+        if (err instanceof ModelTimeoutError) {
+          // Sent, then timed out or aborted: the server may still finish and bill it, so the estimate stays charged
+          // (an over-count at most, never an uncounted paid call). It is retried like any other model error.
+          await this.meter.settle(estimate, estimate);
+          this.note(estimate, s.model);
+          continue;
+        }
+        // An error the API returned, or a connection that never got through, is not billed.
+        await this.meter.settle(estimate, {});
         continue;
       }
       const actual = res.usage

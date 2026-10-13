@@ -2,7 +2,7 @@ import { sql } from 'kysely';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { agentPort } from '../src/agents/port';
 import { listSteps } from '../src/agents/run-repo';
-import { nodeNeighbourhood, searchKnowledge } from '../src/agents/tools/knowledge';
+import { nodeNeighbourhood, SearchArgs, searchKnowledge } from '../src/agents/tools/knowledge';
 import { mayUse, TOOL_ALLOW_LIST, Toolbox } from '../src/agents/tools/toolbox';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
@@ -93,6 +93,49 @@ describe('knowledge tools for agents', () => {
     const steps = await listSteps(svc.db.kysely, run.id);
     expect(steps.map((s) => (s.decision as { tool: string }).tool)).toEqual(['sign_gate', 'search_knowledge', 'search_knowledge']);
     expect(steps[0].decision).toMatchObject({ refused: expect.any(String), resultIds: [] });
+  });
+
+  it('records the parsed arguments of a call, and at most 500 characters of a refused lookup’s raw arguments [REQ-28]', async () => {
+    const { box, run, e } = await toolbox('qa');
+    await box.call('search_knowledge', { query: '  allergen  ' });
+    await box.lookups([
+      { tool: 'sign_gate', args: { gateId: 'G'.repeat(5000) } },
+      { tool: 'search_knowledge', args: { query: 'allergen', extra: 'x'.repeat(5000) } },
+    ]);
+    const steps = await listSteps(svc.db.kysely, run.id);
+    const args = steps.map((s) => (s.decision as { args: unknown }).args);
+    expect(args[0]).toEqual(SearchArgs.parse({ query: '  allergen  ' }));
+    expect(args[0]).toEqual({ query: 'allergen', limit: 5 });
+    for (const raw of args.slice(1)) {
+      expect(typeof raw).toBe('string');
+      expect((raw as string).length).toBe(500);
+    }
+    const trail = await readTrail(svc.db.kysely, e.id);
+    for (const s of steps.slice(1)) {
+      const inputs = trail.find((b) => b.id === s.trailBundleId)!.inputs as { args: unknown };
+      expect(inputs.args).toEqual((s.decision as { args: unknown }).args);
+    }
+  });
+
+  it('keeps the same 50 neighbours, in order, however many a concept has', async () => {
+    const db = (await newService()).db.kysely;
+    const row = (id: string, type: 'control' | 'clause') => ({
+      id, type, pack_id: 'p', pack_version: '0.1.0', concept_id: id.split('/').pop()!.toUpperCase(), title: id, description: null, body: '',
+      tags: '[]', attrs: '{}', generated: null, verified_by: null, verified_role: null, verified_at: null, status: 'active', stale_after: null,
+      source_path: `${id}.md`, source_sha256: 'a'.repeat(64), classification: 'internal',
+    } as const);
+    // 60 neighbours, written in descending id order so that table order is not the order asked for. The 30 highest ids
+    // are linked by a relation that sorts first, so a cut by id alone would keep the wrong 50.
+    const ids = Array.from({ length: 60 }, (_, i) => `p/clause/c${String(59 - i).padStart(3, '0')}`);
+    const relOf = (id: string) => (Number(id.slice(-3)) >= 30 ? 'applies_to' : 'cites');
+    await db.insertInto('kg_nodes').values([row('p/control/k0', 'control'), ...ids.map((id) => row(id, 'clause'))]).execute();
+    await db.insertInto('kg_edges').values(ids.map((to_id) => ({
+      from_id: 'p/control/k0', to_id, rel: relOf(to_id), origin: 'curated' as const, created_by: 'system:packs', approved_by: 'git:p@0.1.0', approved_at: new Date(),
+    }))).execute();
+    const ascending = [...ids].reverse();
+    const want = [...ascending.filter((id) => relOf(id) === 'applies_to'), ...ascending.filter((id) => relOf(id) === 'cites')].slice(0, 50);
+    const n = await nodeNeighbourhood(db, auditor, { conceptId: 'K0' });
+    expect(n.neighbours.map((x) => `${x.rel}:${x.node.nodeId}`)).toEqual(want.map((id) => `${relOf(id)}:${id}`));
   });
 
   it('records nothing once the worker has lost the run', async () => {

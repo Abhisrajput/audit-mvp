@@ -7,7 +7,7 @@ import { DEFAULT_PRICES, estimateCall, priceFor } from '../src/agents/llm/prices
 import { AppError } from '../src/errors';
 import { NO_SPEND, type Budget, type Spent } from '../src/agents/types';
 import { acceptsServerFallback } from '../src/engine/llm/anthropic';
-import { MalformedOutputError, ModelStoppedError, type GenerateRequest } from '../src/engine/llm/provider';
+import { MalformedOutputError, ModelStoppedError, ModelTimeoutError, type GenerateRequest } from '../src/engine/llm/provider';
 import { FakeProvider, TEST_LLM } from './helpers';
 
 const Out = z.object({ answer: z.string() });
@@ -104,6 +104,26 @@ describe('agent model calls [REQ-29]', () => {
     expect(fake.requests).toHaveLength(1);
     expect(written.at(-1)).toEqual(ESTIMATE);
     expect(models.take()).toMatchObject({ tokensIn: 3, tokensOut: 500 });
+  });
+
+  it('keeps a malformed answer charged at the usage the provider reports with it', async () => {
+    const { fake, models, written } = setup(() => { throw new MalformedOutputError('off schema', { inputTokens: 1000, outputTokens: 200 }); });
+    await expect(models.generate('policy', ASK)).rejects.toBeInstanceOf(MalformedOutputError);
+    expect(fake.requests).toHaveLength(1);
+    expect(written).toEqual([ESTIMATE, USED]);
+    expect(models.take()).toMatchObject({ tokensIn: 1000, tokensOut: 200, costUsd: 0.012 });
+  });
+
+  it('keeps a timed-out or aborted call charged at its estimate, since the server may bill it, and still retries it', async () => {
+    const { fake, models, written, waits } = setup(() => { throw new ModelTimeoutError('timed out'); });
+    await expect(models.generate('qa', ASK)).rejects.toBeInstanceOf(ModelUnavailableError);
+    expect(fake.requests).toHaveLength(4);
+    expect(waits).toEqual(RETRY_DELAYS_MS);
+    // Each attempt is reserved, then settled at its estimate: the total only ever grows.
+    const four = { steps: 0, tokensIn: 12, tokensOut: 2000, costUsd: 0.02012 };
+    expect(written.at(-1)).toEqual(four);
+    expect(written.some((s) => s.costUsd === 0)).toBe(false);
+    expect(models.take()).toMatchObject({ tokensIn: 12, tokensOut: 2000, costUsd: 0.02012 });
   });
 
   it('refuses a call the budget cannot cover before sending anything', async () => {

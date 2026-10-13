@@ -93,6 +93,9 @@ export async function nodeNeighbourhood(db: Kysely<DB>, user: User, args: z.infe
       .where((eb) => eb.or([eb('e.origin', '=', 'curated'), eb('e.approved_by', 'is not', null)]))
       .where('n.status', '=', 'active')
       .where('n.classification', 'in', allowed)
+      // Ordered before the cut, so a concept with more than 50 neighbours always keeps the same ones.
+      .orderBy('e.rel')
+      .orderBy('n.id')
       .limit(50)
       .execute();
     return rows.map((r) => ({ rel: r.rel, direction, node: toNode(r, today) }));

@@ -5,7 +5,7 @@ import { listGates } from '../agents/gate-repo';
 import { LLM_POLICY_VERSION } from '../agents/policy/llm';
 import { RULES_VERSION } from '../agents/policy/rules';
 import { createRun, getRun, listSteps } from '../agents/run-repo';
-import type { Action, Decision } from '../agents/types';
+import type { Action, Budget, Decision } from '../agents/types';
 import { AgentWorker } from '../agents/worker';
 import { DEV_USERS, ensureDevUsers } from '../auth/dev-users';
 import { createMemoryDb } from '../db/pglite';
@@ -73,8 +73,18 @@ export interface ScenarioOutcome {
 
 const MAX_ROUNDS = 30;
 
-/** Runs one scenario on its own in-process database. With `llm`, the model policy decides (informational runs only). */
-export async function runAgentScenario(registry: PackRegistry, scenario: AgentScenario, llm: LlmProvider | null = null): Promise<ScenarioOutcome> {
+/**
+ * The budget of an informational model-driven run (--agent-llm). The model drafts, reviews and decides throughout such
+ * a run, so a production budget ($25) per scenario would make every such eval costly. A run that runs out stops at
+ * needs_human (budget_exhausted), which is reported like any other outcome.
+ */
+export const INFORMATIONAL_LLM_BUDGET: Budget = { ...defaultAgentConfig().budget, maxCostUsd: 2, maxTokens: 200_000 };
+
+/**
+ * Runs one scenario on its own in-process database. With `llm`, the model policy decides (informational runs only).
+ * `budget` defaults to a production run's.
+ */
+export async function runAgentScenario(registry: PackRegistry, scenario: AgentScenario, llm: LlmProvider | null = null, budget?: Budget): Promise<ScenarioOutcome> {
   const db = await createMemoryDb();
   try {
     // Orchestration is under test here, not citation trust, which has its own tests: unverified packs are allowed.
@@ -84,7 +94,7 @@ export async function runAgentScenario(registry: PackRegistry, scenario: AgentSc
     const e = await svc.createEngagement(scenario.engagement, auditor);
     const cfg = defaultAgentConfig();
     const run = await createRun(db.kysely, {
-      engagementId: e.id, startedBy: auditor.id, policy: llm ? 'llm' : 'rules', policyVersion: llm ? LLM_POLICY_VERSION : RULES_VERSION, budget: cfg.budget,
+      engagementId: e.id, startedBy: auditor.id, policy: llm ? 'llm' : 'rules', policyVersion: llm ? LLM_POLICY_VERSION : RULES_VERSION, budget: budget ?? cfg.budget,
     });
     const worker = new AgentWorker(svc, cfg, { id: `eval-${scenario.id}` });
     const unattended = { unattended: 'test' } as const;
@@ -144,9 +154,16 @@ export interface TraceOptions {
   dir?: string;
   /** Only scenarios using one of these packs. */
   packIds?: string[];
-  /** Also run each scenario on the model policy and report where it differs from the rules (informational, spec §11). */
+  /**
+   * Also run each scenario with this model and report where its decisions differ from the rules (informational, spec
+   * §11). Paid: the command line passes it only with --agent-llm.
+   */
   llm?: LlmProvider | null;
+  /** How a scenario is run; tests replace it. */
+  runScenario?: ScenarioRunner;
 }
+
+export type ScenarioRunner = (registry: PackRegistry, scenario: AgentScenario, llm: LlmProvider | null, budget?: Budget) => Promise<ScenarioOutcome>;
 
 export async function runAgentTraces(registry: PackRegistry, o: TraceOptions = {}): Promise<EvalCaseResult[]> {
   const results: EvalCaseResult[] = [];
@@ -155,33 +172,39 @@ export async function runAgentTraces(registry: PackRegistry, o: TraceOptions = {
   if (!fs.existsSync(dir)) {
     return [{ id: 'agent:traces-missing', packId: 'agent', kind: 'agent-trace', description: 'Agent golden traces are present', passed: false, detail: `the traces directory does not exist: ${dir}` }];
   }
+  const run = o.runScenario ?? runAgentScenario;
   for (const { file, data } of loadTraceFiles(o.dir)) {
     const s = data.scenario;
     if (o.packIds && !s.engagement.packIds.some((p) => o.packIds!.includes(p))) continue;
     const base = { id: `agent:${s.id}`, packId: s.engagement.packIds[0], kind: 'agent-trace' as const, description: s.description };
+    let rules: TraceEntry[] | null = null;
     try {
-      const out = await runAgentScenario(registry, s);
+      const out = await run(registry, s, null);
       if (!out.reachedReportGate) {
         results.push({ ...base, passed: false, detail: out.detail });
-        continue;
-      }
-      if (o.update) {
+      } else if (o.update) {
         fs.writeFileSync(file, `${JSON.stringify({ scenario: s, trace: out.trace }, null, 2)}\n`);
         results.push({ ...base, passed: true, detail: `golden trace rewritten: ${out.trace.length} decisions` });
+        rules = out.trace;
       } else {
         const diff = traceDifference(data.trace, out.trace);
         results.push({ ...base, passed: diff === null, detail: diff ?? out.detail });
-      }
-      if (o.llm) {
-        const model = await runAgentScenario(registry, s, o.llm);
-        const diff = traceDifference(out.trace, model.trace);
-        results.push({
-          id: `agent-llm:${s.id}`, packId: base.packId, kind: 'agent-trace-llm', description: `${s.description} (model policy, informational)`, passed: true,
-          detail: `${model.detail}; ${diff ? `first difference from the rules: ${diff}` : 'the same decisions as the rules'}`,
-        });
+        rules = out.trace;
       }
     } catch (err) {
       results.push({ ...base, passed: false, detail: `error: ${err instanceof Error ? err.message : String(err)}` });
+    }
+    // The model-driven run is informational: it has its own case, kept out of the totals, and its own error handling,
+    // so nothing in it can fail the golden case above.
+    if (o.llm && rules) {
+      const info = { id: `agent-llm:${s.id}`, packId: base.packId, kind: 'agent-trace-llm' as const, description: `${s.description} (model-driven, informational)`, informational: true };
+      try {
+        const model = await run(registry, s, o.llm, INFORMATIONAL_LLM_BUDGET);
+        const diff = traceDifference(rules, model.trace);
+        results.push({ ...info, passed: model.reachedReportGate, detail: `${model.detail}; ${diff ? `first difference from the rules: ${diff}` : 'the same decisions as the rules'}` });
+      } catch (err) {
+        results.push({ ...info, passed: false, detail: `error: ${err instanceof Error ? err.message : String(err)}` });
+      }
     }
   }
   return results;

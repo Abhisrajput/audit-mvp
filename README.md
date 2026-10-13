@@ -231,6 +231,7 @@ tailored test steps, findings and the executive summary:
 export ANTHROPIC_API_KEY=...
 LLM_PROVIDER=anthropic npm run dev                  # model defaults to claude-opus-5-5; override with ANTHROPIC_MODEL
 npm run eval -- --provider anthropic                # qualify the model against the eval set before use
+npm run eval -- --provider anthropic --agent-llm    # also run each agent scenario on the model (informational, $2 budget each)
 ```
 
 The model only drafts. Every model output passes through the same QA gates as the

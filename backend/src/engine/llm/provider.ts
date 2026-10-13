@@ -39,8 +39,21 @@ export interface LlmProvider {
 
 export class ProviderError extends Error {}
 
-/** The model answered, but not in the required shape (agent spec §6.3: "malformed"). */
-export class MalformedOutputError extends ProviderError {}
+/**
+ * The model answered, but not in the required shape (agent spec §6.3: "malformed"). The call is billed, so the usage
+ * it reports travels with the error when the provider knows it.
+ */
+export class MalformedOutputError extends ProviderError {
+  constructor(message: string, readonly usage?: { inputTokens: number; outputTokens: number }) {
+    super(message);
+  }
+}
+
+/**
+ * The call ran out of time, or was aborted, after it was sent. The server may still finish it and bill it, so it is
+ * charged like a call that ran (agent spec §6.1), though it is retried like any other model error (§6.3).
+ */
+export class ModelTimeoutError extends ProviderError {}
 
 /**
  * The model ran but stopped without an answer: it declined, or ran out of output tokens. The call is billed, so the
