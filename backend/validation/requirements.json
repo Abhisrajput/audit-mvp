@@ -24,8 +24,9 @@
   { "id": "REQ-22", "risk": "High", "text": "Only human-verified, active, non-stale knowledge nodes are citable in released outputs; unverified sources block release unless explicitly allowed outside production, and stale sources are flagged.", "evalKinds": [] },
   { "id": "REQ-24", "risk": "Medium", "text": "`verify` detects trail, signature or stored-document tampering after restore.", "evalKinds": [] },
   { "id": "REQ-25", "risk": "Medium", "text": "Configuration is validated at start-up; insecure combinations are refused.", "evalKinds": [] },
-  { "id": "REQ-26", "risk": "High", "text": "The agent can only take actions the engagement graph allows from the current state; no model output can skip a gate.", "evalKinds": [] },
+  { "id": "REQ-26", "risk": "High", "text": "The agent can only take actions the engagement graph allows from the current state; no model output can skip a gate.", "evalKinds": ["agent-trace"] },
   { "id": "REQ-27", "risk": "High", "text": "Gates are closed only by a human Part 11 signature bound to the subject's content; the agent never signs, records test results or edits reviewed findings.", "evalKinds": [] },
   { "id": "REQ-28", "risk": "High", "text": "Every agent decision is typed, attributed to the agent on behalf of its starter, and recorded in the hash-chained trail.", "evalKinds": [] },
-  { "id": "REQ-29", "risk": "Medium", "text": "Runs stop at their budget, and the kill switch prevents new agent work.", "evalKinds": [] }
+  { "id": "REQ-29", "risk": "Medium", "text": "Runs stop at their budget, and the kill switch prevents new agent work.", "evalKinds": [] },
+  { "id": "REQ-30", "risk": "Medium", "text": "Every workpaper is reviewed by the QA agent before its gate opens, and the review is shown to the signer.", "evalKinds": [] }
 ]
