@@ -5,6 +5,9 @@
 -- Gates opened by the 2A executor already do: it required a matching QA report before opening one.
 ALTER TABLE gates ADD CONSTRAINT gates_qa_report_current CHECK (
   jsonb_typeof(qa_report) = 'object'
-  AND qa_report->>'subjectKey' = subject_key
-  AND qa_report->>'subjectHash' = subject_hash
+  AND (qa_report->>'subjectKey') IS NOT DISTINCT FROM subject_key
+  AND (qa_report->>'subjectHash') IS NOT DISTINCT FROM subject_hash
+  -- A missing key reads as NULL, and a CHECK passes on NULL, so both must be present.
+  AND qa_report->>'subjectKey' IS NOT NULL
+  AND qa_report->>'subjectHash' IS NOT NULL
 ) NOT VALID;

@@ -190,6 +190,9 @@ describe('QA before every gate [REQ-30]', () => {
     await expect(insertGate(svc.db.kysely, { ...gate, qaReport: null as never })).rejects.toThrow(/gates_qa_report_current/);
     await expect(insertGate(svc.db.kysely, { ...gate, qaReport: { subjectKey: 'scope', subjectHash: 'other', mode: 'review', reviewer: 't', score: 90, issues: [] } }))
       .rejects.toThrow(/gates_qa_report_current/);
+    for (const bad of [{}, { subjectKey: 'scope' }, null]) {
+      await expect(insertGate(svc.db.kysely, { ...gate, qaReport: bad as never })).rejects.toThrow(/gates_qa_report_current/);
+    }
   });
 
   it("shows the signer the gate's QA report when they start signing [REQ-30]", async () => {
@@ -211,5 +214,18 @@ describe('QA before every gate [REQ-30]', () => {
     const manager = await signIn(app, 'reviewer');
     const res = await manager.post(`/api/engagements/${e.id}/findings/${f.id}/sign-intents`, { action: 'review', comment: '' }).expect(201);
     expect(res.body.qa).toEqual(gate.qaReport);
+  });
+
+  it('shows no QA report when the finding changed after its gate opened [REQ-30]', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    const run = await createRun(svc.db.kysely, { engagementId: e.id, startedBy: 'auditor', policy: 'rules', policyVersion: 'rules-1', budget: BUDGET });
+    const key = findingKey(f.rowId);
+    const qaReport = { subjectKey: key, subjectHash: 'older-content', mode: 'review' as const, reviewer: 'test', score: 90, issues: [] };
+    await insertGate(svc.db.kysely, { engagementId: e.id, runId: run.id, kind: 'finding', subjectKey: key, subjectId: f.id, subjectHash: 'older-content', basisHash: 'b', qaReport });
+    const manager = await signIn(app, 'reviewer');
+    const res = await manager.post(`/api/engagements/${e.id}/findings/${f.id}/sign-intents`, { action: 'review', comment: '' }).expect(201);
+    expect(res.body.qa).toBeNull();
   });
 });
