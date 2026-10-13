@@ -23,7 +23,7 @@ function GateCard({ gate, agent, onSigned, showFindings }: { gate: Gate; agent: 
     const controller = new AbortController();
     setWaiting(controller);
     try {
-      await signGateWithReauth(gate.id, action, comment, popup, { signal: controller.signal });
+      await signGateWithReauth(gate.id, action, comment.trim(), popup, { signal: controller.signal });
       setComment('');
     } finally {
       setWaiting(null);

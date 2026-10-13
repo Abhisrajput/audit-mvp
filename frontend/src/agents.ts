@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { Action, AgentRun, AgentStep, Budget, Decision, DelegateRecord, Engagement, Gate, GateKind, QaReport, Role, RunStatus, TestPlan, User } from './types';
+import type { Action, AgentRun, AgentStep, Budget, Decision, DelegateRecord, Engagement, Finding, Gate, GateKind, QaReport, Role, RunStatus, TestPlan, User } from './types';
 
 // The agent run as the UI shows it (agent spec §7.2). Everything here is plain functions over the API's types, so it is
 // tested without a browser; the components only lay it out.
@@ -278,6 +278,29 @@ export const openFindingGate = (gates: Gate[], findingId: string): Gate | null =
 
 /** QA scored the subject below the threshold. The gate still opened because no issue was blocking, so the signer is told. */
 export const belowThreshold = (report: QaReport | null, threshold: number) => !!report && report.score < threshold;
+
+/** The backend's canonical JSON (engine/trail.ts): keys sorted, undefined dropped. Kept identical so hashes agree. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/** The finding's content hash as the server computes it (signing/content-hash.ts): what a gate on the finding was reviewed against. */
+export async function findingContentHash(f: Finding): Promise<string> {
+  const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs } = f;
+  const bytes = new TextEncoder().encode(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs }));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Whether the gate's QA review is of the finding as it stands. `currentHash` is null until it is computed; then nothing is shown. */
+export const reviewIsCurrent = (gate: Gate, currentHash: string | null): boolean => currentHash !== null && gate.subjectHash === currentHash;
 
 // ---------- Forms ----------
 

@@ -2,9 +2,9 @@ import { PlayArrow as PlayArrowIcon } from '@mui/icons-material';
 import {
   Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
 } from '@mui/material';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../../api';
-import { openFindingGate } from '../../agents';
+import { findingContentHash, openFindingGate, reviewIsCurrent } from '../../agents';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
 import { openSigningWindow, signWithReauth } from '../../signing';
@@ -80,6 +80,16 @@ function EditDialog({ finding, ctx, onClose }: { finding: Finding; ctx: CardCont
 
 function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardContext; gate: Gate | null; qaThreshold: number | null }) {
   const { user } = useSession();
+  // The review is shown only while it describes the finding on screen: a gate is superseded only when the worker next runs.
+  const [hash, setHash] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setHash(null);
+    findingContentHash(f).then((h) => live && setHash(h), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [f]);
   const [comment, setComment] = useState('');
   const [editing, setEditing] = useState(false);
   const [waiting, setWaiting] = useState<AbortController | null>(null);
@@ -123,7 +133,12 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
             Blocked by QA gate: {f.blockedReasons.join('; ')}
           </Alert>
         )}
-        {gate?.qaReport && (
+        {gate?.qaReport && hash !== null && !reviewIsCurrent(gate, hash) && (
+          <Alert severity="warning" sx={{ mt: 1.5 }}>
+            The finding has changed since the agent's QA review; a fresh review follows.
+          </Alert>
+        )}
+        {gate?.qaReport && reviewIsCurrent(gate, hash) && (
           <Alert severity="info" icon={false} sx={{ mt: 1.5 }}>
             <Typography variant="body2" sx={{ mb: 0.5 }}>
               The agent drafted this finding and opened a gate on it (attempt {gate.attempt}). Its QA review, for whoever signs:

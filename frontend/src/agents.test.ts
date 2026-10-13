@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   actionLabel, belowThreshold, budgetProblem, changedEngagement, currentRun, describeStep, explainStatus, fallbackOf, gateSigning, loadStepsSince,
-  openFindingGate, planDraft, planPatch, pollDelayMs, rowsAwaitingTests, sortGates, spendRows, STEP_PAGE, subjectLabel,
+  findingContentHash, openFindingGate, planDraft, planPatch, pollDelayMs, reviewIsCurrent, rowsAwaitingTests, sortGates, spendRows, STEP_PAGE, subjectLabel,
 } from './agents';
-import type { AgentRun, AgentStep, Decision, Engagement, Gate, QaReport, TestPlan, User } from './types';
+import type { AgentRun, AgentStep, Decision, Engagement, Finding, Gate, QaReport, TestPlan, User } from './types';
 
 const RUN: AgentRun = {
   id: 'AR-1', engagementId: 'ENG-1', goal: 'engagement', status: 'running', statusReason: '', policy: 'rules', policyVersion: 'rules-1',
@@ -180,5 +180,23 @@ describe('forms', () => {
       testPlans: { R2: { notTestedJustification: '   ' }, R3: { notTestedJustification: 'Control retired in March' } },
     } as unknown as Engagement;
     expect(rowsAwaitingTests(e)).toEqual(['R2']);
+  });
+});
+
+describe('finding review currency', () => {
+  const finding = {
+    id: 'F-1', rowId: 'R-1', controlId: 'C-1', title: 't', rating: 'High', condition: 'c', criteria: 'k', cause: 'x', effect: 'e', recommendation: 'r',
+    citations: [{ id: 'P1' }], evidenceRefs: ['E1'], status: 'draft', blockedReasons: [], signOffs: [], bundleId: 'B',
+  } as unknown as Finding;
+  it('hashes a finding exactly as the server does, ignoring status and sign-offs', async () => {
+    const { findingContentHash: server } = await import('../../backend/src/signing/content-hash');
+    expect(await findingContentHash(finding)).toBe(server(finding as never));
+    expect(await findingContentHash({ ...finding, status: 'approved' } as Finding)).toBe(await findingContentHash(finding));
+    expect(await findingContentHash({ ...finding, condition: 'changed' })).not.toBe(await findingContentHash(finding));
+  });
+  it('trusts a review only while its hash matches the finding', () => {
+    expect(reviewIsCurrent(gate({ subjectHash: 'h' }), 'h')).toBe(true);
+    expect(reviewIsCurrent(gate({ subjectHash: 'h' }), 'other')).toBe(false);
+    expect(reviewIsCurrent(gate({ subjectHash: 'h' }), null)).toBe(false);
   });
 });
