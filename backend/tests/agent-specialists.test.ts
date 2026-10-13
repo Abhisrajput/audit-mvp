@@ -6,7 +6,8 @@ import { RULES_VERSION } from '../src/agents/policy/rules';
 import { agentPort } from '../src/agents/port';
 import { createRun, getRun, leaseNext, listSteps } from '../src/agents/run-repo';
 import type { DelegateRecord } from '../src/agents/state';
-import type { Action, Budget } from '../src/agents/types';
+import { CHALLENGE_CRITERIA, RUBRICS, rubricKind } from '../src/agents/qa/rubric';
+import type { Action, Budget, QaReport } from '../src/agents/types';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
 import { asData, DATA_RULES } from '../src/engine/llm/prompt';
@@ -104,5 +105,66 @@ describe('specialists for an agent run', () => {
     expect(inside).toContain(statement);
     expect(req.user.replace(inside, '')).not.toContain(statement);
     expect(req.system).toContain(DATA_RULES);
+  });
+});
+
+describe('QA reviews in a run [REQ-30]', () => {
+  const answer = (score: number, ids: readonly { id: string }[]) => ({ criteria: ids.map((c) => ({ id: c.id, score, note: 'n' })), issues: [] });
+
+  it('reviews with the QA model and records the usage on the qa step', async () => {
+    const fake = new FakeProvider((req) => (req.system.startsWith('You review') ? { criteria: [], issues: [] } : { items: [] }));
+    const { db, run, apply } = await withRun(fake);
+    await apply(SCOPE);
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
+    const qa = (await listSteps(db, run.id)).at(-1)!;
+    expect(qa).toMatchObject({ kind: 'qa', model: 'fake-1', tokensIn: 1000, decision: { reviewer: 'qa-llm-1:fake-1', mode: 'review' } });
+  });
+
+  it('tells the signer a draft was made without the model [REQ-30]', async () => {
+    const fake = new FakeProvider(() => { throw new Error('overloaded'); });
+    const { db, run, apply } = await withRun(fake);
+    await apply(SCOPE);
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
+    const report = (await listSteps(db, run.id)).at(-1)!.decision as QaReport;
+    expect(report.issues.map((i) => i.criterion)).toEqual(expect.arrayContaining(['draft.without-model', 'qa.model-unavailable']));
+  });
+
+  it('records the requested mode on the qa step, so a challenge is not offered again [REQ-30]', async () => {
+    const fake = new FakeProvider((req) => (req.system.startsWith('Before you challenge') ? { lookups: [] } : answer(4, [...RUBRICS[rubricKind('scope')], ...CHALLENGE_CRITERIA])));
+    const { db, run, apply } = await withRun(fake);
+    await apply(SCOPE);
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'challenge' });
+    expect((await listSteps(db, run.id)).at(-1)!.decision).toMatchObject({ mode: 'challenge' });
+  });
+
+  it("caps a challenge at the review of the same content, even when the model scores it higher [REQ-30]", async () => {
+    const fake = new FakeProvider((req) => {
+      if (req.system.startsWith('Before you challenge')) return { lookups: [] };
+      return answer(req.system.startsWith('You review') ? 2 : 4, req.system.startsWith('You review') ? RUBRICS[rubricKind('scope')] : CHALLENGE_CRITERIA);
+    });
+    const { db, run, apply } = await withRun(fake);
+    await apply(SCOPE);
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'challenge' });
+    const [review, challenge] = (await listSteps(db, run.id)).filter((s) => s.kind === 'qa').map((s) => s.decision as QaReport);
+    expect(review.score).toBeGreaterThan(0);
+    expect(challenge.mode).toBe('challenge');
+    expect(challenge.score).toBeLessThanOrEqual(review.score);
+  });
+
+  it('does not cap a challenge by a review of other content [REQ-30]', async () => {
+    const fake = new FakeProvider((req) => {
+      if (req.system.startsWith('Before you challenge')) return { lookups: [] };
+      return req.system.startsWith('You review') ? { criteria: [], issues: [] } : answer(4, CHALLENGE_CRITERIA);
+    });
+    const { db, run, apply } = await withRun(fake);
+    // Reviewed while the scope is still empty, then redrafted: the review no longer describes the content.
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
+    await apply(SCOPE);
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'challenge' });
+    const [review, challenge] = (await listSteps(db, run.id)).filter((s) => s.kind === 'qa').map((s) => s.decision as QaReport);
+    expect(review.subjectHash).not.toBe(challenge.subjectHash);
+    expect(review.score).toBe(0);
+    expect(challenge.score).toBeGreaterThan(0);
   });
 });

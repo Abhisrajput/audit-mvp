@@ -1,6 +1,6 @@
 import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
-import { getGate, insertGate } from '../src/agents/gate-repo';
+import { getGate, insertGate, openGateForSubject } from '../src/agents/gate-repo';
 import { createRun, getRun, leaseNext, releaseRun, requestCancel } from '../src/agents/run-repo';
 import { findingKey, subjectInfo } from '../src/agents/subjects';
 import { listSignatures } from '../src/db/signature-repo';
@@ -18,7 +18,8 @@ async function waitingAtGate(svc: AuditService, engagementId: string, key: strin
   const run = await createRun(svc.db.kysely, { engagementId, startedBy, policy: 'rules', policyVersion: 'rules-1', budget: BUDGET });
   const s = subjectInfo(e, key)!;
   const gate = await insertGate(svc.db.kysely, {
-    engagementId, runId: run.id, kind: s.gateKind!, subjectKey: key, subjectId: s.subjectId, subjectHash: s.hash, basisHash: s.basis, qaReport: null,
+    engagementId, runId: run.id, kind: s.gateKind!, subjectKey: key, subjectId: s.subjectId, subjectHash: s.hash, basisHash: s.basis,
+    qaReport: { subjectKey: key, subjectHash: s.hash, mode: 'review', reviewer: 'test', score: 90, issues: [] },
   });
   await leaseNext(svc.db.kysely, 'w', 60_000);
   await releaseRun(svc.db.kysely, run.id, 'w', { status: 'waiting', reason: `awaiting ${s.gateKind} gate signature` });
@@ -176,5 +177,39 @@ describe('gate signing refusals', () => {
     await expect(svc.signGate(gate.id, 'approve', 'ok', reviewer, unattended)).rejects.toMatchObject({ status: 409, code: 'RUN_NOT_ACTIVE' });
     expect(await listSignatures(svc.db.kysely, id)).toEqual([]);
     expect((await getGate(svc.db.kysely, gate.id))!.state).toBe('open');
+  });
+});
+
+describe('QA before every gate [REQ-30]', () => {
+  it('refuses a gate whose QA report is missing or reviewed other content [REQ-30]', async () => {
+    const { svc } = await appWithDevUsers();
+    const e = await svc.engagement(await scoped(svc));
+    const run = await createRun(svc.db.kysely, { engagementId: e.id, startedBy: 'auditor', policy: 'rules', policyVersion: 'rules-1', budget: BUDGET });
+    const s = subjectInfo(e, 'scope')!;
+    const gate = { engagementId: e.id, runId: run.id, kind: 'scope' as const, subjectKey: 'scope', subjectId: 'scope', subjectHash: s.hash, basisHash: s.basis };
+    await expect(insertGate(svc.db.kysely, { ...gate, qaReport: null as never })).rejects.toThrow(/gates_qa_report_current/);
+    await expect(insertGate(svc.db.kysely, { ...gate, qaReport: { subjectKey: 'scope', subjectHash: 'other', mode: 'review', reviewer: 't', score: 90, issues: [] } }))
+      .rejects.toThrow(/gates_qa_report_current/);
+  });
+
+  it("shows the signer the gate's QA report when they start signing [REQ-30]", async () => {
+    const { app, svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { gate } = await waitingAtGate(svc, id, 'scope');
+    const manager = await signIn(app, 'reviewer');
+    const res = await manager.post(`/api/gates/${gate.id}/sign-intents`, { action: 'approve' }).expect(201);
+    expect(res.body.qa).toEqual(gate.qaReport);
+    expect((await manager.get(`/api/engagements/${id}/gates`).expect(200)).body[0].qaReport).toEqual(gate.qaReport);
+  });
+
+  it("shows the reviewer of an agent-drafted finding its gate's QA report [REQ-30]", async () => {
+    const { app, svc } = await appWithDevUsers();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    const { gate } = await waitingAtGate(svc, e.id, findingKey(f.rowId));
+    expect((await openGateForSubject(svc.db.kysely, e.id, f.id))!.id).toBe(gate.id);
+    const manager = await signIn(app, 'reviewer');
+    const res = await manager.post(`/api/engagements/${e.id}/findings/${f.id}/sign-intents`, { action: 'review', comment: '' }).expect(201);
+    expect(res.body.qa).toEqual(gate.qaReport);
   });
 });

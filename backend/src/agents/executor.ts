@@ -8,12 +8,14 @@ import type { AgentModels } from './llm/models';
 import { insertGate, type Gate } from './gate-repo';
 import { latestGateId, redraftBasis } from './graph';
 import type { AgentPort } from './port';
-import { reviewSubject } from './qa/deterministic';
-import { appendStep, assertLease, type AgentRun } from './run-repo';
+import { reviewWithAgent } from './qa/agent';
+import type { QaChecks } from './qa/deterministic';
+import { appendStep, assertLease, listSteps, type AgentRun, type AgentStep } from './run-repo';
 import { draftTestPlans } from './specialists/test-plan';
 import type { DelegateRecord } from './state';
-import { rowBasis, subjectInfo } from './subjects';
-import type { Decision, Menu } from './types';
+import { rowBasis, rowOfKey, subjectInfo } from './subjects';
+import { Toolbox } from './tools/toolbox';
+import type { Decision, Menu, QaReport } from './types';
 
 // Carries out one decision (spec §5.1, step 5). Specialists go through the AgentPort; QA reviews and gates are
 // written here, each step together with its trail entry.
@@ -29,6 +31,8 @@ export interface ExecutorContext {
   menu: Menu;
   /** This iteration's model access, charged to the run. Absent in offline tests: everything then runs on rules. */
   models?: AgentModels;
+  /** The citation gate and trust rules for QA (engine/qa.ts, REQ-22). The worker always passes them. */
+  checks?: QaChecks;
 }
 
 export type Outcome =
@@ -36,6 +40,21 @@ export type Outcome =
   | { next: 'waiting'; reason: string }
   | { next: 'needs_human'; reason: string }
   | { next: 'completed' };
+
+/** When the subject's latest draft was made without the model (it was down), QA says so to the signer (spec §6.3). */
+function flagDraftWithoutModel(report: QaReport, steps: AgentStep[]): QaReport {
+  const rowId = rowOfKey(report.subjectKey);
+  const last = [...steps].reverse().find((s) => {
+    if (s.kind !== 'delegate') return false;
+    const d = s.decision as DelegateRecord;
+    return d.action.subjectKey === report.subjectKey || (!!rowId && !!d.rowBases && rowId in d.rowBases);
+  });
+  if (!(last?.decision as DelegateRecord | undefined)?.withoutModel) return report;
+  return {
+    ...report,
+    issues: [...report.issues, { criterion: 'draft.without-model', severity: 'advisory', detail: 'Drafted without model: the model was unavailable, so the specialist used its offline rules' }],
+  };
+}
 
 export async function applyDecision(ctx: ExecutorContext, decision: Decision): Promise<Outcome> {
   const { db, port, run, starter, engagement: e } = ctx;
@@ -75,11 +94,25 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       return { next: 'continue' };
     }
     case 'request_qa': {
-      const report = reviewSubject(e, a.subjectKey);
+      const steps = await listSteps(db, run.id);
+      // A challenge builds on the latest report of this same subject AND this same content, so its cap and carried issues apply.
+      const hash = subjectInfo(e, a.subjectKey)?.hash;
+      const previous = a.mode === 'challenge'
+        ? [...steps].reverse().filter((st) => st.kind === 'qa').map((st) => st.decision as QaReport)
+            .find((q) => q.subjectKey === a.subjectKey && q.subjectHash === hash) ?? null
+        : null;
+      // The model calls happen here, outside any transaction.
+      const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'qa') : undefined;
+      const reviewed = await reviewWithAgent(e, a.subjectKey, a.mode, { models: ctx.models, toolbox, checks: ctx.checks, previous });
+      const report = flagDraftWithoutModel(reviewed, steps);
+      const used = ctx.models?.take();
       await db.transaction().execute(async (trx) => {
         await assertLease(trx, run.id, run.leaseOwner!);
         const sealed = await appendTrail(trx, event('agent:qa', 'qa', { subjectKey: a.subjectKey, mode: a.mode }, report));
-        await appendStep(trx, run.id, { kind: 'qa', agent: 'qa', decision: report, model: report.reviewer, trailBundleId: sealed.id });
+        await appendStep(trx, run.id, {
+          kind: 'qa', agent: 'qa', decision: report, model: used?.model ?? report.reviewer,
+          tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0, trailBundleId: sealed.id,
+        });
       });
       return { next: 'continue' };
     }

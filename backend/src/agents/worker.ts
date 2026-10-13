@@ -178,7 +178,10 @@ export class AgentWorker {
           tokensIn: used.tokensIn, tokensOut: used.tokensOut, costUsd: used.costUsd, trailBundleId: sealed.id,
         });
       });
-      const outcome = await applyDecision({ db, port: this.port, run, starter, engagement: e, gates, menu, models }, decision);
+      const outcome = await applyDecision({
+        db, port: this.port, run, starter, engagement: e, gates, menu, models,
+        checks: { registry: this.svc.registry, policy: this.svc.citationPolicy },
+      }, decision);
       return { ...statusOf(outcome), spent: addSpend(meter.spent, { steps: 1 }), failureStreak: 0, conflictStreak: 0 };
     } catch (err) {
       return this.failed(run, err, meter.spent);

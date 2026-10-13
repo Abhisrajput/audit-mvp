@@ -20,7 +20,8 @@ async function engagementWithRun() {
 }
 
 const newGate = (engagementId: string, runId: string) => ({
-  engagementId, runId, kind: 'scope' as const, subjectKey: 'scope', subjectId: 'scope', subjectHash: 'h', basisHash: 'b', qaReport: null,
+  engagementId, runId, kind: 'scope' as const, subjectKey: 'scope', subjectId: 'scope', subjectHash: 'h', basisHash: 'b',
+  qaReport: { subjectKey: 'scope', subjectHash: 'h', mode: 'review' as const, reviewer: 'test', score: 90, issues: [] },
 });
 
 describe('agent runs', () => {
@@ -170,7 +171,8 @@ describe('agent run fixes', () => {
 
   it('closes a finding gate only for the content it showed, and ignores one already superseded', async () => {
     const { db, e, run } = await engagementWithRun();
-    const fg = { ...newGate(e.id, run.id), kind: 'finding' as const, subjectKey: 'finding:F1', subjectId: 'F1', subjectHash: 'h1' };
+    const fg = { ...newGate(e.id, run.id), kind: 'finding' as const, subjectKey: 'finding:F1', subjectId: 'F1', subjectHash: 'h1',
+      qaReport: { subjectKey: 'finding:F1', subjectHash: 'h1', mode: 'review' as const, reviewer: 'test', score: 90, issues: [] } };
     await insertGate(db, fg);
     await closeFindingGate(db, e.id, 'F1', 'other', 'approved', 'SIG-1', '');
     expect((await listGates(db, e.id))[0].state).toBe('superseded');

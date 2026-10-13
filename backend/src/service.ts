@@ -530,12 +530,15 @@ export class AuditService {
     return { workpaper, contentHash };
   }
 
-  /** Checks a gate could be signed by this person now, before they are asked to re-authenticate; returns the content to bind. */
-  async checkGateSignOff(gateId: string, actor: User): Promise<{ engagementId: string; workpaper: SignableWorkpaper; contentHash: string }> {
+  /**
+   * Checks a gate could be signed by this person now, before they are asked to re-authenticate. Returns the content to
+   * bind, and the gate's QA report for the signer to read (agent spec REQ-30).
+   */
+  async checkGateSignOff(gateId: string, actor: User): Promise<{ engagementId: string; workpaper: SignableWorkpaper; contentHash: string; qaReport: Gate['qaReport'] }> {
     const gate = await getGate(this.db.kysely, gateId);
     if (!gate) throw new AppError(404, `Gate ${gateId} not found`);
     const e = await this.engagement(gate.engagementId);
-    return { engagementId: e.id, ...(await this.gateGuard(this.db.kysely, gate, e, actor)) };
+    return { engagementId: e.id, ...(await this.gateGuard(this.db.kysely, gate, e, actor)), qaReport: gate.qaReport };
   }
 
   /**
