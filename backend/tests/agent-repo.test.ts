@@ -123,9 +123,9 @@ describe('agent run fixes', () => {
     const { db, run } = await engagementWithRun();
     await leaseNext(db, 'w1', 60_000);
     await expect(assertLease(db, run.id, 'w1')).resolves.toBeUndefined();
-    await expect(assertLease(db, run.id, 'w2')).rejects.toMatchObject({ status: 409 });
+    await expect(assertLease(db, run.id, 'w2')).rejects.toMatchObject({ status: 409, code: 'LEASE_LOST' });
     await releaseRun(db, run.id, 'w1', { status: 'waiting', reason: 'x' });
-    await expect(assertLease(db, run.id, 'w1')).rejects.toMatchObject({ status: 409 });
+    await expect(assertLease(db, run.id, 'w1')).rejects.toMatchObject({ status: 409, code: 'LEASE_LOST' });
   });
 
   it('cancel and pause a running run whose lease has expired', async () => {

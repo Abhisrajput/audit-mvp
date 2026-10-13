@@ -150,7 +150,7 @@ export async function releaseRun(db: Executor, id: string, owner: string, u: Run
  */
 export async function assertLease(db: Executor, runId: string, owner: string): Promise<void> {
   const row = await db.selectFrom('agent_runs').select('id').where('id', '=', runId).where('lease_owner', '=', owner).where('status', '=', 'running').forUpdate().executeTakeFirst();
-  if (!row) throw new AppError(409, `Agent run ${runId} is no longer held by this worker`);
+  if (!row) throw new AppError(409, `Agent run ${runId} is no longer held by this worker`, 'LEASE_LOST');
 }
 
 async function lockedLiveRun(db: Executor, id: string): Promise<AgentRun> {

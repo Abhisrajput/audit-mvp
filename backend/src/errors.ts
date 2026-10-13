@@ -26,6 +26,7 @@ export type ErrorCode =
   | 'AGENT_DISABLED'
   | 'GATE_STALE'
   | 'AGENT_FORBIDDEN'
+  | 'LEASE_LOST'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

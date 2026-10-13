@@ -9,6 +9,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "worker": "tsx src/agents/worker-cli.ts",
     "seed": "tsx src/seed.ts",
     "migrate": "tsx src/db/cli.ts migrate",
     "import-json": "tsx src/db/cli.ts import-json",
