@@ -11,6 +11,7 @@ import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { addSpend, budgetProblem, ModelMeter } from './budget';
 import type { AgentConfig } from './config';
+import { AgentModels } from './llm/models';
 import { applyDecision, type Outcome } from './executor';
 import { listGates, supersedeOpenGates } from './gate-repo';
 import { allowedActions } from './graph';
@@ -44,12 +45,15 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export interface WorkerOptions {
   id?: string;
   policy?: Policy;
+  /** Waits between retries of a failing model call (tests pass one that does not wait). */
+  wait?: (ms: number) => Promise<void>;
 }
 
 export class AgentWorker {
   readonly id: string;
   private readonly policy: Policy;
   private readonly port: AgentPort;
+  private readonly wait?: (ms: number) => Promise<void>;
   private stopping = false;
   private loops: Promise<void>[] = [];
 
@@ -57,6 +61,7 @@ export class AgentWorker {
     this.id = opts.id ?? `${os.hostname()}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
     this.policy = opts.policy ?? new RulesPolicy();
     this.port = agentPort(svc);
+    this.wait = opts.wait;
   }
 
   /** Leases one due run and takes one step of it. 'idle' when switched off or nothing is due. */
@@ -111,6 +116,7 @@ export class AgentWorker {
     const db = this.svc.db.kysely;
     // Every model call this iteration makes is charged through the meter and written to the run as it happens.
     const meter = new ModelMeter(run.budget, run.spent, (spent) => db.transaction().execute((trx) => recordSpend(trx, run.id, this.id, spent)));
+    const models = new AgentModels(this.svc.llm, this.cfg.llm, meter, this.wait ? { wait: this.wait } : {});
     try {
       // Lock order is engagement, then run, then gate, everywhere; a worker whose lease has lapsed writes nothing.
       if (run.cancelRequested) {
@@ -159,7 +165,7 @@ export class AgentWorker {
         }));
         await appendStep(trx, run.id, { kind: 'decision', agent: 'supervisor', decision, model: decision.policyVersion, trailBundleId: sealed.id });
       });
-      const outcome = await applyDecision({ db, port: this.port, run, starter, engagement: e, gates, menu }, decision);
+      const outcome = await applyDecision({ db, port: this.port, run, starter, engagement: e, gates, menu, models }, decision);
       return { ...statusOf(outcome), spent: addSpend(meter.spent, { steps: 1 }), failureStreak: 0, conflictStreak: 0 };
     } catch (err) {
       return this.failed(run, err, meter.spent);

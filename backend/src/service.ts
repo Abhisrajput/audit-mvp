@@ -78,6 +78,13 @@ export interface AgentActing {
 export interface AgentWriteOptions {
   expectedVersion: number;
   rows?: string[];
+  /** A reviewer's or signer's feedback for a redraft. The module's model prompt carries it as data. */
+  instruction?: string;
+  /**
+   * The run's metered model for this module (AgentModels.forModules()). Without one the module runs on its offline
+   * rules: an agent's module run never falls back to the service's own provider, so no agent call escapes the budget.
+   */
+  llm?: LlmProvider | null;
 }
 
 export type TestPlanPatch = Partial<Pick<TestPlan, 'attribute' | 'population' | 'sampleSize' | 'selectionMethod' | 'evidenceToRequest' | 'procedure' | 'notTestedJustification'>>;
@@ -237,9 +244,9 @@ export class AuditService {
   }
 
   /** Runs one module on `view` and builds its trail bundle. Work done for an agent run is recorded as the agent's. */
-  private async executeModule(mod: AuditModule<unknown>, view: Engagement, actor: User, input: Record<string, unknown>, acting?: AgentActing) {
+  private async executeModule(mod: AuditModule<unknown>, view: Engagement, actor: User, input: Record<string, unknown>, acting?: AgentActing, llm: LlmProvider | null = this.llm) {
     const startedAt = new Date().toISOString();
-    const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
+    const ctx = new ModuleContext(view, this.registry, this.grounding, llm, actor, input, this.citationPolicy);
     ctx.step('start', `${mod.name} v${mod.version} on ${view.id}`);
     const output = await mod.run(ctx);
     ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
@@ -250,7 +257,7 @@ export class AuditService {
       moduleVersion: mod.version,
       engineVersion: ENGINE_VERSION,
       packVersions: this.registry.versions(view.packIds),
-      provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
+      provider: llm ? { id: llm.id, model: ctx.servedModel ?? llm.model } : { ...OFFLINE },
       promptHash: ctx.promptHash,
       actor: acting ? `agent:${acting.agent}` : actor.id,
       startedAt,
@@ -283,8 +290,8 @@ export class AuditService {
     const view = mod.id === 'report'
       ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
       : snapshot;
-    const input = opts.rows ? { rows: opts.rows } : {};
-    const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting);
+    const input = { ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
+    const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting, opts.llm ?? null);
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
       // Lock order is engagement (taken by mutate), then run: a worker that lost the run, or a cancelled run, saves nothing.
       await assertLease(trx, acting.runId, acting.leaseOwner);

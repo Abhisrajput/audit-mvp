@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { trustProblems } from '../trust';
 import type { AuditReport, Engagement, Finding, SignOff, TestConclusion } from '../types';
+import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 const ORDER = { High: 0, Medium: 1, Low: 2 } as const;
@@ -77,7 +78,7 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'>> = {
       ctx,
       SYSTEM_PREAMBLE,
       `Write a 3-5 sentence executive summary for the audit committee. Use only these facts.\n` +
-        JSON.stringify({ engagement: { name: e.name, entity: e.entity, site: e.site, period: `${e.periodFrom} to ${e.periodTo}`, scope: e.scopeStatement }, controlsInScope: e.rcm.length, findings: approved.map((f) => ({ title: f.title, rating: f.rating, effect: f.effect })) }),
+        asData('workpaper:approved-findings', { engagement: { name: e.name, entity: e.entity, site: e.site, period: `${e.periodFrom} to ${e.periodTo}`, scope: e.scopeStatement }, controlsInScope: e.rcm.length, findings: approved.map((f) => ({ title: f.title, rating: f.rating, effect: f.effect })) }),
       ModelSummary,
     );
     if (drafted?.executiveSummary) summary = `${drafted.executiveSummary}\n\n_(Executive summary drafted by AI from approved findings; reviewed at report sign-off.)_`;

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { findingCitationGate, toCitation } from '../qa';
 import type { Citation, Finding, RcmRow, RiskRating, TestInput, TestResult } from '../types';
+import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 function rate(row: RcmRow, result: TestResult): RiskRating {
@@ -89,7 +90,8 @@ export const gapsModule: AuditModule<Finding[]> = {
       SYSTEM_PREAMBLE,
       `Draft one audit finding per failed control. Use the 5 C's. "criteria" must quote the clause reference (e.g. "§211.192") for every clause you cite.\n` +
         `Do not state a root cause as fact unless the record supports it; otherwise say it is to be confirmed.\n\n` +
-        JSON.stringify(
+        asData(
+          'workpaper:failed-controls',
           todo.map((r) => ({
             rowId: r.id,
             control: r.control,

@@ -4,6 +4,7 @@ import { loadEngagement } from '../db/engagement-repo';
 import { appendTrail } from '../db/trail-repo';
 import type { Engagement, User } from '../engine/types';
 import { AppError } from '../errors';
+import type { AgentModels } from './llm/models';
 import { insertGate, type Gate } from './gate-repo';
 import { latestGateId, redraftBasis } from './graph';
 import type { AgentPort } from './port';
@@ -26,6 +27,8 @@ export interface ExecutorContext {
   engagement: Engagement;
   gates: Gate[];
   menu: Menu;
+  /** This iteration's model access, charged to the run. Absent in offline tests: everything then runs on rules. */
+  models?: AgentModels;
 }
 
 export type Outcome =
@@ -49,15 +52,23 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       // Refuse before drafting anything if this worker has already lost the run.
       await db.transaction().execute((trx) => assertLease(trx, run.id, run.leaseOwner!));
       const started = Date.now();
+      // The specialist's model calls are the run's, charged through its meter; without models it runs on its rules.
+      const llm = ctx.models?.forModules() ?? null;
+      const instruction = a.type === 'rework' ? a.instruction : undefined;
       const { bundle } = a.specialist === 'test-plan'
         ? await port.saveTestPlans(e.id, draftTestPlans(e), acting, { expectedVersion: e.version! })
-        : await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows });
+        : await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows, instruction, llm });
+      const used = ctx.models?.take();
+      const withoutModel = !!llm && bundle.qaActions.some((q) => q.gate === 'model-availability');
       const rowBases = a.subjectKey === 'gaps' && a.rows ? Object.fromEntries(a.rows.map((id) => [id, rowBasis(e, id)])) : undefined;
-      const record: DelegateRecord = { action: a, basis, sinceGateId, bundleId: bundle.id, ...(rowBases ? { rowBases } : {}) };
+      const record: DelegateRecord = {
+        action: a, basis, sinceGateId, bundleId: bundle.id, ...(rowBases ? { rowBases } : {}), ...(withoutModel ? { withoutModel: true as const } : {}),
+      };
       await db.transaction().execute(async (trx) => {
         await assertLease(trx, run.id, run.leaseOwner!);
         await appendStep(trx, run.id, {
-          kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: bundle.provider.model,
+          kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: used?.model ?? bundle.provider.model,
+          tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0,
           durationMs: Date.now() - started, trailBundleId: bundle.id,
         });
       });

@@ -60,7 +60,7 @@ describe('the agent path into the service', () => {
     const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
     const { acting } = await leasedRun(svc, e.id);
     model.engagementId = e.id;
-    await expect(svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version! })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    await expect(svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version!, llm: model })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
     expect((await svc.engagement(e.id)).scope).toEqual([]);
     expect((await readTrail(svc.db.kysely, e.id)).map((b) => b.moduleId)).toEqual(['human:create-engagement', 'human:scope-decision']);
   });

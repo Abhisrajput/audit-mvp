@@ -6,7 +6,7 @@ import { NO_SPEND, type Budget } from '../src/agents/types';
 import { registryFromBundles } from '../src/knowledge/packs';
 import { defaultAgentConfig } from '../src/agents/config';
 import { RULES_VERSION } from '../src/agents/policy/rules';
-import { createRun, leaseNext } from '../src/agents/run-repo';
+import { createRun, leaseNext, recordSpend, type AgentRun } from '../src/agents/run-repo';
 import { DEV_USERS, ensureDevUsers } from '../src/auth/dev-users';
 import { AuditService, type AgentActing } from '../src/service';
 import { testDb } from './db';
@@ -95,4 +95,11 @@ export async function engagementWithFailedControl(svc: AuditService, controlId =
   await svc.runModule(e.id, 'testing', auditor);
   await svc.runModule(e.id, 'gaps', auditor);
   return svc.engagement(e.id);
+}
+
+/** Model access for a leased run, the way the worker builds it: every charge is written to the run while its lease holds. */
+export function runModels(svc: AuditService, run: AgentRun, provider: LlmProvider | null) {
+  const db = svc.db.kysely;
+  const meter = new ModelMeter(run.budget, run.spent, (s) => db.transaction().execute((trx) => recordSpend(trx, run.id, run.leaseOwner!, s)));
+  return new AgentModels(provider, TEST_LLM, meter, { wait: noWait });
 }
