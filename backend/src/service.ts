@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
+import { wakeWaitingRuns } from './agents/run-repo';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
 import type { DB } from './db/schema';
@@ -38,6 +39,19 @@ export interface NewEngagement {
   auditType: string;
   scopeStatement: string;
   packIds: string[];
+}
+
+/** One agent action for the trail. */
+export interface AgentEvent {
+  moduleId: string;
+  /** Who acted, e.g. 'supervisor', 'qa', 'test-plan'; recorded as actor `agent:<agent>`. */
+  agent: string;
+  runId: string;
+  /** The person who started the run. */
+  onBehalfOf: string;
+  inputs: Record<string, unknown>;
+  output: unknown;
+  provider?: { id: string; model: string };
 }
 
 /** Optional optimistic-concurrency check: the engagement version the caller last saw. */
@@ -133,6 +147,8 @@ export class AuditService {
       const pending: UnsealedBundle[] = [];
       const result = await fn(loaded.engagement, (b) => pending.push(b), trx);
       await saveEngagement(trx, loaded);
+      // Any change wakes the engagement's waiting agent run, in this same transaction (spec §6.2).
+      await wakeWaitingRuns(trx, engagementId);
       const sealed: TrailBundle[] = [];
       for (const b of pending) sealed.push(await appendTrail(trx, b));
       return { result, sealed };
@@ -382,7 +398,8 @@ export class AuditService {
   }
   // ---------- Trail ----------
 
-  private humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
+  /** A trail bundle for a person's action on the engagement. */
+  humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
     const now = new Date().toISOString();
     return {
       id: `HUM-${crypto.randomBytes(4).toString('hex')}`,
@@ -401,6 +418,29 @@ export class AuditService {
       executionLog: [{ at: now, step: moduleId, detail: `${actor.name} (${actor.role})` }],
       qaActions,
       output,
+    };
+  }
+
+  /** A trail bundle for an agent's action (agent spec §3.3): the agent is the actor, on behalf of whoever started the run. */
+  agentBundle(e: Engagement, a: AgentEvent): UnsealedBundle {
+    const now = new Date().toISOString();
+    return {
+      id: `AGT-${crypto.randomBytes(4).toString('hex')}`,
+      engagementId: e.id,
+      moduleId: a.moduleId,
+      moduleVersion: ENGINE_VERSION,
+      engineVersion: ENGINE_VERSION,
+      packVersions: this.registry.versions(e.packIds),
+      provider: a.provider ?? { id: 'agent', model: a.agent },
+      promptHash: null,
+      actor: `agent:${a.agent}`,
+      startedAt: now,
+      finishedAt: now,
+      inputs: { ...a.inputs, runId: a.runId, onBehalfOf: a.onBehalfOf },
+      retrievalSet: [],
+      executionLog: [{ at: now, step: a.moduleId, detail: `${a.agent} for run ${a.runId}` }],
+      qaActions: [],
+      output: a.output,
     };
   }
 

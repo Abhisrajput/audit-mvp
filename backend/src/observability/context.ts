@@ -35,3 +35,8 @@ export function requestContext(opts: { trustProxy: number }): RequestHandler {
     storage.run({ requestId }, () => next());
   };
 }
+
+/** Runs work outside an HTTP request (the agent worker) under a request id, so its logs and trail bundles carry it. */
+export function runWithRequestId<T>(requestId: string, fn: () => Promise<T>): Promise<T> {
+  return storage.run({ requestId }, fn);
+}
