@@ -3,6 +3,7 @@ import { loadEngagement } from '../db/engagement-repo';
 import { appendTrail, type Executor } from '../db/trail-repo';
 import type { User } from '../engine/types';
 import { AppError } from '../errors';
+import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { lowerBudget } from './budget';
 import type { AgentConfig } from './config';
@@ -42,7 +43,12 @@ export async function startRun(svc: AuditService, cfg: AgentConfig, engagementId
     await appendTrail(trx, svc.humanBundle(e, 'human:agent-run-start', actor, { budget }, { runId: created.id }));
     return created;
   });
-  return { run, warnings: await starterWarnings(svc, actor) };
+  // The run exists by now: failing to count who else can sign must not turn its creation into an error.
+  const warnings = await starterWarnings(svc, actor).catch((err) => {
+    logger.warn({ err, runId: run.id }, "could not count who else can sign this run's gates");
+    return [] as string[];
+  });
+  return { run, warnings };
 }
 
 async function change(svc: AuditService, runId: string, actor: User, moduleId: string, fn: (db: Executor) => Promise<AgentRun>): Promise<AgentRun> {
