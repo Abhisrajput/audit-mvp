@@ -6,6 +6,7 @@ import { RULES_VERSION } from '../src/agents/policy/rules';
 import { agentPort } from '../src/agents/port';
 import { createRun, getRun, leaseNext, listSteps } from '../src/agents/run-repo';
 import type { DelegateRecord } from '../src/agents/state';
+import { PLAN_SYSTEM } from '../src/agents/specialists/test-plan';
 import { CHALLENGE_CRITERIA, RUBRICS, rubricKind } from '../src/agents/qa/rubric';
 import type { Action, Budget, QaReport } from '../src/agents/types';
 import { ensureDevUsers } from '../src/auth/dev-users';
@@ -166,5 +167,24 @@ describe('QA reviews in a run [REQ-30]', () => {
     expect(review.subjectHash).not.toBe(challenge.subjectHash);
     expect(review.score).toBe(0);
     expect(challenge.score).toBeGreaterThan(0);
+  });
+});
+
+describe('test plans in a run', () => {
+  it('drafts with the test-plan model and looks up each row in the knowledge base, recording every lookup [REQ-28]', async () => {
+    const fake = new FakeProvider((req) => {
+      if (req.system === PLAN_SYSTEM) return { plans: [] };
+      throw new Error('only the test-plan drafter is scripted here');
+    });
+    const { svc, e, db, run, apply } = await withRun(fake);
+    await svc.runModule(e.id, 'scope', auditor);
+    await svc.runModule(e.id, 'rcm', auditor);
+    await apply({ type: 'delegate', specialist: 'test-plan', subjectKey: 'test_plans' });
+    const after = await svc.engagement(e.id);
+    expect(Object.keys(after.testPlans).sort()).toEqual(after.rcm.map((r) => r.id).sort());
+    const steps = await listSteps(db, run.id);
+    expect(steps.filter((s) => s.kind === 'tool_call' && s.agent === 'test-plan')).toHaveLength(after.rcm.length);
+    expect(steps.at(-1)).toMatchObject({ kind: 'delegate', agent: 'specialist:test-plan', tokensIn: 1000, model: 'fake-1' });
+    expect((steps.at(-1)!.decision as DelegateRecord).withoutModel).toBeUndefined();
   });
 });

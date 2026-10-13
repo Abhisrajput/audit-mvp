@@ -2,7 +2,7 @@ import type { Kysely } from 'kysely';
 import type { DB } from '../db/schema';
 import { loadEngagement } from '../db/engagement-repo';
 import { appendTrail } from '../db/trail-repo';
-import type { Engagement, User } from '../engine/types';
+import type { Engagement, TrailBundle, User } from '../engine/types';
 import { AppError } from '../errors';
 import type { AgentModels } from './llm/models';
 import { insertGate, type Gate } from './gate-repo';
@@ -11,7 +11,7 @@ import type { AgentPort } from './port';
 import { reviewWithAgent } from './qa/agent';
 import type { QaChecks } from './qa/deterministic';
 import { appendStep, assertLease, listSteps, type AgentRun, type AgentStep } from './run-repo';
-import { draftTestPlans } from './specialists/test-plan';
+import { draftTestPlansWithModel } from './specialists/test-plan';
 import type { DelegateRecord } from './state';
 import { rowBasis, rowOfKey, subjectInfo } from './subjects';
 import { Toolbox } from './tools/toolbox';
@@ -74,11 +74,19 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       // The specialist's model calls are the run's, charged through its meter; without models it runs on its rules.
       const llm = ctx.models?.forModules() ?? null;
       const instruction = a.type === 'rework' ? a.instruction : undefined;
-      const { bundle } = a.specialist === 'test-plan'
-        ? await port.saveTestPlans(e.id, draftTestPlans(e), acting, { expectedVersion: e.version! })
-        : await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows, instruction, llm });
+      let bundle: TrailBundle;
+      let withoutModel: boolean;
+      if (a.specialist === 'test-plan') {
+        // The test-plan agent looks each fresh row up in the knowledge base (its allow-list), then drafts with its model.
+        const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'test-plan') : undefined;
+        const draft = await draftTestPlansWithModel(e, { models: ctx.models, toolbox });
+        ({ bundle } = await port.saveTestPlans(e.id, draft.plans, acting, { expectedVersion: e.version! }));
+        withoutModel = draft.withoutModel;
+      } else {
+        ({ bundle } = await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows, instruction, llm }));
+        withoutModel = !!llm && bundle.qaActions.some((q) => q.gate === 'model-availability');
+      }
       const used = ctx.models?.take();
-      const withoutModel = !!llm && bundle.qaActions.some((q) => q.gate === 'model-availability');
       const rowBases = a.subjectKey === 'gaps' && a.rows ? Object.fromEntries(a.rows.map((id) => [id, rowBasis(e, id)])) : undefined;
       const record: DelegateRecord = {
         action: a, basis, sinceGateId, bundleId: bundle.id, ...(rowBases ? { rowBases } : {}), ...(withoutModel ? { withoutModel: true as const } : {}),
