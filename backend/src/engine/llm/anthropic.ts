@@ -1,7 +1,7 @@
-import Anthropic, { APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
+import Anthropic, { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import type { GenerateRequest, GenerateResult, LlmProvider } from './provider';
-import { DEFAULT_MAX_TOKENS, MalformedOutputError, ModelStoppedError, ModelTimeoutError } from './provider';
+import { DEFAULT_MAX_TOKENS, MalformedOutputError, ModelNotSentError, ModelStoppedError, ModelTimeoutError } from './provider';
 
 /** Claude Haiku has no server-side refusal fallback; the other current models accept `fallbacks: 'default'`. */
 export const acceptsServerFallback = (model: string) => !model.includes('haiku');
@@ -9,6 +9,30 @@ export const acceptsServerFallback = (model: string) => !model.includes('haiku')
 /** The beta that structured outputs need. `messages.parse()` adds it by itself; `messages.create()` does not. */
 const STRUCTURED_OUTPUTS_BETA = 'structured-outputs-2025-12-15';
 const SERVER_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+
+/**
+ * Socket and TLS error codes that mean the request never reached the API, so nothing can have been billed: the name did
+ * not resolve, the connection was refused, or the TLS handshake failed before any of the request was written.
+ */
+const NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN']);
+const notSent = (code: string) => NOT_SENT.has(code) || /^(ERR_TLS_|ERR_SSL_|CERT_|UNABLE_TO_)/.test(code);
+
+/** Every `code` along an error's causes. fetch puts the socket error under its TypeError; an AggregateError holds several. */
+export function causeCodes(err: unknown, depth = 0): string[] {
+  if (!err || typeof err !== 'object' || depth > 8) return [];
+  const e = err as { code?: unknown; cause?: unknown; errors?: unknown };
+  return [
+    ...(typeof e.code === 'string' ? [e.code] : []),
+    ...(Array.isArray(e.errors) ? e.errors.flatMap((x) => causeCodes(x, depth + 1)) : []),
+    ...causeCodes(e.cause, depth + 1),
+  ];
+}
+
+/** True only when every cause says the request never got through. Anything else may have been sent, and billed. */
+export function neverSent(err: unknown): boolean {
+  const codes = causeCodes(err);
+  return codes.length > 0 && codes.every(notSent);
+}
 
 /** The parts of a beta message the provider reads. */
 export type MessagesResponse = Pick<Anthropic.Beta.BetaMessage, 'content' | 'model' | 'stop_reason'> & {
@@ -32,8 +56,9 @@ export class AnthropicProvider implements LlmProvider {
    * One structured call. The answer is checked here rather than by `messages.parse()`, which parses before the stop
    * reason can be read and throws one generic error for a refusal, a truncation and an off-schema answer alike. So:
    * a refusal or truncation throws ModelStoppedError, an answer that is not the schema's JSON throws
-   * MalformedOutputError, a timeout or abort throws ModelTimeoutError, each carrying what the caller needs to charge it.
-   * Any other error (the API's own, or a connection that never got through) is passed on unchanged.
+   * MalformedOutputError, a timeout, an abort or a connection lost after sending throws ModelTimeoutError, and a
+   * connection that never got through throws ModelNotSentError, each carrying what the caller needs to charge it. The
+   * API's own errors are passed on unchanged.
    */
   async generate<T>(req: GenerateRequest<T>): Promise<GenerateResult<T>> {
     const model = req.model ?? this.model;
@@ -60,6 +85,12 @@ export class AnthropicProvider implements LlmProvider {
       if (err instanceof APIConnectionTimeoutError || err instanceof APIUserAbortError) {
         throw new ModelTimeoutError(`Model call timed out or was aborted: ${err.message}`);
       }
+      if (err instanceof APIConnectionError) {
+        // A connection that failed before the request reached the API is not billed. One that failed later (reset,
+        // closed mid-answer) may have been, so it is charged like a timeout: an over-count at most.
+        if (neverSent(err)) throw new ModelNotSentError(`Model call could not be sent (${causeCodes(err).join(', ')}): ${err.message}`);
+        throw new ModelTimeoutError(`Connection to the model failed after the request may have been sent: ${err.message}`);
+      }
       throw err;
     }
 
@@ -69,6 +100,9 @@ export class AnthropicProvider implements LlmProvider {
     }
     if (response.stop_reason === 'max_tokens') {
       throw new ModelStoppedError('Model output was truncated (max_tokens); no draft produced.', 'max_tokens', usage);
+    }
+    if (response.stop_reason === 'model_context_window_exceeded') {
+      throw new ModelStoppedError('Model ran out of context window; no draft produced.', 'model_context_window_exceeded', usage);
     }
     // The first text block is the answer, as messages.parse() reads it; adaptive thinking comes before it.
     const text = response.content.find((b) => b.type === 'text');

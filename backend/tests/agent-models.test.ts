@@ -7,7 +7,7 @@ import { DEFAULT_PRICES, estimateCall, priceFor } from '../src/agents/llm/prices
 import { AppError } from '../src/errors';
 import { NO_SPEND, type Budget, type Spent } from '../src/agents/types';
 import { acceptsServerFallback } from '../src/engine/llm/anthropic';
-import { MalformedOutputError, ModelStoppedError, ModelTimeoutError, type GenerateRequest } from '../src/engine/llm/provider';
+import { MalformedOutputError, ModelNotSentError, ModelStoppedError, ModelTimeoutError, type GenerateRequest } from '../src/engine/llm/provider';
 import { FakeProvider, TEST_LLM } from './helpers';
 
 const Out = z.object({ answer: z.string() });
@@ -83,8 +83,12 @@ describe('agent model calls [REQ-29]', () => {
     expect(models.take()).toEqual({ tokensIn: 0, tokensOut: 0, costUsd: 0, model: null });
   });
 
-  it('retries a failing model three times with backoff, refunds each failure, then gives up', async () => {
-    const { fake, models, written, waits } = setup(() => { throw new Error('overloaded'); });
+  // An error the API returned, and a call that never got through, are both unbilled: refunded, and retried.
+  it.each([
+    ['an API error', () => new Error('overloaded')],
+    ['a call that was never sent', () => new ModelNotSentError('connect ECONNREFUSED')],
+  ])('retries a failing model three times with backoff, refunds each failure (%s), then gives up', async (_name, make) => {
+    const { fake, models, written, waits } = setup(() => { throw make(); });
     await expect(models.generate('qa', ASK)).rejects.toBeInstanceOf(ModelUnavailableError);
     expect(fake.requests).toHaveLength(4);
     expect(waits).toEqual(RETRY_DELAYS_MS);
@@ -168,7 +172,7 @@ describe('agent model calls [REQ-29]', () => {
     expect(written).toEqual([ESTIMATE]);
   });
 
-  it.each(['max_tokens', 'refusal'] as const)('charges a %s stop at its real usage and does not retry it', async (reason) => {
+  it.each(['max_tokens', 'refusal', 'model_context_window_exceeded'] as const)('charges a %s stop at its real usage and does not retry it', async (reason) => {
     const { fake, models, written, waits } = setup(() => { throw new ModelStoppedError('stopped', reason, { inputTokens: 1000, outputTokens: 200 }); });
     await expect(models.generate('qa', ASK)).rejects.toBeInstanceOf(ModelUnavailableError);
     expect(fake.requests).toHaveLength(1);

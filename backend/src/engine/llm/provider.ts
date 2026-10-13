@@ -50,17 +50,28 @@ export class MalformedOutputError extends ProviderError {
 }
 
 /**
- * The call ran out of time, or was aborted, after it was sent. The server may still finish it and bill it, so it is
- * charged like a call that ran (agent spec §6.1), though it is retried like any other model error (§6.3).
+ * The call ran out of time, was aborted, or lost its connection after it may have been sent. The server may still
+ * finish it and bill it, so it is charged like a call that ran (agent spec §6.1), though it is retried like any other
+ * model error (§6.3).
  */
 export class ModelTimeoutError extends ProviderError {}
 
 /**
- * The model ran but stopped without an answer: it declined, or ran out of output tokens. The call is billed, so the
- * usage it reports travels with the error.
+ * The call never reached the API: the host name did not resolve, the connection was refused, or TLS failed before the
+ * request was written. Nothing can have been billed, so it is refunded, and retried like any other model error.
+ */
+export class ModelNotSentError extends ProviderError {}
+
+/**
+ * The model ran but stopped without an answer: it declined, ran out of output tokens, or ran out of context window.
+ * The call is billed, so the usage it reports travels with the error.
  */
 export class ModelStoppedError extends ProviderError {
-  constructor(message: string, readonly reason: 'refusal' | 'max_tokens', readonly usage?: { inputTokens: number; outputTokens: number }) {
+  constructor(
+    message: string,
+    readonly reason: 'refusal' | 'max_tokens' | 'model_context_window_exceeded',
+    readonly usage?: { inputTokens: number; outputTokens: number },
+  ) {
     super(message);
   }
 }
