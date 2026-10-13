@@ -136,6 +136,50 @@ describe('the agent worker', () => {
     expect(await getRun(db, run.id)).toMatchObject({ status: 'running', leaseOwner: 'thief' });
   });
 
+  it('commits no redraft once another worker has taken the run during the specialist call [REQ-29]', async () => {
+    const { svc, e, db, run, worker } = await started();
+    const before = await svc.engagement(e.id);
+    const original = svc.runModuleAsAgent.bind(svc);
+    let thrown: unknown;
+    vi.spyOn(svc, 'runModuleAsAgent').mockImplementationOnce(async (...args) => {
+      await sql`UPDATE agent_runs SET lease_owner = 'thief' WHERE id = ${run.id}`.execute(db);
+      try {
+        return await original(...args);
+      } catch (err) {
+        thrown = err;
+        throw err;
+      }
+    });
+    expect(await worker.tick()).toBe('worked');
+    expect(thrown).toMatchObject({ code: 'LEASE_LOST' });
+    expect(await svc.engagement(e.id)).toMatchObject({ version: before.version, scope: [] });
+    expect((await readTrail(db, e.id)).filter((b) => b.actor === 'agent:scope')).toEqual([]);
+    expect((await listSteps(db, run.id)).map((s) => s.kind)).toEqual(['decision']);
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'running', leaseOwner: 'thief', failureStreak: 0, conflictStreak: 0 });
+  });
+
+  it('commits no redraft for a run cancelled after its lease lapsed during the specialist call [REQ-29]', async () => {
+    const { svc, e, db, run, worker } = await started();
+    const before = await svc.engagement(e.id);
+    const original = svc.runModuleAsAgent.bind(svc);
+    let thrown: unknown;
+    vi.spyOn(svc, 'runModuleAsAgent').mockImplementationOnce(async (...args) => {
+      await sql`UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = ${run.id}`.execute(db);
+      await requestCancel(db, run.id);
+      try {
+        return await original(...args);
+      } catch (err) {
+        thrown = err;
+        throw err;
+      }
+    });
+    await worker.tick();
+    expect(thrown).toMatchObject({ code: 'LEASE_LOST' });
+    expect(await svc.engagement(e.id)).toMatchObject({ version: before.version, scope: [] });
+    expect((await readTrail(db, e.id)).filter((b) => b.actor === 'agent:scope')).toEqual([]);
+    expect(await getRun(db, run.id)).toMatchObject({ status: 'cancelled', statusReason: 'cancelled_by_user' });
+  });
+
   it('supersedes the open gates of a held run on the worker\'s next look after a cancel [REQ-28]', async () => {
     const { db, e, run, worker } = await started();
     await worker.drain();

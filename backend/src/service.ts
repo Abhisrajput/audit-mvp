@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
 import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
 import { closeFindingGate, closeGate, getGate, type Gate } from './agents/gate-repo';
-import { getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
+import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
@@ -63,11 +63,15 @@ export interface MutationOptions {
   expectedVersion?: number;
 }
 
-/** An agent acting for a run: recorded as `agent:<agent>`, on behalf of the person who started the run. */
+/**
+ * An agent acting for a run: recorded as `agent:<agent>`, on behalf of the person who started the run. The write is saved
+ * only while the worker named `leaseOwner` still holds the run's lease.
+ */
 export interface AgentActing {
   runId: string;
   agent: string;
   startedBy: User;
+  leaseOwner: string;
 }
 
 /** Agent writes always state the version they were built on. `rows` limits a Gap Writer redraft to those RCM rows. */
@@ -280,7 +284,9 @@ export class AuditService {
       : snapshot;
     const input = opts.rows ? { rows: opts.rows } : {};
     const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting);
-    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, (e, emit) => {
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
+      // Lock order is engagement (taken by mutate), then run: a worker that lost the run, or a cancelled run, saves nothing.
+      await assertLease(trx, acting.runId, acting.leaseOwner);
       const before = structuredClone(e);
       emit(structuredClone(bundle));
       mod.apply(e, output, bundle.id);
@@ -297,7 +303,8 @@ export class AuditService {
   /** Saves drafted test plans for an agent. The agent never sets or clears a reason not to test a row. */
   async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions) {
     this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
-    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, (e, emit) => {
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
+      await assertLease(trx, acting.runId, acting.leaseOwner);
       assertJustificationsUnchanged(e.testPlans, plans, e.rcm.map((r) => r.id));
       assertPlanAttribution(e.testPlans, plans);
       e.testPlans = plans;

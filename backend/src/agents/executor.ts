@@ -44,7 +44,7 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
     case 'rework': {
       const basis = redraftBasis(e, a.subjectKey, a.rows);
       const sinceGateId = latestGateId(ctx.gates, a.subjectKey);
-      const acting = { runId: run.id, agent: a.specialist, startedBy: starter };
+      const acting = { runId: run.id, agent: a.specialist, startedBy: starter, leaseOwner: run.leaseOwner! };
       // Refuse before drafting anything if this worker has already lost the run.
       await db.transaction().execute((trx) => assertLease(trx, run.id, run.leaseOwner!));
       const started = Date.now();

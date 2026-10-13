@@ -6,9 +6,7 @@ import { ProviderError, type GenerateRequest, type GenerateResult, type LlmProvi
 import { runWithRequestId } from '../src/observability/context';
 import { AuditService } from '../src/service';
 import { testDb } from './db';
-import { auditor, engagementWithFailedControl, LENIENT, NEW_ENGAGEMENT, newService, registry, reviewer, unattended, viewer } from './helpers';
-
-const acting = (agent = 'scope') => ({ runId: 'AR-test', agent, startedBy: auditor });
+import { auditor, engagementWithFailedControl, leasedRun, LENIENT, NEW_ENGAGEMENT, newService, registry, reviewer, unattended, viewer } from './helpers';
 
 /** A model call during which a person saves a change. Inside the engagement lock that save would wait for ever. */
 class EditsDuringTheCall implements LlmProvider {
@@ -42,14 +40,16 @@ describe('the agent path into the service', () => {
   it('records specialist work as the agent’s, on behalf of the person who started the run, under the run id [REQ-28]', async () => {
     const svc = await newService();
     const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
-    const { bundle } = await runWithRequestId('AR-test', () => svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version! }));
-    expect(bundle).toMatchObject({ moduleId: 'scope', actor: 'agent:scope', requestId: 'AR-test', inputs: { runId: 'AR-test', onBehalfOf: 'auditor' } });
+    const { run, acting } = await leasedRun(svc, e.id);
+    const { bundle } = await runWithRequestId(run.id, () => svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version! }));
+    expect(bundle).toMatchObject({ moduleId: 'scope', actor: 'agent:scope', requestId: run.id, inputs: { runId: run.id, onBehalfOf: 'auditor' } });
     expect((await svc.engagement(e.id)).scope.length).toBeGreaterThan(0);
   });
 
   it('refuses to apply work begun on an older version of the engagement [REQ-21]', async () => {
     const svc = await newService();
     const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const { acting } = await leasedRun(svc, e.id);
     await expect(svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version! + 1 })).rejects.toMatchObject({ status: 409, code: 'VERSION_CONFLICT' });
   });
 
@@ -58,6 +58,7 @@ describe('the agent path into the service', () => {
     const model = new EditsDuringTheCall(() => svc);
     svc = new AuditService(await testDb(), registry, model, LENIENT);
     const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const { acting } = await leasedRun(svc, e.id);
     model.engagementId = e.id;
     await expect(svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version! })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
     expect((await svc.engagement(e.id)).scope).toEqual([]);
@@ -67,6 +68,7 @@ describe('the agent path into the service', () => {
   it("keeps people's scope decisions when the agent redrafts the scope", async () => {
     const svc = await newService();
     const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const { acting } = await leasedRun(svc, e.id);
     await svc.runModule(e.id, 'scope', auditor);
     const flipped = (await svc.engagement(e.id)).scope.slice(0, 2).map((s) => ({ controlId: s.controlId, included: !s.included }));
     const edited = await svc.setScope(e.id, flipped, auditor);
@@ -78,6 +80,7 @@ describe('the agent path into the service', () => {
   it('redrafts only the targeted findings; every other finding stays exactly as it was', async () => {
     const svc = await newService();
     const { id, a, b } = await twoFindings(svc);
+    const { acting } = await leasedRun(svc, id);
     const drafted = await svc.engagement(id);
     const editedB = await svc.editFinding(id, drafted.findings.find((f) => f.rowId === b)!.id, { title: 'Records left unsigned' }, auditor);
     const current = await svc.engagement(id);
@@ -92,6 +95,7 @@ describe('the agent path into the service', () => {
   it('refuses any agent change to a reviewed finding, and saves nothing [REQ-27]', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
+    const { acting } = await leasedRun(svc, e.id);
     const f = e.findings[0];
     await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
     const before = await svc.engagement(e.id);
@@ -104,6 +108,7 @@ describe('the agent path into the service', () => {
   it('lets only an auditor decide not to test a row; the agent can neither set nor clear it [REQ-27]', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
+    const { acting } = await leasedRun(svc, e.id);
     const saved = await svc.saveTestPlansAsAgent(e.id, draftTestPlans(e), acting('test-plan'), { expectedVersion: e.version! });
     expect(saved.bundle).toMatchObject({ moduleId: 'agent:test-plans', actor: 'agent:test-plan' });
     const rowId = e.rcm[0].id;
@@ -128,6 +133,7 @@ describe('the agent path into the service', () => {
   it('refuses to forge attribution or overwrite a person’s test plan edit [REQ-27]', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
+    const { acting } = await leasedRun(svc, e.id);
     await svc.saveTestPlansAsAgent(e.id, draftTestPlans(e), acting('test-plan'), { expectedVersion: e.version! });
     const rowId = e.rcm[0].id;
     const fresh = await svc.engagement(e.id);
@@ -144,7 +150,7 @@ describe('the agent path into the service', () => {
   it('refuses agent work started by someone who may not prepare audit work', async () => {
     const svc = await newService();
     const e = await engagementWithFailedControl(svc);
-    const v = { runId: 'AR-test', agent: 'scope', startedBy: viewer };
+    const v = { runId: 'AR-test', agent: 'scope', startedBy: viewer, leaseOwner: 'w-test' };
     await expect(svc.runModuleAsAgent(e.id, 'scope', v, { expectedVersion: e.version! })).rejects.toMatchObject({ status: 403 });
     await expect(svc.saveTestPlansAsAgent(e.id, draftTestPlans(e), v, { expectedVersion: e.version! })).rejects.toMatchObject({ status: 403 });
   });

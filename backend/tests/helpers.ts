@@ -1,7 +1,10 @@
 import type { GenerateRequest, GenerateResult, LlmProvider } from '../src/engine/llm/provider';
 import { registryFromBundles } from '../src/knowledge/packs';
-import { DEV_USERS } from '../src/auth/dev-users';
-import { AuditService } from '../src/service';
+import { defaultAgentConfig } from '../src/agents/config';
+import { RULES_VERSION } from '../src/agents/policy/rules';
+import { createRun, leaseNext } from '../src/agents/run-repo';
+import { DEV_USERS, ensureDevUsers } from '../src/auth/dev-users';
+import { AuditService, type AgentActing } from '../src/service';
 import { testDb } from './db';
 
 /** Server-side signing in tests: no person re-authenticates, and the signature records that. */
@@ -19,6 +22,18 @@ export const LENIENT = { citationPolicy: { allowUnverified: true } } as const;
 /** A service on its own fresh database. */
 export async function newService(llm: LlmProvider | null = null) {
   return new AuditService(await testDb(), registry, llm, LENIENT);
+}
+
+/**
+ * Starts an agent run on the engagement and leases it the way a worker does, since the service saves an agent's work
+ * only while its worker holds the run's lease. Returns how each specialist of that run acts.
+ */
+export async function leasedRun(svc: AuditService, engagementId: string, leaseOwner = 'w-test') {
+  await ensureDevUsers(svc.db.kysely);
+  const run = await createRun(svc.db.kysely, { engagementId, startedBy: auditor.id, policy: 'rules', policyVersion: RULES_VERSION, budget: defaultAgentConfig().budget });
+  const leased = await leaseNext(svc.db.kysely, leaseOwner, 60_000);
+  if (leased?.id !== run.id) throw new Error(`expected to lease ${run.id}`);
+  return { run: leased, acting: (agent = 'scope'): AgentActing => ({ runId: run.id, agent, startedBy: auditor, leaseOwner }) };
 }
 
 /** A scripted model: returns whatever the handler builds for the request. */

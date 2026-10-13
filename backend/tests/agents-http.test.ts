@@ -5,7 +5,7 @@ import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
-import { auditor as auditorUser, NEW_ENGAGEMENT, newService } from './helpers';
+import { leasedRun, NEW_ENGAGEMENT, newService } from './helpers';
 import { devAuthConfig, signIn } from './http';
 
 async function setup(agents: AgentConfig = defaultAgentConfig()) {
@@ -89,7 +89,8 @@ describe('test plans over HTTP', () => {
     await auditor.post(`/api/engagements/${id}/modules/scope/run`).expect(200);
     await auditor.post(`/api/engagements/${id}/modules/rcm/run`).expect(200);
     const e = await svc.engagement(id);
-    await svc.saveTestPlansAsAgent(id, draftTestPlans(e), { runId: 'AR-http', agent: 'test-plan', startedBy: auditorUser }, { expectedVersion: e.version! });
+    const { acting } = await leasedRun(svc, id);
+    await svc.saveTestPlansAsAgent(id, draftTestPlans(e), acting('test-plan'), { expectedVersion: e.version! });
     const rowId = e.rcm[0].id;
     expect((await auditor.get(`/api/engagements/${id}/test-plans`).expect(200)).body[rowId].rowId).toBe(rowId);
     expect((await (await signIn(app, 'viewer')).put(`/api/engagements/${id}/test-plans/${rowId}`, { notTestedJustification: 'x' })).status).toBe(403);
