@@ -2,14 +2,16 @@ import { PlayArrow as PlayArrowIcon } from '@mui/icons-material';
 import {
   Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
 } from '@mui/material';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../../api';
+import { findingContentHash, openFindingGate, reviewIsCurrent } from '../../agents';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
 import { openSigningWindow, signWithReauth } from '../../signing';
 import { useSession } from '../../session';
-import type { Engagement, Finding, SignOff } from '../../types';
+import type { Engagement, Finding, Gate, SignOff } from '../../types';
 import { ActionButton, Citations, RiskChip, StatusChip } from '../common';
+import QaReportView from './QaReportView';
 
 const FIELDS = ['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const;
 
@@ -76,8 +78,18 @@ function EditDialog({ finding, ctx, onClose }: { finding: Finding; ctx: CardCont
   );
 }
 
-function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
+function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardContext; gate: Gate | null; qaThreshold: number | null }) {
   const { user } = useSession();
+  // The review is shown only while it describes the finding on screen: a gate is superseded only when the worker next runs.
+  const [hash, setHash] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setHash(null);
+    findingContentHash(f).then((h) => live && setHash(h), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [f]);
   const [comment, setComment] = useState('');
   const [editing, setEditing] = useState(false);
   const [waiting, setWaiting] = useState<AbortController | null>(null);
@@ -119,6 +131,19 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
         {f.status === 'blocked' && (
           <Alert severity="error" sx={{ mt: 1 }}>
             Blocked by QA gate: {f.blockedReasons.join('; ')}
+          </Alert>
+        )}
+        {gate?.qaReport && hash !== null && !reviewIsCurrent(gate, hash) && (
+          <Alert severity="warning" sx={{ mt: 1.5 }}>
+            The finding has changed since the agent's QA review; a fresh review follows.
+          </Alert>
+        )}
+        {gate?.qaReport && reviewIsCurrent(gate, hash) && (
+          <Alert severity="info" icon={false} sx={{ mt: 1.5 }}>
+            <Typography variant="body2" sx={{ mb: 0.5 }}>
+              The agent drafted this finding and opened a gate on it (attempt {gate.attempt}). Its QA review, for whoever signs:
+            </Typography>
+            <QaReportView report={gate.qaReport} threshold={qaThreshold} />
           </Alert>
         )}
         <Grid container spacing={1.5} sx={{ mt: 0.5 }}>
@@ -213,7 +238,7 @@ function FindingCard({ f, ctx }: { f: Finding; ctx: CardContext }) {
   );
 }
 
-export default function FindingsTab({ engagement: e, setEngagement, run }: TabProps) {
+export default function FindingsTab({ engagement: e, setEngagement, run, gates, qaThreshold }: TabProps) {
   const ctx: CardContext = {
     engagementId: e.id,
     version: e.version,
@@ -230,7 +255,7 @@ export default function FindingsTab({ engagement: e, setEngagement, run }: TabPr
         </Typography>
       </Stack>
       {e.findings.map((f) => (
-        <FindingCard key={f.id} f={f} ctx={ctx} />
+        <FindingCard key={f.id} f={f} ctx={ctx} gate={openFindingGate(gates, f.id)} qaThreshold={qaThreshold} />
       ))}
       {!e.findings.length && <Typography color="text.secondary">No findings yet.</Typography>}
     </Stack>

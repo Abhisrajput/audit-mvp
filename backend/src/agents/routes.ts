@@ -31,6 +31,12 @@ export function agentRoutes(svc: AuditService, cfg: AgentConfig) {
   const readers = requireRole(READ_ROLES);
   const param = (req: Request, name: string) => String(req.params[name]);
 
+  // What the UI needs before it offers a run (agent spec §7.2): whether runs can start, the budget a starter may lower,
+  // the QA threshold it shows signers, and how the worker decides.
+  r.get('/api/agents/settings', readers, (_req, res) => {
+    res.json({ enabled: cfg.enabled, budget: cfg.budget, qaThreshold: cfg.qaThreshold, policy: svc.llm ? 'llm' : 'rules' });
+  });
+
   r.post('/api/engagements/:id/runs', readers, wrap(async (req, res) => {
     const body = z.object({ budget: BudgetSchema.partial().optional() }).strict().parse(req.body ?? {});
     res.status(201).json(await startRun(svc, cfg, param(req, 'id'), actorOf(req), body.budget));

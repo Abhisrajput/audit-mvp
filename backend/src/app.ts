@@ -83,7 +83,7 @@ export function createApp(
   app.use(accessLog());
   app.use(httpMetrics());
   app.use(securityHeaders());
-  app.use(probeRoutes({ db: svc.db, blobs: storage.blobs, metricsToken: ops.metricsToken ?? null, timeoutMs: ops.probeTimeoutMs }));
+  app.use(probeRoutes({ db: svc.db, blobs: storage.blobs, metricsToken: ops.metricsToken ?? null, timeoutMs: ops.probeTimeoutMs, agentRuns: true }));
   const limits = rateLimiters(ops.rateLimits ?? DEFAULT_RATE_LIMITS);
   app.use('/auth', limits.auth);
   app.use('/auth/sign', limits.signing);

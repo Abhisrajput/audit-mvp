@@ -3,7 +3,7 @@ import { Alert, Card, CardContent, Grid, MenuItem, Stack, TextField, Typography 
 import { useState } from 'react';
 import { api } from '../../api';
 import type { TabProps } from '../../pages/EngagementPage';
-import type { Engagement, RcmRow, TestInput, TestResult } from '../../types';
+import type { Engagement, RcmRow, TestInput, TestPlan, TestResult } from '../../types';
 import { ActionButton, ConclusionChip, RiskChip } from '../common';
 
 type Draft = { designAdequate: string; observation: string; evidenceRefs: string; sampleTested: string; exceptions: string };
@@ -16,7 +16,7 @@ const toDraft = (t?: TestInput): Draft => ({
   exceptions: String(t?.exceptions ?? 0),
 });
 
-function RowCard({ row, input, result, engagementId, version, onSaved }: { row: RcmRow; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
+function RowCard({ row, plan, input, result, engagementId, version, onSaved }: { row: RcmRow; plan?: TestPlan; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
   const [d, setD] = useState<Draft>(toDraft(input));
   const set = (k: keyof Draft) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
   const dirty = JSON.stringify(d) !== JSON.stringify(toDraft(input));
@@ -32,6 +32,26 @@ function RowCard({ row, input, result, engagementId, version, onSaved }: { row: 
           <RiskChip rating={row.riskRating} />
           <ConclusionChip conclusion={result?.conclusion} />
         </Stack>
+        {plan && (
+          <Alert severity={plan.notTestedJustification ? 'warning' : 'info'} icon={false} sx={{ mb: 1.5 }}>
+            <Typography variant="body2">
+              <b>Test plan:</b> {plan.attribute} · sample {plan.sampleSize} ({plan.selectionMethod}) from {plan.population}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {plan.procedure}
+            </Typography>
+            {plan.evidenceToRequest.length > 0 && (
+              <Typography variant="body2" color="text.secondary">
+                Request: {plan.evidenceToRequest.join('; ')}
+              </Typography>
+            )}
+            {plan.notTestedJustification && (
+              <Typography variant="body2">
+                <b>Not to be tested:</b> {plan.notTestedJustification}
+              </Typography>
+            )}
+          </Alert>
+        )}
         <Grid container spacing={2}>
           <Grid item xs={12} md={2}>
             <TextField select fullWidth size="small" label="Design adequate?" value={d.designAdequate} onChange={set('designAdequate')}>
@@ -100,7 +120,7 @@ export default function FieldworkTab({ engagement: e, setEngagement, run }: TabP
         </Typography>
       </Stack>
       {e.rcm.map((r) => (
-        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} />
+        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} plan={e.testPlans[r.id]} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} />
       ))}
     </Stack>
   );

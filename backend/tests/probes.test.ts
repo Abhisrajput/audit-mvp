@@ -1,10 +1,12 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import { createRun } from '../src/agents/run-repo';
 import { createApp } from '../src/app';
 import type { LlmProvider } from '../src/engine/llm/provider';
 import { instrumentProvider } from '../src/observability/llm';
 import { registry } from '../src/observability/metrics';
 import type { BlobStore } from '../src/storage/blob-store';
+import { auditor, NEW_ENGAGEMENT } from './helpers';
 import { appWithDevUsers, devAuthConfig, devSign, draftFinding, signIn } from './http';
 
 const TOKEN = 't'.repeat(32);
@@ -82,5 +84,15 @@ describe('probes and metrics', () => {
     const r = await devSign(reviewer, 'reviewer', id, fid, 'review', 'someone-else');
     expect(r.status!.status).toBe('failed');
     expect(await metricValue('audit_signature_failures_total', { code: 'REAUTH_USER_MISMATCH' })).toBe(before + 1);
+  });
+
+  it('reports agent runs by status, read from the database at each scrape', async () => {
+    const { svc, app } = await appWithDevUsers();
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    await createRun(svc.db.kysely, { engagementId: e.id, startedBy: 'auditor', policy: 'rules', policyVersion: 'rules-1', budget: { maxSteps: 5, maxTokens: 1000, maxCostUsd: 1 } });
+    const text = (await request(app).get('/metrics').expect(200)).text;
+    expect(text).toMatch(/audit_agent_runs\{status="runnable"\} 1\b/);
+    // Every status has a value, so a series never goes missing when its last run moves on.
+    expect(text).toMatch(/audit_agent_runs\{status="needs_human"\} 0\b/);
   });
 });

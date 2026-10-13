@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import request from 'supertest';
+import { describe, expect, it, vi } from 'vitest';
 import { defaultAgentConfig, type AgentConfig } from '../src/agents/config';
+import { startRun } from '../src/agents/runs';
 import { draftTestPlans } from '../src/agents/specialists/test-plan';
 import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
-import { leasedRun, NEW_ENGAGEMENT, newService } from './helpers';
+import { leasedRun, NEW_ENGAGEMENT, newService, reviewer } from './helpers';
 import { devAuthConfig, signIn } from './http';
 
 async function setup(agents: AgentConfig = defaultAgentConfig()) {
@@ -18,6 +20,27 @@ async function setup(agents: AgentConfig = defaultAgentConfig()) {
 }
 
 describe('agent runs over HTTP', () => {
+  it('tell the app whether runs can start, the budget ceiling, the QA threshold and the policy', async () => {
+    const { app } = await setup({ ...defaultAgentConfig(), enabled: false, qaThreshold: 80 });
+    const viewer = await signIn(app, 'viewer');
+    expect((await viewer.get('/api/agents/settings').expect(200)).body).toEqual({
+      enabled: false, budget: { maxSteps: 200, maxTokens: 2_000_000, maxCostUsd: 25 }, qaThreshold: 80, policy: 'rules',
+    });
+    expect((await request(app).get('/api/agents/settings')).status).toBe(401);
+  });
+
+  it('start even when counting the other signers fails, with no warning', async () => {
+    const { svc, id } = await setup();
+    const k = svc.db.kysely;
+    const select = k.selectFrom.bind(k);
+    // Only the signer count reads users here: make that read fail after the run is created.
+    vi.spyOn(k, 'selectFrom').mockImplementation(((table: string) => {
+      if (table === 'users') throw new Error('users unreadable');
+      return select(table as never);
+    }) as typeof k.selectFrom);
+    expect(await startRun(svc, defaultAgentConfig(), id, reviewer)).toMatchObject({ run: { status: 'runnable', startedBy: 'reviewer' }, warnings: [] });
+  });
+
   it('start one run per engagement, for preparers only, and record who started it [REQ-26]', async () => {
     const { svc, app, auditor, id } = await setup();
     const started = await auditor.post(`/api/engagements/${id}/runs`, {}).expect(201);

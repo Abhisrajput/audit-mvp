@@ -1,8 +1,8 @@
-import { APIConnectionTimeoutError, APIUserAbortError, InternalServerError } from '@anthropic-ai/sdk';
+import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError, InternalServerError } from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { AnthropicProvider, type MessagesClient, type MessagesResponse } from '../src/engine/llm/anthropic';
-import { MalformedOutputError, ModelStoppedError, ModelTimeoutError } from '../src/engine/llm/provider';
+import { MalformedOutputError, ModelNotSentError, ModelStoppedError, ModelTimeoutError } from '../src/engine/llm/provider';
 
 // A contract test of the real provider against a stubbed SDK client: no network, no model. It pins what the provider
 // throws for each way a call can end, since AgentModels charges and retries by those error types (agent spec §6.1, §6.3).
@@ -40,6 +40,10 @@ async function failure(p: Promise<unknown>): Promise<unknown> {
   }
   throw new Error('expected the call to fail');
 }
+
+/** A connection error as the SDK raises one: fetch's TypeError, with the socket error (and its code) as its cause. */
+const connectionError = (code: string) =>
+  new APIConnectionError({ cause: new TypeError('fetch failed', { cause: Object.assign(new Error(`connect ${code}`), { code }) }) });
 
 describe('AnthropicProvider.generate (stubbed SDK client)', () => {
   it('returns the parsed answer, the model that served it and the usage', async () => {
@@ -110,5 +114,45 @@ describe('AnthropicProvider.generate (stubbed SDK client)', () => {
     const overloaded = new InternalServerError(529, undefined, 'overloaded', new Headers());
     const { client } = stub(() => { throw overloaded; });
     expect(await failure(new AnthropicProvider('claude-opus-5-5', client).generate(ASK))).toBe(overloaded);
+  });
+
+  it('throws ModelStoppedError with the usage when the context window ran out, without parsing', async () => {
+    const { client } = stub(() => answer('{"choice": 1, "rat', 'model_context_window_exceeded'));
+    const err = await failure(new AnthropicProvider('claude-opus-5-5', client).generate(ASK));
+    expect(err).toBeInstanceOf(ModelStoppedError);
+    expect(err).toMatchObject({ reason: 'model_context_window_exceeded', usage: USED });
+  });
+
+  it('keeps a connection that dropped after sending charged, like a timeout: the server may still bill it', async () => {
+    const { client } = stub(() => { throw connectionError('ECONNRESET'); });
+    const err = await failure(new AnthropicProvider('claude-opus-5-5', client).generate(ASK));
+    expect(err).toBeInstanceOf(ModelTimeoutError);
+    expect((err as Error).message).toMatch(/may have been sent/);
+  });
+
+  it.each(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'SELF_SIGNED_CERT_IN_CHAIN'])(
+    'refunds a call that never got through (%s)',
+    async (code) => {
+      const { client } = stub(() => { throw connectionError(code); });
+      const err = await failure(new AnthropicProvider('claude-opus-5-5', client).generate(ASK));
+      expect(err).toBeInstanceOf(ModelNotSentError);
+      expect((err as Error).message).toContain(code);
+    },
+  );
+
+  it('treats a connection error with no cause, or with one cause that may have been sent, as possibly billed', async () => {
+    const bare = stub(() => { throw new APIConnectionError({ message: 'Connection error.' }); });
+    expect(await failure(new AnthropicProvider('claude-opus-5-5', bare.client).generate(ASK))).toBeInstanceOf(ModelTimeoutError);
+    // Happy eyeballs: IPv6 was refused, but IPv4 connected and was then reset.
+    const mixed = new APIConnectionError({
+      cause: new TypeError('fetch failed', {
+        cause: new AggregateError([
+          Object.assign(new Error('connect ECONNREFUSED ::1:443'), { code: 'ECONNREFUSED' }),
+          Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+        ]),
+      }),
+    });
+    const both = stub(() => { throw mixed; });
+    expect(await failure(new AnthropicProvider('claude-opus-5-5', both.client).generate(ASK))).toBeInstanceOf(ModelTimeoutError);
   });
 });

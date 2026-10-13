@@ -118,6 +118,25 @@ describe('workpaper gates', () => {
       expect.stringMatching(/^Gate GATE-.* is approved, but its signature SIG-missing is missing/),
     ]));
   });
+
+  it('are checked by verify for a signature made for another gate, and an undecided gate naming one [REQ-24, REQ-27]', async () => {
+    const { svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { gate } = await waitingAtGate(svc, id, 'scope');
+    await svc.signGate(gate.id, 'approve', 'In scope as proposed', reviewer, unattended);
+    const k = svc.db.kysely;
+    const [sig] = await listSignatures(k, id);
+    await sql`ALTER TABLE signatures DISABLE TRIGGER signatures_append_only`.execute(k);
+    await sql`UPDATE signatures SET gate_id = 'GATE-other' WHERE id = ${sig.id}`.execute(k);
+    expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
+      `Gate ${gate.id}: signature ${sig.id} was made for a different gate`,
+    ]));
+    await sql`ALTER TABLE gates DISABLE TRIGGER gates_guard`.execute(k);
+    await sql`UPDATE gates SET state = 'superseded' WHERE id = ${gate.id}`.execute(k);
+    expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
+      `Gate ${gate.id} is superseded, but names signature ${sig.id}`,
+    ]));
+  });
 });
 
 describe('finding gates', () => {

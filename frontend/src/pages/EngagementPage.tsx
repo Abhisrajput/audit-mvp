@@ -6,16 +6,26 @@ import FieldworkTab from '../components/engagement/FieldworkTab';
 import FindingsTab from '../components/engagement/FindingsTab';
 import RcmTab from '../components/engagement/RcmTab';
 import ReportTab from '../components/engagement/ReportTab';
+import RunPanel from '../components/engagement/RunPanel';
 import ScopeTab from '../components/engagement/ScopeTab';
+import TestPlansTab from '../components/engagement/TestPlansTab';
 import TrailTab from '../components/engagement/TrailTab';
-import type { Engagement, TrailBundle } from '../types';
+import { useAgentRun } from '../components/engagement/useAgentRun';
+import type { Engagement, Gate, TrailBundle } from '../types';
 
-const STEPS = ['Risk & scope', 'RCM', 'Fieldwork & testing', 'Findings', 'Report'];
+const STEPS = ['Risk & scope', 'RCM', 'Test plans', 'Fieldwork & testing', 'Findings', 'Report'];
+const FINDINGS_TAB = 4;
+const REPORT_TAB = 5;
+const TRAIL_TAB = STEPS.length;
 
 export interface TabProps {
   engagement: Engagement;
   setEngagement: (e: Engagement) => void;
   run: (moduleId: string) => Promise<void>;
+  /** The engagement's agent gates, for the QA review a finding's signer reads. */
+  gates: Gate[];
+  /** The QA score a gate's review should reach (agent settings); null until loaded. */
+  qaThreshold: number | null;
 }
 
 function GateSummary({ bundle }: { bundle: TrailBundle }) {
@@ -59,6 +69,9 @@ export default function EngagementPage() {
     load();
   }, [load]);
 
+  // The agent run, its steps and gates; when the agent drafts something, the engagement is reloaded.
+  const agent = useAgentRun(id!, load);
+
   const run = async (moduleId: string) => {
     const res = await api<{ bundle: TrailBundle; engagement: Engagement }>(`/engagements/${id}/modules/${moduleId}/run`, { method: 'POST', body: {}, ifMatch: engagement?.version });
     setEngagement(res.engagement);
@@ -67,8 +80,8 @@ export default function EngagementPage() {
 
   if (!engagement) return null;
   const e = engagement;
-  const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
-  const props: TabProps = { engagement: e, setEngagement, run };
+  const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testPlans).length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
+  const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, qaThreshold: agent.settings?.qaThreshold ?? null };
 
   return (
     <Stack spacing={2}>
@@ -93,6 +106,8 @@ export default function EngagementPage() {
         </Typography>
       </Box>
 
+      <RunPanel engagementId={e.id} agent={agent} onSigned={load} showFindings={() => setTab(FINDINGS_TAB)} />
+
       <Card variant="outlined" sx={{ p: 2 }}>
         <Stepper nonLinear activeStep={tab}>
           {STEPS.map((label, i) => (
@@ -109,14 +124,15 @@ export default function EngagementPage() {
         ))}
       </Tabs>
 
-      {lastRun && tab < 5 && <GateSummary bundle={lastRun} />}
+      {lastRun && tab < TRAIL_TAB && <GateSummary bundle={lastRun} />}
 
       {tab === 0 && <ScopeTab {...props} />}
       {tab === 1 && <RcmTab {...props} />}
-      {tab === 2 && <FieldworkTab {...props} />}
-      {tab === 3 && <FindingsTab {...props} />}
-      {tab === 4 && <ReportTab {...props} />}
-      {tab === 5 && <TrailTab {...props} />}
+      {tab === 2 && <TestPlansTab {...props} />}
+      {tab === 3 && <FieldworkTab {...props} />}
+      {tab === FINDINGS_TAB && <FindingsTab {...props} />}
+      {tab === REPORT_TAB && <ReportTab {...props} />}
+      {tab === TRAIL_TAB && <TrailTab {...props} />}
     </Stack>
   );
 }

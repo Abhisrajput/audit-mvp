@@ -99,7 +99,7 @@ export class AgentModels {
           this.note(estimate, s.model);
           continue;
         }
-        // An error the API returned, or a connection that never got through, is not billed.
+        // An error the API returned, or a call that never got through (ModelNotSentError), is not billed.
         await this.meter.settle(estimate, {});
         continue;
       }

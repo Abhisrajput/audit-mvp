@@ -4,6 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
+import { defaultAgentConfig } from '../src/agents/config';
+import { listSteps } from '../src/agents/run-repo';
+import { startRun } from '../src/agents/runs';
+import { AgentWorker } from '../src/agents/worker';
+import { readTrail } from '../src/db/trail-repo';
 import { insertDocument } from '../src/knowledge/document-repo';
 import { recordDocumentEvent } from '../src/knowledge/trail';
 import { verifyIntegrity } from '../src/ops/verify';
@@ -12,7 +17,7 @@ import { blobKey } from '../src/storage/blob-store';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { testDbWithUrl } from './db';
-import { approver, auditor, engagementWithFailedControl, LENIENT, registry, reviewer, unattended } from './helpers';
+import { approver, auditor, engagementWithFailedControl, LENIENT, NEW_ENGAGEMENT, newService, registry, reviewer, unattended } from './helpers';
 
 /** A database with an approved, signed finding and two stored documents, and the local store holding their bytes. */
 async function restoredSystem() {
@@ -142,5 +147,69 @@ describe('verify', () => {
     const report = await verifyIntegrity(s.db.kysely, null, 'file storage is not configured: S3_BUCKET is required when BLOB_DRIVER=s3');
     expect(report.ok).toBe(false);
     expect(report.documents).toEqual({ checked: 0, problems: [], skipped: 'file storage is not configured: S3_BUCKET is required when BLOB_DRIVER=s3' });
+  });
+});
+
+/** An offline agent run that has reached its scope gate: decision, delegate, QA and gate-opening steps, all in the trail. */
+async function runAtScopeGate() {
+  const svc = await newService();
+  await ensureDevUsers(svc.db.kysely);
+  const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+  const { run } = await startRun(svc, defaultAgentConfig(), e.id, auditor);
+  await new AgentWorker(svc, defaultAgentConfig(), { id: 'w-verify' }).drain();
+  return { k: svc.db.kysely, run, steps: await listSteps(svc.db.kysely, run.id) };
+}
+
+describe('verify on agent work', () => {
+  it("passes when every agent step's trail entry is in the chain [REQ-24, REQ-28]", async () => {
+    const { k, steps } = await runAtScopeGate();
+    expect(steps.map((s) => s.kind)).toEqual(expect.arrayContaining(['decision', 'delegate', 'qa', 'tool_call']));
+    expect((await verifyIntegrity(k, null)).agents).toEqual({ checked: steps.length, problems: [] });
+  });
+
+  it("reports a step whose trail entry is missing, absent, not the run's own, or after a break in the chain [REQ-24, REQ-28]", async () => {
+    const { k, run, steps } = await runAtScopeGate();
+    const decision = steps.find((s) => s.kind === 'decision')!;
+    const delegate = steps.find((s) => s.kind === 'delegate')!;
+    const qa = steps.find((s) => s.kind === 'qa')!;
+    const humanEntry = (await readTrail(k)).find((b) => b.moduleId === 'human:agent-run-start')!;
+    await sql`ALTER TABLE agent_steps DISABLE TRIGGER agent_steps_append_only`.execute(k);
+    await sql`UPDATE agent_steps SET trail_bundle_id = 'AGT-gone' WHERE run_id = ${run.id} AND seq = ${decision.seq}`.execute(k);
+    await sql`UPDATE agent_steps SET trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${delegate.seq}`.execute(k);
+    await sql`UPDATE agent_steps SET trail_bundle_id = ${humanEntry.id} WHERE run_id = ${run.id} AND seq = ${qa.seq}`.execute(k);
+    const report = await verifyIntegrity(k, null);
+    expect(report.ok).toBe(false);
+    expect(report.agents.problems).toEqual(expect.arrayContaining([
+      `Step ${run.id}#${decision.seq} (decision): its trail entry AGT-gone is missing`,
+      `Step ${run.id}#${delegate.seq} (delegate): has no trail entry`,
+      `Step ${run.id}#${qa.seq} (qa): its trail entry ${humanEntry.id} is not an agent's entry for this run`,
+    ]));
+
+    // An edit to the first bundle breaks the chain from seq 1: no agent entry after it is vouched for any more.
+    await sql`ALTER TABLE trail DISABLE TRIGGER trail_append_only`.execute(k);
+    await sql`UPDATE trail SET body = replace(body, 'Plant 1', 'Plant 9') WHERE module_id = 'human:create-engagement'`.execute(k);
+    expect((await verifyIntegrity(k, null)).agents.problems).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^Step AR-\w+#\d+ \(tool_call\): its trail entry AGT-\w+ is at or after the break in the chain \(seq 1\)$/),
+    ]));
+  });
+
+  it('reports a toolbox or gate-opening step, or a relabelled decision, with no trail entry; bookkeeping steps pass [REQ-24, REQ-28]', async () => {
+    const { k, run, steps } = await runAtScopeGate();
+    const lookup = steps.find((s) => s.kind === 'tool_call' && s.agent !== 'worker' && s.agent !== 'rails')!;
+    const decision = steps.find((s) => s.kind === 'decision')!;
+    // The two bookkeeping steps the worker writes without an entry.
+    await sql`ALTER TABLE agent_steps DISABLE TRIGGER agent_steps_append_only`.execute(k);
+    await sql`INSERT INTO agent_steps (run_id, seq, kind, agent, decision) VALUES (${run.id}, 9001, 'tool_call', 'worker', '{"recovered":"x"}'::jsonb), (${run.id}, 9002, 'tool_call', 'rails', '{"refused":"x"}'::jsonb)`.execute(k);
+    expect((await verifyIntegrity(k, null)).agents.problems).toEqual([]);
+
+    await sql`UPDATE agent_steps SET trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${lookup.seq}`.execute(k);
+    await sql`UPDATE agent_steps SET kind = 'tool_call', trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${decision.seq}`.execute(k);
+    const report = await verifyIntegrity(k, null);
+    expect(report.ok).toBe(false);
+    expect(report.agents.problems).toEqual(expect.arrayContaining([
+      `Step ${run.id}#${lookup.seq} (tool_call): has no trail entry`,
+      `Step ${run.id}#${decision.seq} (tool_call): has no trail entry`,
+    ]));
+    expect(report.agents.problems).toHaveLength(2);
   });
 });

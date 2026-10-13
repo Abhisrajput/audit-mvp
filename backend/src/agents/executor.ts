@@ -13,6 +13,7 @@ import type { QaChecks } from './qa/deterministic';
 import { appendStep, assertLease, listSteps, type AgentRun, type AgentStep } from './run-repo';
 import { draftTestPlansWithModel } from './specialists/test-plan';
 import type { DelegateRecord } from './state';
+import { elapsedMs } from './metrics';
 import { rowBasis, rowOfKey, subjectInfo } from './subjects';
 import { Toolbox } from './tools/toolbox';
 import type { Decision, Menu, QaReport } from './types';
@@ -96,12 +97,13 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         await appendStep(trx, run.id, {
           kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: used?.model ?? bundle.provider.model,
           tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0,
-          durationMs: Date.now() - started, trailBundleId: bundle.id,
+          durationMs: elapsedMs(started), trailBundleId: bundle.id,
         });
       });
       return { next: 'continue' };
     }
     case 'request_qa': {
+      const started = Date.now();
       const steps = await listSteps(db, run.id);
       // A challenge builds on the latest report of this same subject AND this same content, so its cap and carried issues apply.
       const hash = subjectInfo(e, a.subjectKey)?.hash;
@@ -119,12 +121,13 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         const sealed = await appendTrail(trx, event('agent:qa', 'qa', { subjectKey: a.subjectKey, mode: a.mode }, report));
         await appendStep(trx, run.id, {
           kind: 'qa', agent: 'qa', decision: report, model: used?.model ?? report.reviewer,
-          tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0, trailBundleId: sealed.id,
+          tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0, durationMs: elapsedMs(started), trailBundleId: sealed.id,
         });
       });
       return { next: 'continue' };
     }
     case 'open_gate': {
+      const started = Date.now();
       const s = subjectInfo(e, a.subjectKey);
       const kind = s?.gateKind;
       if (!s || !kind) throw new Error(`${a.subjectKey} has no gate`);
@@ -144,7 +147,7 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         });
         const opened = { gateId: gate.id, kind, subjectId: gate.subjectId, subjectHash: gate.subjectHash, attempt: gate.attempt };
         const sealed = await appendTrail(trx, event('agent:gate-open', 'supervisor', { subjectKey: s.key }, opened));
-        await appendStep(trx, run.id, { kind: 'tool_call', agent: 'supervisor', decision: { tool: 'open_gate', ...opened }, trailBundleId: sealed.id });
+        await appendStep(trx, run.id, { kind: 'tool_call', agent: 'supervisor', decision: { tool: 'open_gate', ...opened }, durationMs: elapsedMs(started), trailBundleId: sealed.id });
       });
       return { next: 'waiting', reason: `awaiting ${kind} gate signature` };
     }

@@ -7,7 +7,7 @@ import type { DB } from '../db/schema';
 import { listSignatures } from '../db/signature-repo';
 import { readTrail } from '../db/trail-repo';
 import { verifyChain, type ChainVerification } from '../engine/trail';
-import type { SignOff } from '../engine/types';
+import type { SignOff, TrailBundle } from '../engine/types';
 import { withSignatureStatus } from '../signing/content-hash';
 import { BlobNotFound, type BlobStore } from '../storage/blob-store';
 
@@ -17,6 +17,8 @@ export interface IntegrityReport {
   ok: boolean;
   trail: ChainVerification;
   signatures: { checked: number; problems: string[] };
+  /** Each agent step's trail entry (agent spec §9). */
+  agents: { checked: number; problems: string[] };
   documents: { checked: number; problems: string[]; skipped: string | null };
 }
 
@@ -79,13 +81,23 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
       problems.push(`Trail entry ${b.id} records gate signature ${out.signatureId}, but the signature row is missing`);
     }
   }
-  // Every decided gate names a signature that exists, made on the content the gate showed.
+  // Every decided gate names a signature that exists, made on the content the gate showed, with the decision's meaning,
+  // for that gate (agent spec §9). A gate nobody decided names none.
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const decided = await db.selectFrom('gates').select(['id', 'state', 'signature_id', 'subject_hash']).where('state', 'in', ['approved', 'rejected']).orderBy('seq').execute();
-  for (const g of decided) {
+  const gates = await db.selectFrom('gates').select(['id', 'kind', 'state', 'signature_id', 'subject_id', 'subject_hash']).orderBy('seq').execute();
+  for (const g of gates) {
+    if (g.state !== 'approved' && g.state !== 'rejected') {
+      if (g.signature_id) problems.push(`Gate ${g.id} is ${g.state}, but names signature ${g.signature_id}`);
+      continue;
+    }
     const sig = g.signature_id ? byId.get(g.signature_id) : undefined;
+    const meaning = g.state === 'approved' ? 'Approved' : 'Rejected';
     if (!sig) problems.push(`Gate ${g.id} is ${g.state}, but its signature ${g.signature_id ?? '(none)'} is missing`);
     else if (sig.content_hash !== g.subject_hash) problems.push(`Gate ${g.id}: signature ${sig.id} is for different content than the gate showed`);
+    else if (sig.meaning !== meaning) problems.push(`Gate ${g.id}: signature ${sig.id} carries ${sig.meaning}, not ${meaning}`);
+    else if (g.kind === 'finding' ? sig.finding_id !== g.subject_id : sig.gate_id !== g.id || sig.workpaper !== g.kind) {
+      problems.push(`Gate ${g.id}: signature ${sig.id} was made for a different ${g.kind === 'finding' ? 'finding' : 'gate'}`);
+    }
   }
   const engagementIds = (await db.selectFrom('engagements').select('id').orderBy('id').execute()).map((r) => r.id);
   for (const engagementId of engagementIds) {
@@ -100,6 +112,47 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
     }
   }
   return { checked: rows.length, problems };
+}
+
+/**
+ * Every agent step names a trail entry (decision, delegate, QA, toolbox lookups and open_gate; REQ-28 covers decisions),
+ * with two exceptions. These are bookkeeping, not decisions, and the worker writes them without one: the takeover/recovered
+ * note (agent `worker`) and the rails refusal step (agent `rails`), both of kind tool_call. Verify accepts them for now.
+ * It is default-deny: any other step, including a kind added later, must name an entry.
+ */
+function isBookkeeping(s: { kind: string; agent: string }) {
+  return s.kind === 'tool_call' && (s.agent === 'worker' || s.agent === 'rails');
+}
+
+/**
+ * Each agent step's trail entry (agent spec §9). Any entry a step names must exist, sit in the verified part of the chain
+ * (before any break), and be an agent's entry for that same run and engagement.
+ */
+async function checkAgentSteps(db: Kysely<DB>, chain: TrailBundle[], verified: ChainVerification) {
+  const problems: string[] = [];
+  const bundles = new Map(chain.map((b) => [b.id, b]));
+  const engagementOf = new Map((await db.selectFrom('agent_runs').select(['id', 'engagement_id']).execute()).map((r) => [r.id, r.engagement_id]));
+  const steps = await db.selectFrom('agent_steps').select(['run_id', 'seq', 'kind', 'agent', 'trail_bundle_id']).orderBy('run_id').orderBy('seq').execute();
+  for (const s of steps) {
+    const label = `Step ${s.run_id}#${s.seq} (${s.kind})`;
+    if (!s.trail_bundle_id) {
+      if (!isBookkeeping(s)) problems.push(`${label}: has no trail entry`);
+      continue;
+    }
+    const b = bundles.get(s.trail_bundle_id);
+    if (!b) {
+      problems.push(`${label}: its trail entry ${s.trail_bundle_id} is missing`);
+      continue;
+    }
+    if (verified.brokenAt !== null && b.seq >= verified.brokenAt) {
+      problems.push(`${label}: its trail entry ${b.id} is at or after the break in the chain (seq ${verified.brokenAt})`);
+    }
+    const runId = (b.inputs as { runId?: string } | null)?.runId;
+    if (!b.actor.startsWith('agent:') || runId !== s.run_id || b.engagementId !== engagementOf.get(s.run_id)) {
+      problems.push(`${label}: its trail entry ${b.id} is not an agent's entry for this run`);
+    }
+  }
+  return { checked: steps.length, problems };
 }
 
 /** Every document:register trail entry must still have its documents row, with the SHA-256 the trail sealed. */
@@ -138,6 +191,7 @@ export async function verifyIntegrity(db: Kysely<DB>, blobs: BlobStore | null, s
   const chain = await readTrail(db);
   const trail = verifyChain(chain);
   const signatures = await checkSignatures(db, chain);
+  const agents = await checkAgentSteps(db, chain, trail);
   // The registrations need no storage, so they are checked even when the storage check is skipped.
   const registrations = await checkRegistrations(db, chain);
   const stored = blobs ? await checkDocuments(db, blobs) : { checked: 0, problems: [] };
@@ -145,6 +199,6 @@ export async function verifyIntegrity(db: Kysely<DB>, blobs: BlobStore | null, s
     checked: stored.checked, problems: [...registrations, ...stored.problems],
     skipped: blobs ? null : storageSkipped ?? 'file storage is not configured',
   };
-  const ok = trail.valid && !signatures.problems.length && !documents.problems.length && documents.skipped === null;
-  return { ok, trail, signatures, documents };
+  const ok = trail.valid && !signatures.problems.length && !agents.problems.length && !documents.problems.length && documents.skipped === null;
+  return { ok, trail, signatures, agents, documents };
 }
