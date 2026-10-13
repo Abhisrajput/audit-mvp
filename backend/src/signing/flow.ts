@@ -77,13 +77,15 @@ export async function completeSigning(
   if (now.getTime() > Date.parse(intent.expiresAt)) {
     return failIntent(svc, intent, actor, 'INTENT_EXPIRED', 'The signing request expired. Start signing again from the finding.', CLAIMED);
   }
-  if (intent.subjectKind !== 'finding' || !intent.findingId) {
-    return failIntent(svc, intent, actor, 'INTERNAL', 'This signing request is not for a finding.', CLAIMED);
-  }
+  const proof = { contentHash: intent.contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: intent.id };
   try {
-    await svc.signOff(intent.engagementId, intent.findingId, intent.action, intent.comment, actor, {}, {
-      contentHash: intent.contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: intent.id,
-    });
+    if (intent.subjectKind === 'workpaper' && intent.gateId && intent.action !== 'review') {
+      await svc.signGate(intent.gateId, intent.action, intent.comment, actor, proof);
+    } else if (intent.subjectKind === 'finding' && intent.findingId) {
+      await svc.signOff(intent.engagementId, intent.findingId, intent.action, intent.comment, actor, {}, proof);
+    } else {
+      return failIntent(svc, intent, actor, 'INTERNAL', 'This signing request names nothing to sign.', CLAIMED);
+    }
   } catch (err) {
     if (err instanceof AppError) return failIntent(svc, intent, actor, err.code, err.message, CLAIMED);
     await failIntent(svc, intent, actor, 'INTERNAL', 'Signing failed unexpectedly.', CLAIMED);

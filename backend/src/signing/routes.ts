@@ -44,6 +44,19 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     res.status(201).json({ intentId: intent.id, reauthUrl: `/auth/sign/${intent.id}`, method, expiresAt: intent.expiresAt });
   }));
 
+  // A scope, RCM or report gate the agent opened (agent spec §4.3). Rejecting needs a reason: the agent redrafts from it.
+  r.post('/api/gates/:gateId/sign-intents', readers, wrap(async (req, res) => {
+    const body = z.object({ action: z.enum(['approve', 'reject']), comment: z.string().max(2000).default('') }).parse(req.body);
+    if (body.action === 'reject' && !body.comment.trim()) throw new AppError(400, 'Say why you are rejecting this workpaper: the agent redrafts it from your comment');
+    const actor = actorOf(req);
+    const gateId = String(req.params.gateId);
+    const { engagementId, workpaper, contentHash } = await svc.checkGateSignOff(gateId, actor);
+    const method = reauthMethodFor(req.auth!.user.issuer);
+    if (!method) throw new AppError(409, 'No way to re-authenticate is configured for your account; ask your administrator', 'REAUTH_REQUIRED');
+    const intent = await createIntent(db, { userId: actor.id, engagementId, gateId, workpaper, action: body.action, comment: body.comment, contentHash });
+    res.status(201).json({ intentId: intent.id, reauthUrl: `/auth/sign/${intent.id}`, method, expiresAt: intent.expiresAt });
+  }));
+
   const statusOf = (intent: SignIntent) => ({ status: intent.status, code: intent.failureCode, message: intent.failureMessage });
   const ownIntent = async (req: Request) => {
     const intent = await getIntent(db, String(req.params.intentId));

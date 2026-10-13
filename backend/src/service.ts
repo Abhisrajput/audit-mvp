@@ -1,19 +1,21 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
 import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
-import { wakeWaitingRuns } from './agents/run-repo';
+import { closeFindingGate, closeGate, getGate, type Gate } from './agents/gate-repo';
+import { getRun, wakeWaitingRuns } from './agents/run-repo';
+import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
 import type { DB } from './db/schema';
 import { insertSignature, listSignatures } from './db/signature-repo';
-import { findingContentHash, signatureState, withSignatureStatus } from './signing/content-hash';
+import { findingContentHash, signatureState, withSignatureStatus, workpaperContentHash } from './signing/content-hash';
 import { finishIntent } from './signing/intent-repo';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
 } from './db/engagement-repo';
-import { lastRevisionTimes } from './db/revision-repo';
+import { lastRevisionTimes, recordWorkpaperRevisions } from './db/revision-repo';
 import { getEvalRun, latestEvalRun, listEvalRuns, saveEvalRun } from './db/eval-repo';
-import { appendTrail, readTrail, type UnsealedBundle } from './db/trail-repo';
+import { appendTrail, readTrail, type Executor, type UnsealedBundle } from './db/trail-repo';
 import { Bm25Index, clauseText, controlText } from './engine/grounding';
 import type { LlmProvider } from './engine/llm/provider';
 import { OFFLINE } from './engine/llm/router';
@@ -447,11 +449,7 @@ export class AuditService {
     engagementId: string, findingId: string, action: SignAction, comment: string, actor: User,
     opts: MutationOptions, signature: SignatureContext | UnattendedSigning,
   ) {
-    const unattended = signature && 'unattended' in signature && (signature.unattended === 'seed' || signature.unattended === 'test') ? signature.unattended : null;
-    const reauthed = signature && !unattended && 'contentHash' in signature && signature.intentId ? (signature as SignatureContext) : null;
-    if (!unattended && !reauthed) {
-      throw new AppError(428, 'Signing needs re-authentication: start a signing request instead', 'REAUTH_REQUIRED');
-    }
+    const { unattended, reauthed } = this.signatureProof(signature);
     const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const f = e.findings.find((x) => x.id === findingId);
       if (!f) throw new AppError(404, `Finding ${findingId} not found`);
@@ -476,6 +474,10 @@ export class AuditService {
         id: sig.signatureId!, engagementId: e.id, findingId, subjectKind: 'finding', workpaper: null, gateId: null, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
         contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
       });
+      // An approval or rejection decides the finding's gate, if the agent opened one; a review leaves it open.
+      if (meaning !== 'Reviewed') {
+        await closeFindingGate(trx, e.id, findingId, contentHash, meaning === 'Approved' ? 'approved' : 'rejected', sig.signatureId!, comment);
+      }
       // The signing request is marked signed in this same transaction, so it is never left 'claimed' after a signature commits.
       // A request this attempt does not hold (pending, failed, signed or unknown) rolls back the whole signature.
       if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
@@ -485,6 +487,83 @@ export class AuditService {
     });
     return result;
   }
+
+  /** The proof a signature needs: re-authentication for this exact content, or an explicit unattended marker. Anything else fails closed. */
+  private signatureProof(signature: SignatureContext | UnattendedSigning) {
+    const unattended = signature && 'unattended' in signature && (signature.unattended === 'seed' || signature.unattended === 'test') ? signature.unattended : null;
+    const reauthed = signature && !unattended && 'contentHash' in signature && signature.intentId ? (signature as SignatureContext) : null;
+    if (!unattended && !reauthed) {
+      throw new AppError(428, 'Signing needs re-authentication: start a signing request instead', 'REAUTH_REQUIRED');
+    }
+    return { unattended, reauthed };
+  }
+
+  /** Who may sign a scope, RCM or report gate, and whether its workpaper is still what the gate showed (agent spec §4.3, §4.4). */
+  private async gateGuard(db: Executor, gate: Gate, e: Engagement, actor: User): Promise<{ workpaper: SignableWorkpaper; contentHash: string }> {
+    if (gate.kind === 'finding') throw new AppError(409, "A finding gate closes with the finding's own review and approval signatures");
+    if (gate.state !== 'open') throw new AppError(409, `This gate is already ${gate.state}`);
+    const workpaper: SignableWorkpaper = gate.kind;
+    this.require(actor, workpaper === 'report' ? APPROVER_ROLES : REVIEWER_ROLES, `sign ${workpaper} gates`);
+    const run = await getRun(db, gate.runId);
+    if (run?.startedBy === actor.id) throw new AppError(403, 'You started this agent run, so someone else must sign its gates', 'SOD_VIOLATION');
+    const contentHash = workpaperContentHash(workpaper, e);
+    if (contentHash !== gate.subjectHash) {
+      throw new AppError(409, 'The workpaper changed after this gate opened; the agent will review it again before asking for a signature', 'GATE_STALE');
+    }
+    return { workpaper, contentHash };
+  }
+
+  /** Checks a gate could be signed by this person now, before they are asked to re-authenticate; returns the content to bind. */
+  async checkGateSignOff(gateId: string, actor: User): Promise<{ engagementId: string; workpaper: SignableWorkpaper; contentHash: string }> {
+    const gate = await getGate(this.db.kysely, gateId);
+    if (!gate) throw new AppError(404, `Gate ${gateId} not found`);
+    const e = await this.engagement(gate.engagementId);
+    return { engagementId: e.id, ...(await this.gateGuard(this.db.kysely, gate, e, actor)) };
+  }
+
+  /**
+   * Signs a scope, RCM or report gate (Part 11, like a finding signature): the signature is bound to the workpaper's
+   * content hash, recorded in the signatures table and the trail, and closes the gate; the run waiting on it wakes.
+   */
+  async signGate(gateId: string, action: 'approve' | 'reject', comment: string, actor: User, signature: SignatureContext | UnattendedSigning): Promise<Gate> {
+    const { unattended, reauthed } = this.signatureProof(signature);
+    if (action === 'reject' && !comment.trim()) throw new AppError(400, 'Say why you are rejecting this workpaper: the agent redrafts it from your comment');
+    return this.db.kysely.transaction().execute(async (trx) => {
+      // Lock order is engagement, then gate (as in mutate): learn the engagement from an unlocked read first.
+      const unlocked = await getGate(trx, gateId);
+      if (!unlocked) throw new AppError(404, `Gate ${gateId} not found`);
+      const loaded = await loadEngagement(trx, unlocked.engagementId, { forUpdate: true });
+      if (!loaded) throw new AppError(404, `Engagement ${unlocked.engagementId} not found`);
+      const gate = await getGate(trx, gateId, { forUpdate: true });
+      if (!gate) throw new AppError(404, `Gate ${gateId} not found`);
+      const e = loaded.engagement;
+      const { workpaper, contentHash } = await this.gateGuard(trx, gate, e, actor);
+      if (reauthed && reauthed.contentHash !== contentHash) {
+        throw new AppError(409, 'The workpaper changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
+      }
+      // The signed content must be in the workpaper's history (verify checks it); this is a no-op when it already is.
+      await recordWorkpaperRevisions(trx, e);
+      const meaning = action === 'approve' ? 'Approved' : 'Rejected';
+      const at = new Date().toISOString();
+      const reauth: NonNullable<SignOff['reauth']> = reauthed ? { method: reauthed.reauthMethod, at: reauthed.reauthAt } : { method: 'none', at: null };
+      const signatureId = `SIG-${crypto.randomBytes(6).toString('hex')}`;
+      const output = { signatureId, gateId, kind: workpaper, meaning, contentHash, userId: actor.id, userName: actor.name, role: actor.role, at, reauth, comment };
+      const inputs = { gateId, kind: workpaper, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) };
+      const bundle = await appendTrail(trx, this.humanBundle(e, 'human:gate-sign', actor, inputs, output));
+      await insertSignature(trx, {
+        id: signatureId, engagementId: e.id, findingId: null, subjectKind: 'workpaper', workpaper, gateId, userId: actor.id, userName: actor.name,
+        role: actor.role, meaning, comment, contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null,
+        trailBundleId: bundle.id, signedAt: at,
+      });
+      if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
+        throw new AppError(409, 'This signing request is no longer valid', 'INTENT_EXPIRED');
+      }
+      const closed = await closeGate(trx, gateId, action === 'approve' ? 'approved' : 'rejected', signatureId, comment);
+      await wakeWaitingRuns(trx, e.id);
+      return closed;
+    });
+  }
+
   // ---------- Trail ----------
 
   /** A trail bundle for a person's action on the engagement. */

@@ -84,6 +84,7 @@ export function createApp(
   app.use('/auth', limits.auth);
   app.use('/auth/sign', limits.signing);
   app.post('/api/engagements/:id/findings/:fid/sign-intents', limits.signing);
+  app.post('/api/gates/:gateId/sign-intents', limits.signing);
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,
