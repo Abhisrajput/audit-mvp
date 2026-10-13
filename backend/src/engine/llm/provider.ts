@@ -9,7 +9,19 @@ export interface GenerateRequest<T> {
   system: string;
   user: string;
   schema: z.ZodType<T>;
+  /** This call's model instead of the provider's own (agent roles pick theirs). */
+  model?: string;
+  /** Output ceiling, thinking included. Defaults to DEFAULT_MAX_TOKENS. */
+  maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
+  /** Time limit for this call. Running out is a model error like any other. */
+  timeoutMs?: number;
+  /** Retries the SDK makes by itself. Agent calls pass 0: they retry on their own (agent spec §6.3). */
+  sdkRetries?: number;
 }
+
+/** The output ceiling of a call that does not set one. */
+export const DEFAULT_MAX_TOKENS = 16000;
 
 export interface GenerateResult<T> {
   output: T;
@@ -26,3 +38,6 @@ export interface LlmProvider {
 }
 
 export class ProviderError extends Error {}
+
+/** The model answered, but not in the required shape (agent spec §6.3: "malformed"). */
+export class MalformedOutputError extends ProviderError {}

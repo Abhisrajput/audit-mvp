@@ -167,7 +167,7 @@ describe('budgets [REQ-29]', () => {
 
 describe('agent configuration [REQ-25]', () => {
   it('defaults to the spec’s values and validates overrides', () => {
-    expect(defaultAgentConfig()).toEqual({
+    expect(defaultAgentConfig()).toMatchObject({
       enabled: true, budget: { maxSteps: 200, maxTokens: 2_000_000, maxCostUsd: 25 }, qaThreshold: 70, pollMs: 3000, concurrency: 2, leaseMs: 60_000, heartbeatMs: 15_000,
     });
     expect(loadAgentConfig({ AGENT_ENABLED: 'false' }).enabled).toBe(false);

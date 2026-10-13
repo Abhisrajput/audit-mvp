@@ -1,4 +1,8 @@
-import type { GenerateRequest, GenerateResult, LlmProvider } from '../src/engine/llm/provider';
+import { MalformedOutputError, type GenerateRequest, type GenerateResult, type LlmProvider } from '../src/engine/llm/provider';
+import { ModelMeter } from '../src/agents/budget';
+import type { AgentLlmConfig, RoleSettings } from '../src/agents/config';
+import { AgentModels } from '../src/agents/llm/models';
+import { NO_SPEND, type Budget } from '../src/agents/types';
 import { registryFromBundles } from '../src/knowledge/packs';
 import { defaultAgentConfig } from '../src/agents/config';
 import { RULES_VERSION } from '../src/agents/policy/rules';
@@ -36,14 +40,45 @@ export async function leasedRun(svc: AuditService, engagementId: string, leaseOw
   return { run: leased, acting: (agent = 'scope'): AgentActing => ({ runId: run.id, agent, startedBy: auditor, leaseOwner }) };
 }
 
-/** A scripted model: returns whatever the handler builds for the request. */
+/**
+ * A scripted model. The handler builds each answer (or throws, to act as an outage); an answer that does not fit the
+ * request's schema is refused the way the real provider refuses one (MalformedOutputError). Every request is kept.
+ */
 export class FakeProvider implements LlmProvider {
   readonly id = 'fake';
   readonly model = 'fake-1';
-  constructor(private handler: (req: GenerateRequest<any>) => unknown) {}
+  readonly requests: GenerateRequest<any>[] = [];
+
+  constructor(
+    private handler: (req: GenerateRequest<any>, call: number) => unknown,
+    private opts: { usage?: { inputTokens: number; outputTokens: number } | null; servedModel?: string } = {},
+  ) {}
+
   async generate<T>(req: GenerateRequest<T>): Promise<GenerateResult<T>> {
-    return { output: req.schema.parse(this.handler(req)), servedModel: this.model };
+    this.requests.push(req);
+    const raw = await this.handler(req, this.requests.length);
+    const parsed = req.schema.safeParse(raw);
+    if (!parsed.success) throw new MalformedOutputError(`The fake model's answer did not match the schema: ${parsed.error.message}`);
+    const usage = this.opts.usage === undefined ? { inputTokens: 1000, outputTokens: 200 } : this.opts.usage;
+    return { output: parsed.data, servedModel: this.opts.servedModel ?? req.model ?? this.model, ...(usage ? { usage } : {}) };
   }
+}
+
+const FAKE_ROLE: RoleSettings = { model: 'fake-1', maxTokens: 500, effort: 'low' };
+
+/** Agent model settings for tests: every role on the fake model, at $10 per million tokens each way. */
+export const TEST_LLM: AgentLlmConfig = {
+  roles: { policy: FAKE_ROLE, qa: FAKE_ROLE, 'test-plan': FAKE_ROLE, specialist: FAKE_ROLE },
+  prices: { 'fake-1': { inputPerMTok: 10, outputPerMTok: 10 } },
+  timeoutMs: 1000,
+};
+
+/** Retry backoff that does not wait. */
+export const noWait = async () => {};
+
+/** Model access for tests without a run: metered against a generous budget, with nothing written anywhere. */
+export function testModels(provider: LlmProvider | null, budget: Budget = { maxSteps: 100, maxTokens: 10_000_000, maxCostUsd: 1000 }) {
+  return new AgentModels(provider, TEST_LLM, new ModelMeter(budget, NO_SPEND, async () => {}), { wait: noWait });
 }
 
 export const NEW_ENGAGEMENT = {
