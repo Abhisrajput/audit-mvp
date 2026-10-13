@@ -115,17 +115,7 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
 }
 
 /**
- * Every agent step names a trail entry (decision, delegate, QA, toolbox lookups and open_gate; REQ-28 covers decisions),
- * with two exceptions. These are bookkeeping, not decisions, and the worker writes them without one: the takeover/recovered
- * note (agent `worker`) and the rails refusal step (agent `rails`), both of kind tool_call. Verify accepts them for now.
- * It is default-deny: any other step, including a kind added later, must name an entry.
- */
-function isBookkeeping(s: { kind: string; agent: string }) {
-  return s.kind === 'tool_call' && (s.agent === 'worker' || s.agent === 'rails');
-}
-
-/**
- * Each agent step's trail entry (agent spec §9). Any entry a step names must exist, sit in the verified part of the chain
+ * Each agent step's trail entry (agent spec §9). Every step must name one, and it must exist, sit in the verified part of the chain
  * (before any break), and be an agent's entry for that same run and engagement.
  */
 async function checkAgentSteps(db: Kysely<DB>, chain: TrailBundle[], verified: ChainVerification) {
@@ -136,7 +126,7 @@ async function checkAgentSteps(db: Kysely<DB>, chain: TrailBundle[], verified: C
   for (const s of steps) {
     const label = `Step ${s.run_id}#${s.seq} (${s.kind})`;
     if (!s.trail_bundle_id) {
-      if (!isBookkeeping(s)) problems.push(`${label}: has no trail entry`);
+      problems.push(`${label}: has no trail entry`);
       continue;
     }
     const b = bundles.get(s.trail_bundle_id);

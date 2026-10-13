@@ -193,14 +193,18 @@ describe('verify on agent work', () => {
     ]));
   });
 
-  it('reports a toolbox or gate-opening step, or a relabelled decision, with no trail entry; bookkeeping steps pass [REQ-24, REQ-28]', async () => {
+  it('reports any agent step with no trail entry, including takeover notes and rails refusals [REQ-24, REQ-28]', async () => {
     const { k, run, steps } = await runAtScopeGate();
-    const lookup = steps.find((s) => s.kind === 'tool_call' && s.agent !== 'worker' && s.agent !== 'rails')!;
+    const lookup = steps.find((s) => s.kind === 'tool_call')!;
     const decision = steps.find((s) => s.kind === 'decision')!;
-    // The two bookkeeping steps the worker writes without an entry.
+    // A takeover note and a rails refusal with no entry: no step is exempt.
     await sql`ALTER TABLE agent_steps DISABLE TRIGGER agent_steps_append_only`.execute(k);
     await sql`INSERT INTO agent_steps (run_id, seq, kind, agent, decision) VALUES (${run.id}, 9001, 'tool_call', 'worker', '{"recovered":"x"}'::jsonb), (${run.id}, 9002, 'tool_call', 'rails', '{"refused":"x"}'::jsonb)`.execute(k);
-    expect((await verifyIntegrity(k, null)).agents.problems).toEqual([]);
+    expect((await verifyIntegrity(k, null)).agents.problems).toEqual([
+      `Step ${run.id}#9001 (tool_call): has no trail entry`,
+      `Step ${run.id}#9002 (tool_call): has no trail entry`,
+    ]);
+    await sql`DELETE FROM agent_steps WHERE run_id = ${run.id} AND seq IN (9001, 9002)`.execute(k);
 
     await sql`UPDATE agent_steps SET trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${lookup.seq}`.execute(k);
     await sql`UPDATE agent_steps SET kind = 'tool_call', trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${decision.seq}`.execute(k);
