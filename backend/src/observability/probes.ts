@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { sql } from 'kysely';
 import type { Db } from '../db';
 import { AppError } from '../errors';
+import { refreshRunGauge } from '../agents/metrics';
 import { wrap } from '../http-util';
 import type { BlobStore } from '../storage/blob-store';
 import { logger } from './log';
@@ -15,6 +16,8 @@ export interface ProbeDeps {
   blobs: BlobStore | null;
   metricsToken: string | null;
   timeoutMs?: number;
+  /** Report agent runs by status at each scrape. The API does; the worker leaves it to the API so it is never reported twice. */
+  agentRuns?: boolean;
 }
 
 /** A key no upload can have: head() answers null when the store is reachable and throws when it is not. */
@@ -59,6 +62,10 @@ export function probeRoutes(deps: ProbeDeps): Router {
   r.get('/metrics', wrap(async (req, res) => {
     if (deps.metricsToken && !sameToken(req.header('authorization') ?? '', `Bearer ${deps.metricsToken}`)) {
       throw new AppError(401, 'Metrics need the bearer token', 'UNAUTHENTICATED');
+    }
+    if (deps.agentRuns) {
+      // A failed count leaves the last values in place rather than failing the whole scrape.
+      await refreshRunGauge(deps.db.kysely).catch((err) => logger.warn({ err }, 'could not count agent runs for /metrics'));
     }
     res.set('Content-Type', registry.contentType).send(await registry.metrics());
   }));

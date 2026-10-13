@@ -4,6 +4,7 @@ import { appendTrail } from '../../db/trail-repo';
 import type { Engagement, User } from '../../engine/types';
 import { AppError } from '../../errors';
 import type { AgentPort } from '../port';
+import { elapsedMs } from '../metrics';
 import { appendStep, assertLease, type AgentRun } from '../run-repo';
 import { NeighbourhoodArgs, nodeNeighbourhood, SearchArgs, searchKnowledge, type KnowledgeHit, type Neighbourhood, type ToolName } from './knowledge';
 
@@ -58,6 +59,7 @@ export class Toolbox {
    */
   async call(tool: ToolName, args: unknown): Promise<KnowledgeHit[] | Neighbourhood> {
     if (!mayUse(this.agent, tool)) throw new AppError(403, `The ${this.agent} agent may not use ${tool}`, 'AGENT_FORBIDDEN');
+    const started = Date.now();
     const { db, starter, engagement } = this.ctx;
     let parsed: unknown;
     let result: KnowledgeHit[] | Neighbourhood;
@@ -71,7 +73,7 @@ export class Toolbox {
       result = await nodeNeighbourhood(db, starter, a);
     }
     // The arguments the tool ran with, as parsed: bounded by the tool's schema.
-    await this.record({ tool, args: parsed, resultIds: idsOf(result) });
+    await this.record({ tool, args: parsed, resultIds: idsOf(result) }, elapsedMs(started));
     return result;
   }
 
@@ -103,14 +105,14 @@ export class Toolbox {
     return out;
   }
 
-  private async record(output: { tool: string; args: unknown; resultIds: string[]; refused?: string }) {
+  private async record(output: { tool: string; args: unknown; resultIds: string[]; refused?: string }, durationMs = 0) {
     const { db, port, run, starter, engagement } = this.ctx;
     await db.transaction().execute(async (trx) => {
       await assertLease(trx, run.id, run.leaseOwner!);
       const sealed = await appendTrail(trx, port.agentBundle(engagement, {
         moduleId: 'agent:tool', agent: this.agent, runId: run.id, onBehalfOf: starter.id, inputs: { tool: output.tool, args: output.args }, output,
       }));
-      await appendStep(trx, run.id, { kind: 'tool_call', agent: this.agent, decision: output, trailBundleId: sealed.id });
+      await appendStep(trx, run.id, { kind: 'tool_call', agent: this.agent, decision: output, durationMs, trailBundleId: sealed.id });
     });
   }
 }

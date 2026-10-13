@@ -15,10 +15,11 @@ import { AgentModels } from './llm/models';
 import { applyDecision, type Outcome } from './executor';
 import { listGates, supersedeOpenGates } from './gate-repo';
 import { allowedActions } from './graph';
+import { elapsedMs, observeSteps } from './metrics';
 import { LlmPolicy } from './policy/llm';
 import { RulesPolicy } from './policy/rules';
 import { agentPort, type AgentPort } from './port';
-import { appendStep, assertLease, leaseNext, recordSpend, releaseRun, renewLease, type AgentRun, type LeasedRun, type RunUpdate } from './run-repo';
+import { appendStep, assertLease, lastStepSeq, leaseNext, listSteps, recordSpend, releaseRun, renewLease, type AgentRun, type LeasedRun, type RunUpdate } from './run-repo';
 import { loadGraphInput, reconcileGates } from './state';
 import { DecisionSchema, sameAction, type Decision, type Menu, type Policy, type Spent } from './types';
 
@@ -84,8 +85,13 @@ export class AgentWorker {
         .catch((err) => logger.warn({ err, runId: run.id }, 'agent lease renewal failed'));
     }, this.cfg.heartbeatMs);
     try {
+      // Steps are counted once committed and only by the worker that hands the run back (spec §6.4). They are listed
+      // while this worker still holds the run, so no step written after a takeover is counted here as well.
+      const fromSeq = await lastStepSeq(db, run.id).catch(() => null);
       const update = await runWithRequestId(run.id, () => this.iterate(run));
-      if (!(await releaseRun(db, run.id, this.id, update))) logger.warn({ runId: run.id }, 'agent run lease was lost before the step was handed back');
+      const committed = fromSeq === null ? [] : await listSteps(db, run.id, { afterSeq: fromSeq }).catch(() => []);
+      if (await releaseRun(db, run.id, this.id, update)) observeSteps(committed);
+      else logger.warn({ runId: run.id }, 'agent run lease was lost before the step was handed back');
     } finally {
       clearInterval(heartbeat);
     }
@@ -164,7 +170,9 @@ export class AgentWorker {
       });
       const gates = await listGates(db, e.id);
       const menu = allowedActions(await loadGraphInput(db, run, e, gates, this.cfg.qaThreshold));
+      const deciding = Date.now();
       const decision = await chooseDecision(this.policy, menu, models);
+      const decidedMs = elapsedMs(deciding);
       const used = models.take();
       const servedBy = [...(decision.attempts ?? [])].reverse().find((x) => x.model)?.model ?? decision.policyVersion;
       await db.transaction().execute(async (trx) => {
@@ -175,7 +183,7 @@ export class AgentWorker {
         }));
         await appendStep(trx, run.id, {
           kind: 'decision', agent: 'supervisor', decision, model: used.model ?? decision.policyVersion,
-          tokensIn: used.tokensIn, tokensOut: used.tokensOut, costUsd: used.costUsd, trailBundleId: sealed.id,
+          tokensIn: used.tokensIn, tokensOut: used.tokensOut, costUsd: used.costUsd, durationMs: decidedMs, trailBundleId: sealed.id,
         });
       });
       const outcome = await applyDecision({

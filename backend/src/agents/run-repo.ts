@@ -294,12 +294,18 @@ const toStep = (r: Selectable<AgentStepsTable>): AgentStep => ({
 });
 
 /** Appends the run's next step. Only the run's leaseholder appends, so seq does not race; the primary key backs that up. */
+/** The run's last step number (0 before any step). */
+export async function lastStepSeq(db: Executor, runId: string): Promise<number> {
+  const row = await db.selectFrom('agent_steps').select((eb) => eb.fn.max('seq').as('seq')).where('run_id', '=', runId).executeTakeFirst();
+  return Number(row?.seq ?? 0);
+}
+
 export async function appendStep(db: Executor, runId: string, d: StepDraft): Promise<AgentStep> {
-  const last = await db.selectFrom('agent_steps').select((eb) => eb.fn.max('seq').as('seq')).where('run_id', '=', runId).executeTakeFirst();
+  const seq = (await lastStepSeq(db, runId)) + 1;
   const row = await db
     .insertInto('agent_steps')
     .values({
-      run_id: runId, seq: Number(last?.seq ?? 0) + 1, kind: d.kind, agent: d.agent, decision: JSON.stringify(d.decision), model: d.model ?? null,
+      run_id: runId, seq, kind: d.kind, agent: d.agent, decision: JSON.stringify(d.decision), model: d.model ?? null,
       tokens_in: d.tokensIn ?? 0, tokens_out: d.tokensOut ?? 0, cost_usd: d.costUsd ?? 0, duration_ms: d.durationMs ?? 0, trail_bundle_id: d.trailBundleId ?? null,
     })
     .returningAll()
