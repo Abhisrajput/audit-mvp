@@ -103,6 +103,17 @@ export function explainStatus(run: AgentRun): { text: string; next: string | nul
   }
   if (r.startsWith('agent_forbidden')) return { text: `The rails refused an action: ${r.replace(/^agent_forbidden: /, '')}`, next: 'Check the steps below, then resume or cancel.' };
   if (r.startsWith('error:')) return { text: `The run stopped after repeated errors: ${r.replace(/^error: /, '')}`, next: 'Resume to try again; if it keeps failing, give the run id to your administrator.' };
+  if (r.startsWith('the person who started this run can no longer prepare')) {
+    return { text: 'The person who started this run can no longer prepare audit work.', next: 'This run cannot be resumed. Start a new run.' };
+  }
+  if (r.startsWith('rework produced no change')) {
+    return { text: `The agent redrafted but nothing changed (${subjectLabel(r.replace(/^rework produced no change: /, '').replace(/; edit it by hand, then resume$/, ''))}).`, next: 'Edit it by hand, then resume.' };
+  }
+  if (/^QA (found|scored)/.test(r)) return { text: `${r}.`, next: 'Fix the issues QA lists in the draft by hand, then resume: it goes through QA again.' };
+  if (/was approved on test results that have since changed/.test(r)) {
+    return { text: r.replace(/; a person must decide what to do with it$/, '') + '.', next: 'Decide what to do with the finding in Findings (reject it, or have it redrafted), then resume.' };
+  }
+  if (/specialist already ran for/.test(r)) return { text: r.replace(/; check it by hand, then resume$/, '') + '.', next: 'Check and edit it by hand, then resume.' };
   if (run.status === 'needs_human') return { text: r || 'The agent needs a person to decide.', next: 'Fix what it asks for, then resume.' };
   return { text: r ? `Waiting: ${r}.` : 'Waiting.', next: null };
 }

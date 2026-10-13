@@ -57,6 +57,25 @@ describe('the run status in plain words', () => {
     expect(explainStatus(run({ status: 'needs_human', statusReason: 'gate_rejected_twice: finding:FD-HACCP-03' })).text).toBe('A gate was rejected twice (finding for FD-HACCP-03).');
     expect(explainStatus(run({ status: 'needs_human', statusReason: 'agent_forbidden: An agent may not sign' })).text).toBe('The rails refused an action: An agent may not sign');
     expect(explainStatus(run({ status: 'waiting', statusReason: 'paused_by_user' }))).toEqual({ text: 'Paused.', next: 'Resume the run when you are ready.' });
+    expect(explainStatus(run({ status: 'needs_human', statusReason: 'the person who started this run can no longer prepare audit work; start a new run' }))).toEqual({
+      text: 'The person who started this run can no longer prepare audit work.', next: 'This run cannot be resumed. Start a new run.',
+    });
+    expect(explainStatus(run({ status: 'needs_human', statusReason: 'rework produced no change: finding:FD-HACCP-03; edit it by hand, then resume' }))).toEqual({
+      text: 'The agent redrafted but nothing changed (finding for FD-HACCP-03).', next: 'Edit it by hand, then resume.',
+    });
+    for (const reason of ['QA found blocking issues in the scope', 'QA found 2 issue(s) in the scope, some blocking', 'QA scored 60 for the scope, below 70']) {
+      expect(explainStatus(run({ status: 'needs_human', statusReason: reason }))).toEqual({
+        text: `${reason}.`, next: 'Fix the issues QA lists in the draft by hand, then resume: it goes through QA again.',
+      });
+    }
+    expect(explainStatus(run({ status: 'needs_human', statusReason: 'finding F-1 was approved on test results that have since changed; a person must decide what to do with it' }))).toEqual({
+      text: 'finding F-1 was approved on test results that have since changed.',
+      next: 'Decide what to do with the finding in Findings (reject it, or have it redrafted), then resume.',
+    });
+    expect(explainStatus(run({ status: 'needs_human', statusReason: 'The planner specialist already ran for scope and it is still not ready; check it by hand, then resume' }))).toEqual({
+      text: 'The planner specialist already ran for scope and it is still not ready.', next: 'Check and edit it by hand, then resume.',
+    });
+    expect(explainStatus(run({ status: 'needs_human', statusReason: 'error: the worker running this run stopped mid-step 3 times in a row' })).next).toMatch(/Resume to try again/);
     expect(explainStatus(run({ status: 'needs_human', statusReason: 'something new' }))).toEqual({ text: 'something new', next: 'Fix what it asks for, then resume.' });
   });
 });

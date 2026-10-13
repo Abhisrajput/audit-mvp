@@ -15,6 +15,7 @@ import type { Engagement, Gate, TrailBundle } from '../types';
 
 const STEPS = ['Risk & scope', 'RCM', 'Test plans', 'Fieldwork & testing', 'Findings', 'Report'];
 const FINDINGS_TAB = 4;
+const REPORT_TAB = 5;
 const TRAIL_TAB = STEPS.length;
 
 export interface TabProps {
@@ -130,7 +131,7 @@ export default function EngagementPage() {
       {tab === 2 && <TestPlansTab {...props} />}
       {tab === 3 && <FieldworkTab {...props} />}
       {tab === FINDINGS_TAB && <FindingsTab {...props} />}
-      {tab === 5 && <ReportTab {...props} />}
+      {tab === REPORT_TAB && <ReportTab {...props} />}
       {tab === TRAIL_TAB && <TrailTab {...props} />}
     </Stack>
   );

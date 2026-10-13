@@ -293,13 +293,13 @@ const toStep = (r: Selectable<AgentStepsTable>): AgentStep => ({
   costUsd: r.cost_usd, durationMs: r.duration_ms, trailBundleId: r.trail_bundle_id, createdAt: iso(r.created_at),
 });
 
-/** Appends the run's next step. Only the run's leaseholder appends, so seq does not race; the primary key backs that up. */
 /** The run's last step number (0 before any step). */
 export async function lastStepSeq(db: Executor, runId: string): Promise<number> {
   const row = await db.selectFrom('agent_steps').select((eb) => eb.fn.max('seq').as('seq')).where('run_id', '=', runId).executeTakeFirst();
   return Number(row?.seq ?? 0);
 }
 
+/** Appends the run's next step. Only the run's leaseholder appends, so seq does not race; the primary key backs that up. */
 export async function appendStep(db: Executor, runId: string, d: StepDraft): Promise<AgentStep> {
   const seq = (await lastStepSeq(db, runId)) + 1;
   const row = await db
