@@ -50,6 +50,18 @@ describe('agent metrics', () => {
     expect(await metricValue('audit_agent_cost_usd_total', { agent: 'qa', model: 'm-metrics' })).toBeCloseTo(before.cost + 0.3, 6);
   });
 
+  it('label an unexpected model id as other, so a server-side fallback adds no series', () => {
+    const odd = 'claude-surprise-fallback-9';
+    observeSteps([step({ kind: 'qa', agent: 'qa', model: odd, tokensIn: 10, tokensOut: 5, costUsd: 0.01, durationMs: 5 })], TEST_LLM);
+    return Promise.all([
+      metricValue('audit_agent_tokens_total', { agent: 'qa', model: 'other', kind: 'input' }),
+      registry.metrics(),
+    ]).then(([other, text]) => {
+      expect(other).toBeGreaterThanOrEqual(10);
+      expect(text).not.toContain(odd);
+    });
+  });
+
   it('count a decision the rules took over from the model, by the model attempt that failed', async () => {
     const malformed = await metricValue('audit_agent_policy_fallbacks_total', { reason: 'malformed' });
     const offMenu = await metricValue('audit_agent_policy_fallbacks_total', { reason: 'off_menu' });

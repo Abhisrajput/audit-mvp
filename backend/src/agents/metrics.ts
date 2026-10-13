@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely';
 import type { DB } from '../db/schema';
 import { agentCostUsd, agentGuardRefusals, agentPolicyFallbacks, agentRuns, agentStepSeconds, agentTokens } from '../observability/metrics';
+import type { AgentLlmConfig } from './config';
 import type { AgentStep } from './run-repo';
 import type { Decision, RunStatus } from './types';
 
@@ -22,12 +23,23 @@ export function fallbackReason(d: Decision): string | null {
  */
 export const elapsedMs = (since: number): number => Math.max(1, Date.now() - since);
 
-/** Counts one iteration's committed steps. */
-export function observeSteps(steps: AgentStep[]): void {
+/**
+ * The model label for a charged step: the id when it is a configured role model or in the price table, else 'other'.
+ * The id comes from the provider's response, so a server-side fallback or a gateway must not add series.
+ */
+export function modelLabel(model: string | null, llm?: AgentLlmConfig): string {
+  if (!model) return 'none';
+  if (!llm) return model;
+  const configured = Object.values(llm.roles).some((r) => r.model === model);
+  return configured || Object.hasOwn(llm.prices, model) ? model : 'other';
+}
+
+/** Counts one iteration's committed steps. `llm` bounds the model label to the configured and priced models. */
+export function observeSteps(steps: AgentStep[], llm?: AgentLlmConfig): void {
   for (const s of steps) {
     // Bookkeeping steps (takeover notes, rails refusals, refused lookups) record 0 ms: no timing to count.
     if (s.durationMs > 0) agentStepSeconds.observe({ kind: s.kind }, s.durationMs / 1000);
-    const model = s.model ?? 'none';
+    const model = modelLabel(s.model, llm);
     if (s.tokensIn) agentTokens.inc({ agent: s.agent, model, kind: 'input' }, s.tokensIn);
     if (s.tokensOut) agentTokens.inc({ agent: s.agent, model, kind: 'output' }, s.tokensOut);
     if (s.costUsd) agentCostUsd.inc({ agent: s.agent, model }, s.costUsd);

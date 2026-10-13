@@ -97,7 +97,7 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         await appendStep(trx, run.id, {
           kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: used?.model ?? bundle.provider.model,
           tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0,
-          durationMs: Date.now() - started, trailBundleId: bundle.id,
+          durationMs: elapsedMs(started), trailBundleId: bundle.id,
         });
       });
       return { next: 'continue' };
