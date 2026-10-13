@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'FINDING_BLOCKED'
   | 'FINDING_LOCKED'
   | 'SOD_VIOLATION'
+  | 'RUN_NOT_ACTIVE'
   | 'CSRF_FAILED'
   | 'PENDING_ACCESS'
   | 'REAUTH_REQUIRED'
@@ -21,6 +22,11 @@ export type ErrorCode =
   | 'CANCELLED'
   | 'RECORD_IMMUTABLE'
   | 'RATE_LIMITED'
+  | 'RUN_ACTIVE'
+  | 'AGENT_DISABLED'
+  | 'GATE_STALE'
+  | 'AGENT_FORBIDDEN'
+  | 'LEASE_LOST'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {

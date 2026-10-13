@@ -5,6 +5,14 @@ import type { SignIntent } from './intent-repo';
 
 const MEANING = { review: 'Reviewed', approve: 'Approved', reject: 'Rejected' } as const;
 
+const WORKPAPER = { scope: 'scope', rcm: 'RCM', report: 'report' } as const;
+
+/** What the signer is signing, as HTML. */
+const subjectOf = (intent: SignIntent) =>
+  intent.subjectKind === 'workpaper' && intent.workpaper
+    ? `the <b>${WORKPAPER[intent.workpaper]}</b> workpaper`
+    : `finding <b>${escapeHtml(intent.findingId ?? '')}</b>`;
+
 /** Demo users have no password: they re-authenticate by typing their user id. DEV_AUTH only. */
 export function devConfirmPage(res: Response, intent: SignIntent, userName: string) {
   popupHeaders(res);
@@ -14,7 +22,7 @@ export function devConfirmPage(res: Response, intent: SignIntent, userName: stri
     .send(
       `<!doctype html><meta charset="utf-8"><title>Confirm your signature</title>` +
         `<h1>Confirm your signature</h1>` +
-        `<p>${escapeHtml(userName)}, you are signing finding <b>${escapeHtml(intent.findingId)}</b> as <b>${MEANING[intent.action]}</b>.</p>` +
+        `<p>${escapeHtml(userName)}, you are signing ${subjectOf(intent)} as <b>${MEANING[intent.action]}</b>.</p>` +
         `<p>Demo sign-in has no password, so type your user id to confirm it is you.</p>` +
         `<form method="post" action="/auth/sign/${escapeHtml(intent.id)}/dev">` +
         `<input type="hidden" name="nonce" value="${escapeHtml(intent.nonce)}">` +

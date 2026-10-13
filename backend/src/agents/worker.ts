@@ -1,0 +1,194 @@
+import crypto from 'node:crypto';
+import os from 'node:os';
+import { PREPARER_ROLES } from '../auth/roles';
+import { getUser } from '../auth/user-repo';
+import { loadEngagement } from '../db/engagement-repo';
+import { appendTrail, type Executor } from '../db/trail-repo';
+import type { User } from '../engine/types';
+import { AppError } from '../errors';
+import { runWithRequestId } from '../observability/context';
+import { logger } from '../observability/log';
+import type { AuditService } from '../service';
+import { addSpend, budgetProblem } from './budget';
+import type { AgentConfig } from './config';
+import { applyDecision, type Outcome } from './executor';
+import { listGates, supersedeOpenGates } from './gate-repo';
+import { allowedActions } from './graph';
+import { RulesPolicy } from './policy/rules';
+import { agentPort, type AgentPort } from './port';
+import { appendStep, assertLease, leaseNext, releaseRun, renewLease, type AgentRun, type RunUpdate } from './run-repo';
+import { loadGraphInput, reconcileGates } from './state';
+import { DecisionSchema, sameAction, type Decision, type Menu, type Policy } from './types';
+
+// The agent worker (spec §2, §6). One tick leases one due run, takes one step of its loop, and hands the run back with
+// its next status. Everything is derived again from the database each tick, so a worker that dies loses at most one
+// uncommitted step, and another worker picks the run up once the lease runs out.
+
+const CONFLICT_BACKOFF_MS = 60_000;
+const MAX_STREAK = 3;
+
+/** The decision for this menu: forced when one action is allowed, else the policy's, else (off the menu) the rules'. */
+export async function chooseDecision(policy: Policy, menu: Menu): Promise<Decision> {
+  if (menu.actions.length === 1) return { action: menu.actions[0], rationale: 'The only allowed action', policy: 'forced', policyVersion: policy.version };
+  const parsed = DecisionSchema.safeParse(await policy.decide(menu));
+  if (parsed.success && menu.actions.some((a) => sameAction(a, parsed.data.action))) return parsed.data;
+  const fallback = await new RulesPolicy().decide(menu);
+  return { ...fallback, rationale: `${fallback.rationale} (the ${policy.kind} policy chose an action that is not allowed)`.slice(0, 500) };
+}
+
+const statusOf = (o: Outcome): Pick<RunUpdate, 'status' | 'reason'> =>
+  o.next === 'continue' ? { status: 'runnable' } : o.next === 'completed' ? { status: 'completed' } : { status: o.next, reason: o.reason };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export interface WorkerOptions {
+  id?: string;
+  policy?: Policy;
+}
+
+export class AgentWorker {
+  readonly id: string;
+  private readonly policy: Policy;
+  private readonly port: AgentPort;
+  private stopping = false;
+  private loops: Promise<void>[] = [];
+
+  constructor(private readonly svc: AuditService, private readonly cfg: AgentConfig, opts: WorkerOptions = {}) {
+    this.id = opts.id ?? `${os.hostname()}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
+    this.policy = opts.policy ?? new RulesPolicy();
+    this.port = agentPort(svc);
+  }
+
+  /** Leases one due run and takes one step of it. 'idle' when switched off or nothing is due. */
+  async tick(): Promise<'idle' | 'worked'> {
+    if (!this.cfg.enabled) return 'idle';
+    const db = this.svc.db.kysely;
+    const run = await leaseNext(db, this.id, this.cfg.leaseMs);
+    if (!run) return 'idle';
+    const heartbeat = setInterval(() => {
+      renewLease(db, run.id, this.id, this.cfg.leaseMs)
+        .then((held) => { if (!held) logger.warn({ runId: run.id }, "lease lost; this iteration's writes will be refused"); })
+        .catch((err) => logger.warn({ err, runId: run.id }, 'agent lease renewal failed'));
+    }, this.cfg.heartbeatMs);
+    try {
+      const update = await runWithRequestId(run.id, () => this.iterate(run));
+      if (!(await releaseRun(db, run.id, this.id, update))) logger.warn({ runId: run.id }, 'agent run lease was lost before the step was handed back');
+    } finally {
+      clearInterval(heartbeat);
+    }
+    return 'worked';
+  }
+
+  /** Ticks until nothing is due (tests, and one-off runs from the command line). */
+  async drain(maxTicks = 1000): Promise<number> {
+    let ticks = 0;
+    while (ticks < maxTicks && (await this.tick()) === 'worked') ticks++;
+    return ticks;
+  }
+
+  /** Polls in the background with `concurrency` loops. */
+  start(): void {
+    this.stopping = false;
+    for (let i = 0; i < this.cfg.concurrency; i++) {
+      this.loops.push((async () => {
+        while (!this.stopping) {
+          const result = await this.tick().catch((err) => {
+            logger.error({ err }, 'agent worker tick failed');
+            return 'idle' as const;
+          });
+          if (result === 'idle' && !this.stopping) await sleep(this.cfg.pollMs);
+        }
+      })());
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.stopping = true;
+    await Promise.all(this.loops.splice(0));
+  }
+
+  private async iterate(run: AgentRun): Promise<RunUpdate> {
+    const db = this.svc.db.kysely;
+    try {
+      // Lock order is engagement, then run, then gate, everywhere; a worker whose lease has lapsed writes nothing.
+      if (run.cancelRequested) {
+        await db.transaction().execute(async (trx) => {
+          await this.lockEngagement(trx, run);
+          await assertLease(trx, run.id, this.id);
+          await supersedeOpenGates(trx, run.id);
+        });
+        return { status: 'cancelled', reason: 'cancelled_by_user' };
+      }
+      if (run.pauseRequested) return { status: 'waiting', reason: 'paused_by_user', pauseHandled: true };
+      const over = budgetProblem(run.budget, run.spent);
+      if (over) return { status: 'needs_human', reason: over };
+      const record = await getUser(db, run.startedBy);
+      if (!record?.active || !record.role || !PREPARER_ROLES.includes(record.role)) {
+        return { status: 'needs_human', reason: 'the person who started this run can no longer prepare audit work; start a new run' };
+      }
+      const starter: User = { id: record.id, name: record.name, role: record.role };
+      const e = await db.transaction().execute(async (trx) => {
+        const locked = await this.lockEngagement(trx, run);
+        await assertLease(trx, run.id, this.id);
+        await reconcileGates(trx, locked);
+        return locked;
+      });
+      const gates = await listGates(db, e.id);
+      const menu = allowedActions(await loadGraphInput(db, run, e, gates, this.cfg.qaThreshold));
+      const decision = await chooseDecision(this.policy, menu);
+      const spent = addSpend(run.spent, { steps: 1 });
+      await db.transaction().execute(async (trx) => {
+        await assertLease(trx, run.id, this.id);
+        const sealed = await appendTrail(trx, this.port.agentBundle(e, {
+          moduleId: 'agent:decision', agent: 'supervisor', runId: run.id, onBehalfOf: starter.id,
+          provider: { id: decision.policy, model: decision.policyVersion }, inputs: { stage: menu.stage, menu: menu.actions }, output: decision,
+        }));
+        await appendStep(trx, run.id, { kind: 'decision', agent: 'supervisor', decision, model: decision.policyVersion, trailBundleId: sealed.id });
+      });
+      const outcome = await applyDecision({ db, port: this.port, run, starter, engagement: e, gates, menu }, decision);
+      return { ...statusOf(outcome), spent, failureStreak: 0, conflictStreak: 0 };
+    } catch (err) {
+      return this.failed(run, err);
+    }
+  }
+
+  /** Locks the run's engagement row for the rest of the transaction and returns it. */
+  private async lockEngagement(trx: Executor, run: AgentRun) {
+    const loaded = await loadEngagement(trx, run.engagementId, { forUpdate: true });
+    if (!loaded) throw new AppError(404, `Engagement ${run.engagementId} not found`);
+    return loaded.engagement;
+  }
+
+  private async failed(run: AgentRun, err: unknown): Promise<RunUpdate> {
+    // A failed iteration still counts as a step against the budget, so a run that keeps failing cannot go on forever.
+    const spent = addSpend(run.spent, { steps: 1 });
+    // Another worker holds the run now; hand it back without touching its streaks (releasing will do nothing).
+    if (err instanceof AppError && err.code === 'LEASE_LOST') return { status: 'runnable' };
+    if (err instanceof AppError && err.code === 'VERSION_CONFLICT') {
+      const streak = run.conflictStreak + 1;
+      if (streak < MAX_STREAK) return { status: 'runnable', conflictStreak: streak, spent };
+      return { status: 'waiting', reason: 'engagement being edited', wakeAt: new Date(Date.now() + CONFLICT_BACKOFF_MS), conflictStreak: 0, spent };
+    }
+    if (err instanceof AppError && err.code === 'AGENT_FORBIDDEN') {
+      logger.warn({ runId: run.id, refused: err.message }, 'agent action refused by the rails');
+      try {
+        await this.svc.db.kysely.transaction().execute(async (trx) => {
+          await assertLease(trx, run.id, this.id);
+          await appendStep(trx, run.id, { kind: 'tool_call', agent: 'rails', decision: { refused: err.message } });
+        });
+      } catch (stepErr) {
+        if (stepErr instanceof AppError && stepErr.code === 'LEASE_LOST') logger.warn({ runId: run.id }, 'could not record the refused action; the lease is gone');
+        else logger.error({ runId: run.id, err: stepErr }, `could not record the refused action: ${stepErr instanceof Error ? stepErr.message : String(stepErr)}`);
+      }
+      return { status: 'needs_human', reason: `agent_forbidden: ${err.message}`, spent };
+    }
+    if (err instanceof AppError && err.status === 404 && err.message.startsWith(`Engagement ${run.engagementId} `)) {
+      return { status: 'failed', reason: `engagement ${run.engagementId} no longer exists` };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ runId: run.id, err }, 'agent run step failed');
+    const streak = run.failureStreak + 1;
+    if (streak < MAX_STREAK) return { status: 'runnable', failureStreak: streak, spent };
+    return { status: 'needs_human', reason: `error: ${message}`.slice(0, 500), failureStreak: streak, spent };
+  }
+}

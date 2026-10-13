@@ -2,7 +2,7 @@ import { sql } from 'kysely';
 import { canonicalJson } from '../engine/trail';
 import type { Engagement, Finding } from '../engine/types';
 import { AppError } from '../errors';
-import { recordRevision } from './revision-repo';
+import { recordRevision, recordWorkpaperRevisions } from './revision-repo';
 import type { Executor } from './trail-repo';
 
 // Engagements are stored as a header row (with an optimistic version), one
@@ -54,10 +54,11 @@ export async function insertEngagement(db: Executor, e: Engagement): Promise<voi
     .insertInto('engagement_work')
     .values({
       engagement_id: e.id, scope: json(e.scope), rcm: json(e.rcm), test_inputs: json(e.testInputs),
-      test_results: json(e.testResults), report: e.report ? json(e.report) : null,
+      test_results: json(e.testResults), test_plans: json(e.testPlans ?? {}), report: e.report ? json(e.report) : null,
     })
     .execute();
   for (const f of e.findings) await insertFinding(db, e.id, f);
+  await recordWorkpaperRevisions(db, e);
   e.version = 1;
 }
 
@@ -79,7 +80,7 @@ export async function loadEngagement(db: Executor, id: string, opts: { forUpdate
     id: h.id, name: h.name, entity: h.entity, site: h.site, periodFrom: h.period_from, periodTo: h.period_to,
     auditType: h.audit_type, scopeStatement: h.scope_statement, packIds: h.pack_ids, createdBy: h.created_by,
     createdAt: iso(h.created_at), stage: h.stage, scope: w.scope, rcm: w.rcm, testInputs: w.test_inputs,
-    testResults: w.test_results, findings, report: w.report, version: h.version,
+    testResults: w.test_results, testPlans: w.test_plans ?? {}, findings, report: w.report, version: h.version,
   };
   return { engagement, version: h.version, findingSnapshots: new Map(findings.map((f) => [f.id, canonicalJson(f)])) };
 }
@@ -107,7 +108,7 @@ export async function saveEngagement(db: Executor, loaded: LoadedEngagement): Pr
     .updateTable('engagement_work')
     .set({
       scope: json(e.scope), rcm: json(e.rcm), test_inputs: json(e.testInputs),
-      test_results: json(e.testResults), report: e.report ? json(e.report) : null,
+      test_results: json(e.testResults), test_plans: json(e.testPlans ?? {}), report: e.report ? json(e.report) : null,
     })
     .where('engagement_id', '=', e.id)
     .execute();
@@ -134,6 +135,7 @@ export async function saveEngagement(db: Executor, loaded: LoadedEngagement): Pr
       await db.updateTable('findings').set({ superseded_at: now }).where('engagement_id', '=', e.id).where('id', '=', id).where('superseded_at', 'is', null).execute();
     }
   }
+  await recordWorkpaperRevisions(db, e);
   e.version = loaded.version + 1;
 }
 

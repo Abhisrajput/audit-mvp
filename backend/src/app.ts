@@ -2,6 +2,8 @@ import cookieParser from 'cookie-parser';
 import express, { type Request } from 'express';
 import { z } from 'zod';
 import { adminRoutes } from './auth/admin-routes';
+import { defaultAgentConfig, type AgentConfig } from './agents/config';
+import { agentRoutes } from './agents/routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
@@ -15,8 +17,8 @@ import { httpMetrics } from './observability/metrics';
 import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
-import { wrap } from './http-util';
-import { AppError, AuditService, type MutationOptions } from './service';
+import { ifMatch, wrap } from './http-util';
+import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
 
 const NewEngagementSchema = z.object({
@@ -64,6 +66,8 @@ export interface OpsOptions {
   metricsToken?: string | null;
   /** Per-check readiness timeout in ms (default 2000); tests lower it. */
   probeTimeoutMs?: number;
+  /** Agent orchestration settings (AGENT_*); defaults when absent. */
+  agents?: AgentConfig;
 }
 
 export function createApp(
@@ -84,6 +88,7 @@ export function createApp(
   app.use('/auth', limits.auth);
   app.use('/auth/sign', limits.signing);
   app.post('/api/engagements/:id/findings/:fid/sign-intents', limits.signing);
+  app.post('/api/gates/:gateId/sign-intents', limits.signing);
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,
@@ -93,15 +98,6 @@ export function createApp(
   app.use(sessionMiddleware(svc.db.kysely, auth.config));
 
   const param = (req: Request, name: string) => String(req.params[name]);
-
-  /** `If-Match: "<version>"` opts a change into the optimistic-concurrency check. */
-  const mutation = (req: Request): MutationOptions => {
-    const header = req.header('if-match');
-    if (header === undefined) return {};
-    const version = Number(header.replace(/^W\//, '').replace(/"/g, ''));
-    if (!Number.isInteger(version) || version < 1) throw new AppError(400, 'If-Match must be the engagement version number');
-    return { expectedVersion: version };
-  };
 
   // ----- Public -----
   app.get('/api/health', (_req, res) => res.json({ ok: true, provider: svc.providerInfo }));
@@ -115,6 +111,7 @@ export function createApp(
   app.use(adminRoutes(svc.db, auth.config));
   app.use(signing.router);
   app.use(documentRoutes(svc, storage));
+  app.use(agentRoutes(svc, ops.agents ?? defaultAgentConfig()));
 
   app.get('/api/modules', readers, (_req, res) => res.json(svc.modules()));
 
@@ -147,21 +144,21 @@ export function createApp(
   }));
 
   app.post('/api/engagements/:id/modules/:moduleId/run', readers, wrap(async (req, res) => {
-    const { bundle, engagement } = await svc.runModule(param(req, 'id'), param(req, 'moduleId'), actorOf(req), req.body ?? {}, mutation(req));
+    const { bundle, engagement } = await svc.runModule(param(req, 'id'), param(req, 'moduleId'), actorOf(req), req.body ?? {}, ifMatch(req));
     res.json({ bundle, engagement });
   }));
 
   app.put('/api/engagements/:id/scope', readers, wrap(async (req, res) => {
     const items = z.array(z.object({ controlId: z.string(), included: z.boolean() })).parse(req.body.items);
-    res.json(await svc.setScope(param(req, 'id'), items, actorOf(req), mutation(req)));
+    res.json(await svc.setScope(param(req, 'id'), items, actorOf(req), ifMatch(req)));
   }));
 
   app.put('/api/engagements/:id/tests/:rowId', readers, wrap(async (req, res) => {
-    res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), mutation(req)));
+    res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
   }));
 
   app.put('/api/engagements/:id/findings/:fid', readers, wrap(async (req, res) => {
-    res.json(await svc.editFinding(param(req, 'id'), param(req, 'fid'), FindingPatchSchema.parse(req.body), actorOf(req), mutation(req)));
+    res.json(await svc.editFinding(param(req, 'id'), param(req, 'fid'), FindingPatchSchema.parse(req.body), actorOf(req), ifMatch(req)));
   }));
 
   app.post('/api/engagements/:id/findings/:fid/signoff', readers, () => {

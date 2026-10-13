@@ -1,27 +1,32 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
+import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
+import { closeFindingGate, closeGate, getGate, type Gate } from './agents/gate-repo';
+import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
+import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
 import type { DB } from './db/schema';
 import { insertSignature, listSignatures } from './db/signature-repo';
-import { findingContentHash, signatureState, withSignatureStatus } from './signing/content-hash';
+import { findingContentHash, signatureState, withSignatureStatus, workpaperContentHash } from './signing/content-hash';
 import { finishIntent } from './signing/intent-repo';
 import {
   insertEngagement, listEngagements, loadEngagement, saveEngagement, type EngagementSummary,
 } from './db/engagement-repo';
-import { lastRevisionTimes } from './db/revision-repo';
+import { lastRevisionTimes, recordWorkpaperRevisions } from './db/revision-repo';
 import { getEvalRun, latestEvalRun, listEvalRuns, saveEvalRun } from './db/eval-repo';
-import { appendTrail, readTrail, type UnsealedBundle } from './db/trail-repo';
+import { appendTrail, readTrail, type Executor, type UnsealedBundle } from './db/trail-repo';
 import { Bm25Index, clauseText, controlText } from './engine/grounding';
 import type { LlmProvider } from './engine/llm/provider';
 import { OFFLINE } from './engine/llm/router';
 import { ModuleContext, type Grounding } from './engine/module';
+import type { AuditModule } from './engine/module';
 import { getModule, MODULES } from './engine/modules';
 import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
-import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EvalReport } from './eval/harness';
 
@@ -40,10 +45,42 @@ export interface NewEngagement {
   packIds: string[];
 }
 
+/** One agent action for the trail. */
+export interface AgentEvent {
+  moduleId: string;
+  /** Who acted, e.g. 'supervisor', 'qa', 'test-plan'; recorded as actor `agent:<agent>`. */
+  agent: string;
+  runId: string;
+  /** The person who started the run. */
+  onBehalfOf: string;
+  inputs: Record<string, unknown>;
+  output: unknown;
+  provider?: { id: string; model: string };
+}
+
 /** Optional optimistic-concurrency check: the engagement version the caller last saw. */
 export interface MutationOptions {
   expectedVersion?: number;
 }
+
+/**
+ * An agent acting for a run: recorded as `agent:<agent>`, on behalf of the person who started the run. The write is saved
+ * only while the worker named `leaseOwner` still holds the run's lease.
+ */
+export interface AgentActing {
+  runId: string;
+  agent: string;
+  startedBy: User;
+  leaseOwner: string;
+}
+
+/** Agent writes always state the version they were built on. `rows` limits a Gap Writer redraft to those RCM rows. */
+export interface AgentWriteOptions {
+  expectedVersion: number;
+  rows?: string[];
+}
+
+export type TestPlanPatch = Partial<Pick<TestPlan, 'attribute' | 'population' | 'sampleSize' | 'selectionMethod' | 'evidenceToRequest' | 'procedure' | 'notTestedJustification'>>;
 
 export type SignAction = 'review' | 'approve' | 'reject';
 
@@ -133,6 +170,9 @@ export class AuditService {
       const pending: UnsealedBundle[] = [];
       const result = await fn(loaded.engagement, (b) => pending.push(b), trx);
       await saveEngagement(trx, loaded);
+      // Any change wakes the engagement's waiting agent run, in this same transaction (spec §6.2). This comes before the
+      // trail lock, since a worker may hold the run row while it waits for that lock.
+      await wakeWaitingRuns(trx, engagementId);
       const sealed: TrailBundle[] = [];
       for (const b of pending) sealed.push(await appendTrail(trx, b));
       return { result, sealed };
@@ -155,6 +195,7 @@ export class AuditService {
       rcm: [],
       testInputs: {},
       testResults: {},
+      testPlans: {},
       findings: [],
       report: null,
     };
@@ -167,48 +208,25 @@ export class AuditService {
 
   // ---------- Module orchestration ----------
 
+  private moduleById(moduleId: string) {
+    try {
+      return getModule(moduleId);
+    } catch {
+      throw new AppError(404, `Unknown module ${moduleId}`);
+    }
+  }
+
   async runModule(engagementId: string, moduleId: string, actor: User, input: Record<string, unknown> = {}, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'run modules');
-    const mod = (() => {
-      try {
-        return getModule(moduleId);
-      } catch {
-        throw new AppError(404, `Unknown module ${moduleId}`);
-      }
-    })();
-
+    const mod = this.moduleById(moduleId);
     const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const blocker = mod.precondition(e);
       if (blocker) throw new AppError(409, blocker);
-
-      const startedAt = new Date().toISOString();
       // Report Writer prints each signature with its status, which only the signatures table can tell, so it reads
       // an annotated copy. Its apply() only sets e.report and e.stage, so no annotation reaches the stored findings.
       // Other modules see the stored engagement: Gap Writer copies locked findings into its output.
       const view = mod.id === 'report' ? withSignatureStatus(e, await listSignatures(trx, e.id), await lastRevisionTimes(trx, e.id)) : e;
-      const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
-      ctx.step('start', `${mod.name} v${mod.version} on ${e.id}`);
-      const output = await mod.run(ctx);
-      ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
-
-      const bundle: UnsealedBundle = {
-        id: `RUN-${crypto.randomBytes(4).toString('hex')}`,
-        engagementId: e.id,
-        moduleId: mod.id,
-        moduleVersion: mod.version,
-        engineVersion: ENGINE_VERSION,
-        packVersions: this.registry.versions(e.packIds),
-        provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
-        promptHash: ctx.promptHash,
-        actor: actor.id,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        inputs: { moduleInput: input, stage: e.stage },
-        retrievalSet: ctx.retrievalSet,
-        executionLog: ctx.log,
-        qaActions: ctx.qa,
-        output,
-      };
+      const { output, bundle } = await this.executeModule(mod, view, actor, input);
       emit(structuredClone(bundle));
       mod.apply(e, output, bundle.id);
       // Whoever runs Gap Writer prepared the findings it drafted, so they may not sign them.
@@ -216,6 +234,104 @@ export class AuditService {
       return e;
     });
     return { bundle: sealed[0], engagement };
+  }
+
+  /** Runs one module on `view` and builds its trail bundle. Work done for an agent run is recorded as the agent's. */
+  private async executeModule(mod: AuditModule<unknown>, view: Engagement, actor: User, input: Record<string, unknown>, acting?: AgentActing) {
+    const startedAt = new Date().toISOString();
+    const ctx = new ModuleContext(view, this.registry, this.grounding, this.llm, actor, input, this.citationPolicy);
+    ctx.step('start', `${mod.name} v${mod.version} on ${view.id}`);
+    const output = await mod.run(ctx);
+    ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
+    const bundle: UnsealedBundle = {
+      id: `RUN-${crypto.randomBytes(4).toString('hex')}`,
+      engagementId: view.id,
+      moduleId: mod.id,
+      moduleVersion: mod.version,
+      engineVersion: ENGINE_VERSION,
+      packVersions: this.registry.versions(view.packIds),
+      provider: this.llm ? { id: this.llm.id, model: ctx.servedModel ?? this.llm.model } : { ...OFFLINE },
+      promptHash: ctx.promptHash,
+      actor: acting ? `agent:${acting.agent}` : actor.id,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      inputs: acting ? { moduleInput: input, stage: view.stage, runId: acting.runId, onBehalfOf: actor.id } : { moduleInput: input, stage: view.stage },
+      retrievalSet: ctx.retrievalSet,
+      executionLog: ctx.log,
+      qaActions: ctx.qa,
+      output,
+    };
+    return { output, bundle };
+  }
+
+  /**
+   * A specialist's module run for an agent (spec §2): the module, and any model call it makes, runs on an unlocked
+   * snapshot, and its result is applied only if nobody changed the engagement meanwhile. Redrafts keep people's decisions
+   * (rails.ts), and the rails are checked before anything is saved.
+   */
+  async runModuleAsAgent(engagementId: string, moduleId: string, acting: AgentActing, opts: AgentWriteOptions) {
+    this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
+    const mod = this.moduleById(moduleId);
+    const loaded = await loadEngagement(this.db.kysely, engagementId);
+    if (!loaded) throw new AppError(404, `Engagement ${engagementId} not found`);
+    if (loaded.version !== opts.expectedVersion) {
+      throw new AppError(409, `Engagement ${engagementId} is at version ${loaded.version}, not ${opts.expectedVersion}; reload and try again`, 'VERSION_CONFLICT');
+    }
+    const blocker = mod.precondition(loaded.engagement);
+    if (blocker) throw new AppError(409, blocker);
+    const snapshot = loaded.engagement;
+    const view = mod.id === 'report'
+      ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
+      : snapshot;
+    const input = opts.rows ? { rows: opts.rows } : {};
+    const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting);
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
+      // Lock order is engagement (taken by mutate), then run: a worker that lost the run, or a cancelled run, saves nothing.
+      await assertLease(trx, acting.runId, acting.leaseOwner);
+      const before = structuredClone(e);
+      emit(structuredClone(bundle));
+      mod.apply(e, output, bundle.id);
+      if (mod.id === 'scope' && before.scope.length) keepScopeDecisions(before.scope, e.scope);
+      if (mod.id === 'gaps' && opts.rows) e.findings = mergeFindings(before.findings, e.findings, opts.rows, e.rcm.map((r) => r.id));
+      // The person who started the run is the accountable preparer of what the agent drafted, so they may not sign it.
+      for (const f of e.findings) if (f.bundleId === bundle.id) f.preparedBy = [acting.startedBy.id];
+      assertWithinRails(before, e);
+      return e;
+    });
+    return { bundle: sealed[0], engagement };
+  }
+
+  /** Saves drafted test plans for an agent. The agent never sets or clears a reason not to test a row. */
+  async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions) {
+    this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
+      await assertLease(trx, acting.runId, acting.leaseOwner);
+      assertJustificationsUnchanged(e.testPlans, plans, e.rcm.map((r) => r.id));
+      assertPlanAttribution(e.testPlans, plans);
+      e.testPlans = plans;
+      emit(this.agentBundle(e, {
+        moduleId: 'agent:test-plans', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
+        inputs: { rows: Object.keys(plans) }, output: plans,
+      }));
+      return e;
+    });
+    return { bundle: sealed[0], engagement };
+  }
+
+  /** A person edits one row's test plan, including the decision not to test it (an empty reason clears that decision). */
+  async editTestPlan(engagementId: string, rowId: string, patch: TestPlanPatch, actor: User, opts: MutationOptions = {}): Promise<TestPlan> {
+    this.require(actor, PREPARER_ROLES, 'edit test plans');
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
+      const current = e.testPlans[rowId];
+      if (!current) throw new AppError(404, `There is no test plan for ${rowId} yet`);
+      const next: TestPlan = { ...current, ...patch, editedBy: actor.id, editedAt: new Date().toISOString() };
+      if (!next.notTestedJustification?.trim()) delete next.notTestedJustification;
+      e.testPlans = { ...e.testPlans, [rowId]: next };
+      emit(this.humanBundle(e, 'human:test-plan-edit', actor, { rowId, patch }, next));
+      return next;
+    });
+    return result;
   }
 
   // ---------- Human steps (also written to the trail) ----------
@@ -341,11 +457,7 @@ export class AuditService {
     engagementId: string, findingId: string, action: SignAction, comment: string, actor: User,
     opts: MutationOptions, signature: SignatureContext | UnattendedSigning,
   ) {
-    const unattended = signature && 'unattended' in signature && (signature.unattended === 'seed' || signature.unattended === 'test') ? signature.unattended : null;
-    const reauthed = signature && !unattended && 'contentHash' in signature && signature.intentId ? (signature as SignatureContext) : null;
-    if (!unattended && !reauthed) {
-      throw new AppError(428, 'Signing needs re-authentication: start a signing request instead', 'REAUTH_REQUIRED');
-    }
+    const { unattended, reauthed } = this.signatureProof(signature);
     const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const f = e.findings.find((x) => x.id === findingId);
       if (!f) throw new AppError(404, `Finding ${findingId} not found`);
@@ -367,9 +479,13 @@ export class AuditService {
       const bundle = this.humanBundle(e, 'human:sign-off', actor, { findingId, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) }, sig, trust);
       emit(bundle);
       await insertSignature(trx, {
-        id: sig.signatureId!, engagementId: e.id, findingId, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
+        id: sig.signatureId!, engagementId: e.id, findingId, subjectKind: 'finding', workpaper: null, gateId: null, userId: actor.id, userName: actor.name, role: actor.role, meaning, comment,
         contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null, trailBundleId: bundle.id, signedAt: at,
       });
+      // An approval or rejection decides the finding's gate, if the agent opened one; a review leaves it open.
+      if (meaning !== 'Reviewed') {
+        await closeFindingGate(trx, e.id, findingId, contentHash, meaning === 'Approved' ? 'approved' : 'rejected', sig.signatureId!, comment);
+      }
       // The signing request is marked signed in this same transaction, so it is never left 'claimed' after a signature commits.
       // A request this attempt does not hold (pending, failed, signed or unknown) rolls back the whole signature.
       if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
@@ -379,9 +495,89 @@ export class AuditService {
     });
     return result;
   }
+
+  /** The proof a signature needs: re-authentication for this exact content, or an explicit unattended marker. Anything else fails closed. */
+  private signatureProof(signature: SignatureContext | UnattendedSigning) {
+    const unattended = signature && 'unattended' in signature && (signature.unattended === 'seed' || signature.unattended === 'test') ? signature.unattended : null;
+    const reauthed = signature && !unattended && 'contentHash' in signature && signature.intentId ? (signature as SignatureContext) : null;
+    if (!unattended && !reauthed) {
+      throw new AppError(428, 'Signing needs re-authentication: start a signing request instead', 'REAUTH_REQUIRED');
+    }
+    return { unattended, reauthed };
+  }
+
+  /** Who may sign a scope, RCM or report gate, and whether its workpaper is still what the gate showed (agent spec §4.3, §4.4). */
+  private async gateGuard(db: Executor, gate: Gate, e: Engagement, actor: User): Promise<{ workpaper: SignableWorkpaper; contentHash: string }> {
+    if (gate.kind === 'finding') throw new AppError(409, "A finding gate closes with the finding's own review and approval signatures");
+    if (gate.state !== 'open') throw new AppError(409, `This gate is already ${gate.state}`);
+    const workpaper: SignableWorkpaper = gate.kind;
+    this.require(actor, workpaper === 'report' ? APPROVER_ROLES : REVIEWER_ROLES, `sign ${workpaper} gates`);
+    const run = await getRun(db, gate.runId);
+    if (!run) throw new AppError(409, 'The agent run for this gate no longer exists', 'RUN_NOT_ACTIVE');
+    if (isTerminal(run.status)) throw new AppError(409, `The agent run for this gate has ended (${run.status}), so it can no longer be signed`, 'RUN_NOT_ACTIVE');
+    if (run.startedBy === actor.id) throw new AppError(403, 'You started this agent run, so someone else must sign its gates', 'SOD_VIOLATION');
+    const contentHash = workpaperContentHash(workpaper, e);
+    if (contentHash !== gate.subjectHash) {
+      throw new AppError(409, 'The workpaper changed after this gate opened; the agent will review it again before asking for a signature', 'GATE_STALE');
+    }
+    return { workpaper, contentHash };
+  }
+
+  /** Checks a gate could be signed by this person now, before they are asked to re-authenticate; returns the content to bind. */
+  async checkGateSignOff(gateId: string, actor: User): Promise<{ engagementId: string; workpaper: SignableWorkpaper; contentHash: string }> {
+    const gate = await getGate(this.db.kysely, gateId);
+    if (!gate) throw new AppError(404, `Gate ${gateId} not found`);
+    const e = await this.engagement(gate.engagementId);
+    return { engagementId: e.id, ...(await this.gateGuard(this.db.kysely, gate, e, actor)) };
+  }
+
+  /**
+   * Signs a scope, RCM or report gate (Part 11, like a finding signature): the signature is bound to the workpaper's
+   * content hash, recorded in the signatures table and the trail, and closes the gate; the run waiting on it wakes.
+   */
+  async signGate(gateId: string, action: 'approve' | 'reject', comment: string, actor: User, signature: SignatureContext | UnattendedSigning): Promise<Gate> {
+    const { unattended, reauthed } = this.signatureProof(signature);
+    if (action === 'reject' && !comment.trim()) throw new AppError(400, 'Say why you are rejecting this workpaper: the agent redrafts it from your comment');
+    return this.db.kysely.transaction().execute(async (trx) => {
+      // Lock order is engagement, then gate (as in mutate): learn the engagement from an unlocked read first.
+      const unlocked = await getGate(trx, gateId);
+      if (!unlocked) throw new AppError(404, `Gate ${gateId} not found`);
+      const loaded = await loadEngagement(trx, unlocked.engagementId, { forUpdate: true });
+      if (!loaded) throw new AppError(404, `Engagement ${unlocked.engagementId} not found`);
+      const gate = await getGate(trx, gateId, { forUpdate: true });
+      if (!gate) throw new AppError(404, `Gate ${gateId} not found`);
+      const e = loaded.engagement;
+      const { workpaper, contentHash } = await this.gateGuard(trx, gate, e, actor);
+      if (reauthed && reauthed.contentHash !== contentHash) {
+        throw new AppError(409, 'The workpaper changed after you started signing; review it again, then sign', 'CONTENT_CHANGED');
+      }
+      // The signed content must be in the workpaper's history (verify checks it); this is a no-op when it already is.
+      await recordWorkpaperRevisions(trx, e);
+      // Wake the run before taking the trail lock: a worker may hold the run row while it waits for that lock.
+      await wakeWaitingRuns(trx, e.id);
+      const meaning = action === 'approve' ? 'Approved' : 'Rejected';
+      const at = new Date().toISOString();
+      const reauth: NonNullable<SignOff['reauth']> = reauthed ? { method: reauthed.reauthMethod, at: reauthed.reauthAt } : { method: 'none', at: null };
+      const signatureId = `SIG-${crypto.randomBytes(6).toString('hex')}`;
+      const output = { signatureId, gateId, kind: workpaper, meaning, contentHash, userId: actor.id, userName: actor.name, role: actor.role, at, reauth, comment };
+      const inputs = { gateId, kind: workpaper, action, comment, intentId: reauthed?.intentId ?? null, ...(unattended ? { unattended } : {}) };
+      const bundle = await appendTrail(trx, this.humanBundle(e, 'human:gate-sign', actor, inputs, output));
+      await insertSignature(trx, {
+        id: signatureId, engagementId: e.id, findingId: null, subjectKind: 'workpaper', workpaper, gateId, userId: actor.id, userName: actor.name,
+        role: actor.role, meaning, comment, contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: reauthed?.intentId ?? null,
+        trailBundleId: bundle.id, signedAt: at,
+      });
+      if (reauthed && !(await finishIntent(trx, reauthed.intentId, { status: 'signed' }, ['claimed']))) {
+        throw new AppError(409, 'This signing request is no longer valid', 'INTENT_EXPIRED');
+      }
+      return closeGate(trx, gateId, action === 'approve' ? 'approved' : 'rejected', signatureId, comment);
+    });
+  }
+
   // ---------- Trail ----------
 
-  private humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
+  /** A trail bundle for a person's action on the engagement. */
+  humanBundle(e: Engagement, moduleId: string, actor: User, inputs: unknown, output: unknown, qaActions: QaAction[] = []): UnsealedBundle {
     const now = new Date().toISOString();
     return {
       id: `HUM-${crypto.randomBytes(4).toString('hex')}`,
@@ -400,6 +596,29 @@ export class AuditService {
       executionLog: [{ at: now, step: moduleId, detail: `${actor.name} (${actor.role})` }],
       qaActions,
       output,
+    };
+  }
+
+  /** A trail bundle for an agent's action (agent spec §3.3): the agent is the actor, on behalf of whoever started the run. */
+  agentBundle(e: Engagement, a: AgentEvent): UnsealedBundle {
+    const now = new Date().toISOString();
+    return {
+      id: `AGT-${crypto.randomBytes(4).toString('hex')}`,
+      engagementId: e.id,
+      moduleId: a.moduleId,
+      moduleVersion: ENGINE_VERSION,
+      engineVersion: ENGINE_VERSION,
+      packVersions: this.registry.versions(e.packIds),
+      provider: a.provider ?? { id: 'agent', model: a.agent },
+      promptHash: null,
+      actor: `agent:${a.agent}`,
+      startedAt: now,
+      finishedAt: now,
+      inputs: { ...a.inputs, runId: a.runId, onBehalfOf: a.onBehalfOf },
+      retrievalSet: [],
+      executionLog: [{ at: now, step: a.moduleId, detail: `${a.agent} for run ${a.runId}` }],
+      qaActions: [],
+      output: a.output,
     };
   }
 

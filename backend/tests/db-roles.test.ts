@@ -4,19 +4,26 @@ import os from 'node:os';
 import path from 'node:path';
 import { sql } from 'kysely';
 import { afterAll, describe, expect, it } from 'vitest';
+import { defaultAgentConfig } from '../src/agents/config';
+import { listGates } from '../src/agents/gate-repo';
+import { RULES_VERSION } from '../src/agents/policy/rules';
+import { createRun, getRun, listSteps } from '../src/agents/run-repo';
+import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { connectPg, type Db } from '../src/db';
 import { createApiLogin } from '../src/db/api-login';
+import { listSignatures } from '../src/db/signature-repo';
 import { AuditService } from '../src/service';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { testDbWithUrl } from './db';
-import { LENIENT, registry } from './helpers';
+import { auditor, LENIENT, NEW_ENGAGEMENT, registry, reviewer, unattended } from './helpers';
 import { devAuthConfig, devSign, draftFinding, signIn } from './http';
 
 /** What the API's role may do with each table. A table missing here fails the inventory test until it is classified. */
 const PRIVILEGES: Record<string, 'read' | 'append' | 'write'> = {
-  engagements: 'write', engagement_work: 'write', findings: 'write', users: 'write', sessions: 'write', sign_intents: 'write',
+  engagements: 'write', engagement_work: 'write', findings: 'write', users: 'write', sessions: 'write', sign_intents: 'write', agent_runs: 'write', gates: 'write',
+  agent_steps: 'append', workpaper_revisions: 'append',
   trail: 'append', signatures: 'append', finding_revisions: 'append', documents: 'append', document_text: 'append', chunks: 'append',
   blob_uploads: 'append', eval_runs: 'append',
   kg_nodes: 'read', kg_node_versions: 'read', kg_edges: 'read', schema_migrations: 'read',
@@ -53,6 +60,7 @@ describe('the API database role', () => {
     }
     // Inserting a finding draws its seq from a sequence (001: findings.seq bigserial).
     expect((await sql<{ ok: boolean }>`SELECT has_sequence_privilege('audit_api', 'public.findings_seq_seq', 'USAGE') AS ok`.execute(owner.kysely)).rows[0].ok).toBe(true);
+    expect((await sql<{ ok: boolean }>`SELECT has_sequence_privilege('audit_api', 'public.gates_seq_seq', 'USAGE') AS ok`.execute(owner.kysely)).rows[0].ok).toBe(true);
   });
 
   it('cannot change, delete or unprotect the trail and signatures, even bypassing the application [REQ-20]', async () => {
@@ -86,6 +94,24 @@ describe('the API database role', () => {
     await auditor.post(`/api/engagements/${id}/modules/report/run`).expect(200);
     await auditor.post('/api/eval/run').expect(200);
     expect((await auditor.get('/api/trail/verify').expect(200)).body.valid).toBe(true);
+  }, 120_000);
+
+  it('runs agent work as that role: runs, steps, gates and gate signatures [REQ-20, REQ-26]', async () => {
+    const { api } = await asApiRole();
+    const svc = new AuditService(api, registry, null, LENIENT);
+    await ensureDevUsers(api.kysely);
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const run = await createRun(api.kysely, { engagementId: e.id, startedBy: 'auditor', policy: 'rules', policyVersion: RULES_VERSION, budget: defaultAgentConfig().budget });
+    const worker = new AgentWorker(svc, defaultAgentConfig(), { id: 'w-api-role' });
+    await worker.drain();
+    const [gate] = await listGates(api.kysely, e.id);
+    await svc.signGate(gate.id, 'approve', 'In scope as proposed', reviewer, unattended);
+    await worker.drain();
+    expect(await getRun(api.kysely, run.id)).toMatchObject({ status: 'waiting', statusReason: 'awaiting rcm gate signature' });
+    // The rows were really written under the API role: steps, the gate (now closed by the signature), and the signature itself.
+    expect((await listSteps(api.kysely, run.id)).length).toBeGreaterThan(0);
+    expect((await listGates(api.kysely, e.id)).find((g) => g.id === gate.id)).toMatchObject({ state: 'approved' });
+    expect((await listSignatures(api.kysely, e.id)).map((s) => s.userId)).toContain('reviewer');
   }, 120_000);
 
   it('creates the login once and only changes its password afterwards; never touches other roles [REQ-20]', async () => {

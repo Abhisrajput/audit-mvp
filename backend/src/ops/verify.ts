@@ -43,7 +43,22 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
     (await db.selectFrom('finding_revisions').select(['engagement_id', 'finding_id', 'content_hash']).execute()).map((r) => `${r.engagement_id}|${r.finding_id}|${r.content_hash}`),
   );
   const bundles = new Map(trail.map((b) => [b.id, b]));
+  const workpaperHistory = new Set(
+    (await db.selectFrom('workpaper_revisions').select(['engagement_id', 'kind', 'content_hash']).execute()).map((r) => `${r.engagement_id}|${r.kind}|${r.content_hash}`),
+  );
   for (const s of rows) {
+    if (s.subject_kind === 'workpaper') {
+      const label = `Signature ${s.id} (${s.workpaper} gate ${s.gate_id})`;
+      if (!workpaperHistory.has(`${s.engagement_id}|${s.workpaper}|${s.content_hash}`)) problems.push(`${label}: the signed content is not in the workpaper's history`);
+      const b = bundles.get(s.trail_bundle_id);
+      const out = b?.output as { signatureId?: string; gateId?: string; contentHash?: string; userId?: string; meaning?: string } | undefined;
+      if (!b) problems.push(`${label}: its trail entry ${s.trail_bundle_id} is missing`);
+      else if (
+        b.moduleId !== 'human:gate-sign' || b.engagementId !== s.engagement_id || out?.signatureId !== s.id || out?.gateId !== s.gate_id ||
+        out?.contentHash !== s.content_hash || out?.userId !== s.user_id || out?.meaning !== s.meaning
+      ) problems.push(`${label}: does not match its trail entry`);
+      continue;
+    }
     const label = `Signature ${s.id} (finding ${s.finding_id})`;
     if (!history.has(`${s.engagement_id}|${s.finding_id}|${s.content_hash}`)) problems.push(`${label}: the signed content is not in the finding's history`);
     const b = bundles.get(s.trail_bundle_id);
@@ -60,6 +75,17 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
     if (b.moduleId === 'human:sign-off' && out?.signatureId && !rowIds.has(out.signatureId)) {
       problems.push(`Trail entry ${b.id} records signature ${out.signatureId} (finding ${(b.inputs as { findingId?: string } | null)?.findingId ?? 'unknown'}), but the signature row is missing`);
     }
+    if (b.moduleId === 'human:gate-sign' && out?.signatureId && !rowIds.has(out.signatureId)) {
+      problems.push(`Trail entry ${b.id} records gate signature ${out.signatureId}, but the signature row is missing`);
+    }
+  }
+  // Every decided gate names a signature that exists, made on the content the gate showed.
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const decided = await db.selectFrom('gates').select(['id', 'state', 'signature_id', 'subject_hash']).where('state', 'in', ['approved', 'rejected']).orderBy('seq').execute();
+  for (const g of decided) {
+    const sig = g.signature_id ? byId.get(g.signature_id) : undefined;
+    if (!sig) problems.push(`Gate ${g.id} is ${g.state}, but its signature ${g.signature_id ?? '(none)'} is missing`);
+    else if (sig.content_hash !== g.subject_hash) problems.push(`Gate ${g.id}: signature ${sig.id} is for different content than the gate showed`);
   }
   const engagementIds = (await db.selectFrom('engagements').select('id').orderBy('id').execute()).map((r) => r.id);
   for (const engagementId of engagementIds) {

@@ -24,7 +24,7 @@ describe('finding content hash', () => {
     const hash = findingContentHash(f);
     const base = { userId: 'r', userName: 'R', role: 'audit_manager', meaning: 'Reviewed' as const, comment: '', at: '2026-10-11T00:00:00.000Z', reauth: { method: 'dev' as const, at: '2026-10-11T00:00:00.000Z' } };
     const row = (id: string, contentHash: string, extra: Partial<SignatureRow> = {}): SignatureRow => ({
-      id, engagementId: e.id, findingId: f.id, userId: 'r', userName: 'R', role: 'audit_manager', meaning: 'Reviewed', comment: '', contentHash,
+      id, engagementId: e.id, findingId: f.id, subjectKind: 'finding', workpaper: null, gateId: null, userId: 'r', userName: 'R', role: 'audit_manager', meaning: 'Reviewed', comment: '', contentHash,
       reauthMethod: 'dev', reauthAt: base.reauth.at, intentId: null, trailBundleId: 'HUM-1', signedAt: base.at, ...extra,
     });
     const good = { ...base, signatureId: 'SIG-good', contentHash: hash };
@@ -64,7 +64,7 @@ describe('signatures table', () => {
     const e = await engagementWithFailedControl(svc);
     const db = svc.db.kysely;
     const row: SignatureRow = {
-      id: 'SIG-1', engagementId: e.id, findingId: e.findings[0].id, userId: 'reviewer', userName: 'Ravi Reviewer', role: 'audit_manager',
+      id: 'SIG-1', engagementId: e.id, findingId: e.findings[0].id, subjectKind: 'finding', workpaper: null, gateId: null, userId: 'reviewer', userName: 'Ravi Reviewer', role: 'audit_manager',
       meaning: 'Reviewed', comment: '', contentHash: 'a'.repeat(64), reauthMethod: 'dev', reauthAt: '2026-10-11T00:00:00.000Z',
       intentId: null, trailBundleId: 'HUM-1', signedAt: '2026-10-11T00:00:01.000Z',
     };

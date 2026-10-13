@@ -89,3 +89,14 @@ export async function devSign(user: Session, userId: string, id: string, fid: st
   const status = (await user.get(`/api/sign-intents/${intent.body.intentId}`).expect(200)).body;
   return { intent, popup, done, nonce, status };
 }
+
+/** The signing pop-up for a gate: start, read the form, confirm. */
+export async function devSignGate(user: Session, userId: string, gateId: string, action: 'approve' | 'reject', comment = 'agreed', confirm = userId) {
+  const intent = await user.post(`/api/gates/${gateId}/sign-intents`, { action, comment });
+  if (intent.status !== 201) return { intent, popup: null, status: null as null | { status: string; code: string | null } };
+  const popup = await user.get(intent.body.reauthUrl).expect(200);
+  const nonce = /name="nonce" value="([^"]+)"/.exec(popup.text)![1];
+  await user.agent.post(`${intent.body.reauthUrl}/dev`).type('form').send({ nonce, confirm });
+  const status = (await user.get(`/api/sign-intents/${intent.body.intentId}`).expect(200)).body;
+  return { intent, popup, status };
+}
