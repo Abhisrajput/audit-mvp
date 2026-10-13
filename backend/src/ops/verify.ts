@@ -115,11 +115,14 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
 }
 
 /**
- * Decision, delegate and QA steps always carry a trail entry (REQ-28 covers decisions). The other steps the worker writes
- * without one are bookkeeping, not decisions: the takeover/recovered note and the rails refusal step (tool_call kind), which
- * verify accepts for now.
+ * Every agent step names a trail entry (decision, delegate, QA, toolbox lookups and open_gate; REQ-28 covers decisions),
+ * with two exceptions. These are bookkeeping, not decisions, and the worker writes them without one: the takeover/recovered
+ * note (agent `worker`) and the rails refusal step (agent `rails`), both of kind tool_call. Verify accepts them for now.
+ * It is default-deny: any other step, including a kind added later, must name an entry.
  */
-const TRAILED_KINDS = new Set(['decision', 'delegate', 'qa']);
+function isBookkeeping(s: { kind: string; agent: string }) {
+  return s.kind === 'tool_call' && (s.agent === 'worker' || s.agent === 'rails');
+}
 
 /**
  * Each agent step's trail entry (agent spec §9). Any entry a step names must exist, sit in the verified part of the chain
@@ -129,11 +132,11 @@ async function checkAgentSteps(db: Kysely<DB>, chain: TrailBundle[], verified: C
   const problems: string[] = [];
   const bundles = new Map(chain.map((b) => [b.id, b]));
   const engagementOf = new Map((await db.selectFrom('agent_runs').select(['id', 'engagement_id']).execute()).map((r) => [r.id, r.engagement_id]));
-  const steps = await db.selectFrom('agent_steps').select(['run_id', 'seq', 'kind', 'trail_bundle_id']).orderBy('run_id').orderBy('seq').execute();
+  const steps = await db.selectFrom('agent_steps').select(['run_id', 'seq', 'kind', 'agent', 'trail_bundle_id']).orderBy('run_id').orderBy('seq').execute();
   for (const s of steps) {
     const label = `Step ${s.run_id}#${s.seq} (${s.kind})`;
     if (!s.trail_bundle_id) {
-      if (TRAILED_KINDS.has(s.kind)) problems.push(`${label}: has no trail entry`);
+      if (!isBookkeeping(s)) problems.push(`${label}: has no trail entry`);
       continue;
     }
     const b = bundles.get(s.trail_bundle_id);

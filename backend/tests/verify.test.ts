@@ -192,4 +192,24 @@ describe('verify on agent work', () => {
       expect.stringMatching(/^Step AR-\w+#\d+ \(tool_call\): its trail entry AGT-\w+ is at or after the break in the chain \(seq 1\)$/),
     ]));
   });
+
+  it('reports a toolbox or gate-opening step, or a relabelled decision, with no trail entry; bookkeeping steps pass [REQ-24, REQ-28]', async () => {
+    const { k, run, steps } = await runAtScopeGate();
+    const lookup = steps.find((s) => s.kind === 'tool_call' && s.agent !== 'worker' && s.agent !== 'rails')!;
+    const decision = steps.find((s) => s.kind === 'decision')!;
+    // The two bookkeeping steps the worker writes without an entry.
+    await sql`ALTER TABLE agent_steps DISABLE TRIGGER agent_steps_append_only`.execute(k);
+    await sql`INSERT INTO agent_steps (run_id, seq, kind, agent, decision) VALUES (${run.id}, 9001, 'tool_call', 'worker', '{"recovered":"x"}'::jsonb), (${run.id}, 9002, 'tool_call', 'rails', '{"refused":"x"}'::jsonb)`.execute(k);
+    expect((await verifyIntegrity(k, null)).agents.problems).toEqual([]);
+
+    await sql`UPDATE agent_steps SET trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${lookup.seq}`.execute(k);
+    await sql`UPDATE agent_steps SET kind = 'tool_call', trail_bundle_id = NULL WHERE run_id = ${run.id} AND seq = ${decision.seq}`.execute(k);
+    const report = await verifyIntegrity(k, null);
+    expect(report.ok).toBe(false);
+    expect(report.agents.problems).toEqual(expect.arrayContaining([
+      `Step ${run.id}#${lookup.seq} (tool_call): has no trail entry`,
+      `Step ${run.id}#${decision.seq} (tool_call): has no trail entry`,
+    ]));
+    expect(report.agents.problems).toHaveLength(2);
+  });
 });
