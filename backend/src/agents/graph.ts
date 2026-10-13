@@ -96,11 +96,19 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
   if (!report) return act([{ type: 'request_qa', subjectKey: key, mode: 'review' }]);
   const blocking = report.issues.some((i) => i.severity === 'blocking');
   if (!s.gateKind) return blocking ? act([{ type: 'escalate', reason: `QA found blocking issues in the ${label}` }], report) : { passed: true };
-  if (!report.issues.length) return act([{ type: 'open_gate', subjectKey: key }], report);
+  const lowScore = report.score < input.qaThreshold;
+  if (!report.issues.length && !lowScore) return act([{ type: 'open_gate', subjectKey: key }], report);
   const actions: Action[] = [];
   if (!blocking) actions.push({ type: 'open_gate', subjectKey: key });
-  if (o.canRework && mine.filter((r) => r.kind === 'rework').length < MAX_SELF_REWORKS) actions.push(rework(o, key, summarise(report)));
-  actions.push({ type: 'escalate', reason: `QA found ${report.issues.length} issue(s) in the ${label}${blocking ? ', some blocking' : ''}` });
+  if (o.canRework && mine.filter((r) => r.kind === 'rework').length < MAX_SELF_REWORKS) {
+    actions.push(rework(o, key, report.issues.length ? summarise(report) : `QA scored ${report.score}, below ${input.qaThreshold}`));
+  }
+  actions.push({
+    type: 'escalate',
+    reason: report.issues.length
+      ? `QA found ${report.issues.length} issue(s) in the ${label}${blocking ? ', some blocking' : ''}`
+      : `QA scored ${report.score} for the ${label}, below ${input.qaThreshold}`,
+  });
   return act(actions, report);
 }
 
@@ -134,7 +142,15 @@ export function allowedActions(input: GraphInput): Menu {
   const waits: string[] = [];
   for (const r of e.rcm) {
     const f = byRow.get(r.id);
-    if (!f || f.status === 'approved') continue;
+    if (f?.status === 'approved') {
+      // Approved findings are locked: the agent cannot redraft one whose test results changed after its gate.
+      const g = latestGate(input.gates, findingKey(r.id));
+      if (g && g.basisHash !== rowBasis(e, r.id)) {
+        return only('findings', { type: 'escalate', reason: `finding ${f.id} was approved on test results that have since changed; a person must decide what to do with it` });
+      }
+      continue;
+    }
+    if (!f) continue;
     const step = subjectStep(input, findingKey(r.id), {
       specialist: 'gaps', rows: [r.id], canRework: f.status !== 'reviewed',
       blockedReason: `finding ${f.id} is reviewed; it can only be approved or rejected now`,

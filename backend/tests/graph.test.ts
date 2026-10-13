@@ -192,6 +192,25 @@ describe('the engagement graph', () => {
     expect(menu(e, { gates: [...gates, gate(e, 'report', 'approved')], qa: reviews }).actions).toEqual([{ type: 'complete' }]);
   });
 
+  it('escalates an approved finding whose test results changed after its gate [REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    const approved = gate(e, findingKey('A'), 'approved');
+    expect(menu(e, { gates: [...gates, approved], qa: reviews }).actions).toEqual([{ type: 'delegate', specialist: 'report', subjectKey: 'report' }]);
+    e.testInputs = { A: input(3) };
+    const m = menu(e, { gates: [...gates, approved], qa: reviews });
+    expect(m.stage).toBe('findings');
+    expect(m.actions).toEqual([{ type: 'escalate', reason: 'finding F-A was approved on test results that have since changed; a person must decide what to do with it' }]);
+  });
+
+  it('holds a clean QA report below the threshold to the same menu as advisory issues [REQ-26]', () => {
+    const e = engagement({ scope: [scopeItem('A')] });
+    expect(types(menu(e, { qa: [qa(e, 'scope', [], 50)] }))).toEqual(['open_gate', 'rework', 'escalate']);
+    expect(types(menu(e, { qa: [qa(e, 'scope', [], 90)] }))).toEqual(['open_gate']);
+  });
+
   it('never repeats a redraft from the same basis [REQ-26]', () => {
     const e = engagement();
     const ran: RedraftRecord = { subjectKey: 'scope', kind: 'delegate', basis: subjectInfo(e, 'scope')!.basis, sinceGateId: null };
