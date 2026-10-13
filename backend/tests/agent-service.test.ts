@@ -124,4 +124,28 @@ describe('the agent path into the service', () => {
     expect(Object.keys(port).sort()).toEqual([...AGENT_PORT_METHODS].sort());
     for (const name of ['signOff', 'signGate', 'recordTest', 'editFinding', 'editTestPlan', 'setScope', 'db']) expect(name in port).toBe(false);
   });
+
+  it('refuses to forge attribution or overwrite a person’s test plan edit [REQ-27]', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    await svc.saveTestPlansAsAgent(e.id, draftTestPlans(e), acting('test-plan'), { expectedVersion: e.version! });
+    const rowId = e.rcm[0].id;
+    const fresh = await svc.engagement(e.id);
+    await expect(svc.saveTestPlansAsAgent(e.id, { ...fresh.testPlans, [rowId]: { ...fresh.testPlans[rowId], editedBy: 'auditor' } }, acting('test-plan'), { expectedVersion: fresh.version! }))
+      .rejects.toMatchObject({ code: 'AGENT_FORBIDDEN' });
+    await svc.editTestPlan(e.id, rowId, { procedure: 'Re-perform the check on site' }, auditor);
+    const edited = await svc.engagement(e.id);
+    await expect(svc.saveTestPlansAsAgent(e.id, { ...edited.testPlans, [rowId]: { ...edited.testPlans[rowId], procedure: 'agent rewrite' } }, acting('test-plan'), { expectedVersion: edited.version! }))
+      .rejects.toMatchObject({ code: 'AGENT_FORBIDDEN' });
+    await svc.saveTestPlansAsAgent(e.id, draftTestPlans(edited), acting('test-plan'), { expectedVersion: edited.version! });
+    expect((await svc.engagement(e.id)).testPlans[rowId].procedure).toBe('Re-perform the check on site');
+  });
+
+  it('refuses agent work started by someone who may not prepare audit work', async () => {
+    const svc = await newService();
+    const e = await engagementWithFailedControl(svc);
+    const v = { runId: 'AR-test', agent: 'scope', startedBy: viewer };
+    await expect(svc.runModuleAsAgent(e.id, 'scope', v, { expectedVersion: e.version! })).rejects.toMatchObject({ status: 403 });
+    await expect(svc.saveTestPlansAsAgent(e.id, draftTestPlans(e), v, { expectedVersion: e.version! })).rejects.toMatchObject({ status: 403 });
+  });
 });

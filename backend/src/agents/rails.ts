@@ -32,6 +32,19 @@ export function assertJustificationsUnchanged(before: Record<string, TestPlan>, 
   }
 }
 
+/** An agent's plans may not carry a person's name, and may not overwrite a plan a person edited unless its row changed. */
+export function assertPlanAttribution(before: Record<string, TestPlan>, after: Record<string, TestPlan>): void {
+  for (const [id, plan] of Object.entries(after)) {
+    const old = before[id];
+    if ((plan.editedBy !== undefined && plan.editedBy !== old?.editedBy) || (plan.editedAt !== undefined && plan.editedAt !== old?.editedAt)) {
+      throw forbidden(`An agent may not attribute work to a person (test plan ${id})`);
+    }
+    if (old?.editedBy && old.rowHash === plan.rowHash && canonicalJson(old) !== canonicalJson(plan)) {
+      throw forbidden(`An agent may not change a test plan a person edited (${id})`);
+    }
+  }
+}
+
 /** The engagement after an agent's change, checked against the engagement before it. */
 export function assertWithinRails(before: Engagement, after: Engagement): void {
   if (canonicalJson(before.testInputs) !== canonicalJson(after.testInputs)) throw forbidden('An agent may not record or change test results');

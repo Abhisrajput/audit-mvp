@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
-import { assertJustificationsUnchanged, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
+import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
 import { wakeWaitingRuns } from './agents/run-repo';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
@@ -263,6 +263,7 @@ export class AuditService {
    * (rails.ts), and the rails are checked before anything is saved.
    */
   async runModuleAsAgent(engagementId: string, moduleId: string, acting: AgentActing, opts: AgentWriteOptions) {
+    this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
     const mod = this.moduleById(moduleId);
     const loaded = await loadEngagement(this.db.kysely, engagementId);
     if (!loaded) throw new AppError(404, `Engagement ${engagementId} not found`);
@@ -293,8 +294,10 @@ export class AuditService {
 
   /** Saves drafted test plans for an agent. The agent never sets or clears a reason not to test a row. */
   async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions) {
+    this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, (e, emit) => {
       assertJustificationsUnchanged(e.testPlans, plans, e.rcm.map((r) => r.id));
+      assertPlanAttribution(e.testPlans, plans);
       e.testPlans = plans;
       emit(this.agentBundle(e, {
         moduleId: 'agent:test-plans', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
