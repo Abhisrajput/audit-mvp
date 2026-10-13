@@ -19,8 +19,11 @@ const inputsOf = (intent: SignIntent) => ({ intentId: intent.id, engagementId: i
 
 /** Shown when a request that already ended (or is being completed) is used again. Nothing is recorded for it. */
 export const NO_LONGER_VALID: SignOutcome = {
-  ok: false, code: 'INTENT_EXPIRED', message: 'This signing request is no longer valid. Start signing again from the finding.',
+  ok: false, code: 'INTENT_EXPIRED', message: 'This signing request is no longer valid. Start signing again.',
 };
+
+/** Where to go back to when a request has to be started again. */
+const restartFrom = (intent: SignIntent) => (intent.gateId ? 'from the gate' : 'from the finding');
 
 /**
  * Records a failed signing attempt on the request and in the audit trail, together.
@@ -68,14 +71,14 @@ export async function completeSigning(
   now = new Date(),
 ): Promise<SignOutcome> {
   if (!(await claimIntent(svc.db.kysely, intent.id))) {
-    const lost = { ok: false, code: 'INTENT_EXPIRED', message: 'This signing request has already been used. Start signing again from the finding.' } as const;
+    const lost = { ok: false, code: 'INTENT_EXPIRED', message: 'This signing request has already been used. Start signing again ' + restartFrom(intent) + '.' } as const;
     await svc.db.kysely.transaction().execute((trx) => recordReplay(trx, intent, actor, lost.code, lost.message));
     return lost;
   }
   // From here this attempt owns the request, so its failures move it from 'claimed'.
   const CLAIMED = ['claimed'] as const;
   if (now.getTime() > Date.parse(intent.expiresAt)) {
-    return failIntent(svc, intent, actor, 'INTENT_EXPIRED', 'The signing request expired. Start signing again from the finding.', CLAIMED);
+    return failIntent(svc, intent, actor, 'INTENT_EXPIRED', `The signing request expired. Start signing again ${restartFrom(intent)}.`, CLAIMED);
   }
   const proof = { contentHash: intent.contentHash, reauthMethod: reauth.method, reauthAt: reauth.at, intentId: intent.id };
   try {

@@ -1,7 +1,7 @@
 import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
 import { getGate, insertGate } from '../src/agents/gate-repo';
-import { createRun, getRun, leaseNext, releaseRun } from '../src/agents/run-repo';
+import { createRun, getRun, leaseNext, releaseRun, requestCancel } from '../src/agents/run-repo';
 import { findingKey, subjectInfo } from '../src/agents/subjects';
 import { listSignatures } from '../src/db/signature-repo';
 import { readTrail } from '../src/db/trail-repo';
@@ -140,5 +140,41 @@ describe('finding gates', () => {
     await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
     await svc.signOff(e.id, f.id, 'approve', '', approver, {}, unattended);
     expect((await getGate(svc.db.kysely, gate.id))!.state).toBe('superseded');
+  });
+});
+
+describe('gate signing refusals', () => {
+  it('refuses a gate that is already decided, or superseded', async () => {
+    const { svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { gate } = await waitingAtGate(svc, id, 'scope');
+    await svc.signGate(gate.id, 'approve', 'ok', reviewer, unattended);
+    await expect(svc.signGate(gate.id, 'approve', 'again', reviewer, unattended)).rejects.toMatchObject({ status: 409 });
+    expect(await listSignatures(svc.db.kysely, id)).toHaveLength(1);
+
+    const e2 = await scoped(svc);
+    const second = await waitingAtGate(svc, e2, 'scope');
+    await requestCancel(svc.db.kysely, second.run.id);
+    expect((await getGate(svc.db.kysely, second.gate.id))!.state).toBe('superseded');
+    await expect(svc.signGate(second.gate.id, 'approve', 'ok', reviewer, unattended)).rejects.toMatchObject({ status: 409 });
+    expect(await listSignatures(svc.db.kysely, e2)).toEqual([]);
+  });
+
+  it("refuses the run's starter when signGate is called directly [REQ-17]", async () => {
+    const { svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { gate } = await waitingAtGate(svc, id, 'scope', 'reviewer');
+    await expect(svc.signGate(gate.id, 'approve', 'ok', reviewer, unattended)).rejects.toMatchObject({ status: 403, code: 'SOD_VIOLATION' });
+    expect(await listSignatures(svc.db.kysely, id)).toEqual([]);
+  });
+
+  it('refuses a gate whose run has ended', async () => {
+    const { svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { run, gate } = await waitingAtGate(svc, id, 'scope');
+    await sql`UPDATE agent_runs SET status = 'failed' WHERE id = ${run.id}`.execute(svc.db.kysely);
+    await expect(svc.signGate(gate.id, 'approve', 'ok', reviewer, unattended)).rejects.toMatchObject({ status: 409, code: 'RUN_NOT_ACTIVE' });
+    expect(await listSignatures(svc.db.kysely, id)).toEqual([]);
+    expect((await getGate(svc.db.kysely, gate.id))!.state).toBe('open');
   });
 });

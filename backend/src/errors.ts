@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'FINDING_BLOCKED'
   | 'FINDING_LOCKED'
   | 'SOD_VIOLATION'
+  | 'RUN_NOT_ACTIVE'
   | 'CSRF_FAILED'
   | 'PENDING_ACCESS'
   | 'REAUTH_REQUIRED'

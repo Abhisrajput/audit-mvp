@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
 import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
 import { closeFindingGate, closeGate, getGate, type Gate } from './agents/gate-repo';
-import { getRun, wakeWaitingRuns } from './agents/run-repo';
+import { getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
 import type { Db } from './db';
@@ -505,7 +505,9 @@ export class AuditService {
     const workpaper: SignableWorkpaper = gate.kind;
     this.require(actor, workpaper === 'report' ? APPROVER_ROLES : REVIEWER_ROLES, `sign ${workpaper} gates`);
     const run = await getRun(db, gate.runId);
-    if (run?.startedBy === actor.id) throw new AppError(403, 'You started this agent run, so someone else must sign its gates', 'SOD_VIOLATION');
+    if (!run) throw new AppError(409, 'The agent run for this gate no longer exists', 'RUN_NOT_ACTIVE');
+    if (isTerminal(run.status)) throw new AppError(409, `The agent run for this gate has ended (${run.status}), so it can no longer be signed`, 'RUN_NOT_ACTIVE');
+    if (run.startedBy === actor.id) throw new AppError(403, 'You started this agent run, so someone else must sign its gates', 'SOD_VIOLATION');
     const contentHash = workpaperContentHash(workpaper, e);
     if (contentHash !== gate.subjectHash) {
       throw new AppError(409, 'The workpaper changed after this gate opened; the agent will review it again before asking for a signature', 'GATE_STALE');
