@@ -81,6 +81,31 @@ describe('the executor', () => {
     expect(await steps()).toEqual([]);
   });
 
+  it('refuses to draft once the worker has lost the lease, leaving the engagement untouched', async () => {
+    const { svc, e, run, apply, steps } = await setup();
+    await sql`UPDATE agent_runs SET lease_owner = 'someone-else' WHERE id = ${run.id}`.execute(svc.db.kysely);
+    const before = (await svc.engagement(e.id)).version;
+    await expect(apply({ type: 'delegate', specialist: 'scope', subjectKey: 'scope' })).rejects.toMatchObject({ status: 409 });
+    expect(await steps()).toEqual([]);
+    expect((await svc.engagement(e.id)).version).toBe(before);
+  });
+
+  it('records a rework as a delegate step', async () => {
+    const { apply, steps } = await setup();
+    await apply({ type: 'rework', specialist: 'scope', subjectKey: 'scope', instruction: 'tighten scope' });
+    expect((await steps())[0]).toMatchObject({ kind: 'delegate', agent: 'specialist:scope', decision: { action: { type: 'rework' } } });
+  });
+
+  it('will not open a gate without a QA report for the subject as it is now', async () => {
+    const { svc, e, apply, steps } = await setup();
+    await apply({ type: 'delegate', specialist: 'scope', subjectKey: 'scope' });
+    await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
+    const report = (await steps()).at(-1)!.decision as QaReport;
+    await expect(apply({ type: 'open_gate', subjectKey: 'scope' }, { ...report, subjectHash: 'stale' })).rejects.toThrow(/no QA report/);
+    await expect(apply({ type: 'open_gate', subjectKey: 'scope' }, null)).rejects.toThrow(/no QA report/);
+    expect(await listGates(svc.db.kysely, e.id)).toEqual([]);
+  });
+
   it("turns wait, escalate and complete into the run's next status", async () => {
     const { apply } = await setup();
     expect(await apply({ type: 'wait', reason: 'awaiting test results for 3 control(s)' })).toEqual({ next: 'waiting', reason: 'awaiting test results for 3 control(s)' });
@@ -132,5 +157,12 @@ describe('agent configuration [REQ-25]', () => {
     });
     expect(loadAgentConfig({ AGENT_ENABLED: 'false' }).enabled).toBe(false);
     expect(() => loadAgentConfig({ AGENT_QA_THRESHOLD: '101' })).toThrow(/AGENT_QA_THRESHOLD/);
+  });
+
+  it('treats blank values as unset and rejects negative or garbage numbers', () => {
+    expect(loadAgentConfig({ AGENT_ENABLED: '', AGENT_MAX_STEPS: '', AGENT_POLL_MS: '' })).toEqual(defaultAgentConfig());
+    expect(() => loadAgentConfig({ AGENT_MAX_STEPS: '-5' })).toThrow(/AGENT_MAX_STEPS/);
+    expect(() => loadAgentConfig({ AGENT_POLL_MS: 'soon' })).toThrow(/AGENT_POLL_MS/);
+    expect(() => loadAgentConfig({ AGENT_WORKER_CONCURRENCY: '0' })).toThrow(/AGENT_WORKER_CONCURRENCY/);
   });
 });

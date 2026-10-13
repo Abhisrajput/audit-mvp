@@ -1,5 +1,6 @@
 import type { Kysely } from 'kysely';
 import type { DB } from '../db/schema';
+import { loadEngagement } from '../db/engagement-repo';
 import { appendTrail } from '../db/trail-repo';
 import type { Engagement, User } from '../engine/types';
 import { insertGate, type Gate } from './gate-repo';
@@ -44,6 +45,8 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       const basis = redraftBasis(e, a.subjectKey, a.rows);
       const sinceGateId = latestGateId(ctx.gates, a.subjectKey);
       const acting = { runId: run.id, agent: a.specialist, startedBy: starter };
+      // Refuse before drafting anything if this worker has already lost the run.
+      await db.transaction().execute((trx) => assertLease(trx, run.id, run.leaseOwner!));
       const started = Date.now();
       const { bundle } = a.specialist === 'test-plan'
         ? await port.saveTestPlans(e.id, draftTestPlans(e), acting, { expectedVersion: e.version! })
@@ -72,8 +75,11 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       const s = subjectInfo(e, a.subjectKey);
       const kind = s?.gateKind;
       if (!s || !kind) throw new Error(`${a.subjectKey} has no gate`);
-      const qa = ctx.menu.qa?.subjectKey === s.key && ctx.menu.qa.subjectHash === s.hash ? ctx.menu.qa : null;
+      const qa = ctx.menu.qa;
+      if (!qa || qa.subjectKey !== s.key || qa.subjectHash !== s.hash) throw new Error(`${a.subjectKey} has no QA report for its current content`);
       await db.transaction().execute(async (trx) => {
+        // Lock order is engagement, then run, then gate.
+        await loadEngagement(trx, e.id, { forUpdate: true });
         await assertLease(trx, run.id, run.leaseOwner!);
         const gate = await insertGate(trx, {
           engagementId: e.id, runId: run.id, kind, subjectKey: s.key, subjectId: s.subjectId, subjectHash: s.hash, basisHash: s.basis, qaReport: qa,

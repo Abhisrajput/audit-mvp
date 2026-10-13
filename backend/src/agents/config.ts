@@ -29,7 +29,9 @@ const Env = z.object({
 });
 
 export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
-  const parsed = Env.safeParse(env);
+  // Compose passes unset optional settings as empty strings; treat them as absent (as the core config does).
+  const present = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined && v !== ''));
+  const parsed = Env.safeParse(present);
   if (!parsed.success) {
     throw new Error(`Invalid configuration:\n${parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n')}`);
   }
