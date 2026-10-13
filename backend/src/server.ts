@@ -1,3 +1,4 @@
+import { loadAgentConfig } from './agents/config';
 import { createApp } from './app';
 import { createBlobStore } from './storage/config';
 import { createOidcClient } from './auth/oidc';
@@ -15,6 +16,7 @@ import { AuditService } from './service';
 async function main() {
   prepareEnv();
   const { core: config, auth, storage, citationPolicy } = loadServerConfig();
+  const agents = loadAgentConfig();
   setLogLevel(config.logLevel);
   const blobs = createBlobStore(storage);
   const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl });
@@ -50,8 +52,9 @@ async function main() {
     logger.warn('ALLOW_UNVERIFIED_CITATIONS is on: findings may cite knowledge no reviewer has verified (flagged, not blocked). Never use this in production.');
   }
   if (!config.metricsToken) logger.warn('METRICS_TOKEN is not set: /metrics is open. Set it outside local development.');
+  if (!agents.enabled) logger.warn('AGENT_ENABLED=false: agent runs cannot be started');
   const svc = new AuditService(db, registry, instrumentProvider(createProvider()), { citationPolicy });
-  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }, { trustProxy: config.trustProxy, metricsToken: config.metricsToken }).listen(config.port, () => {
+  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }, { trustProxy: config.trustProxy, metricsToken: config.metricsToken, agents }).listen(config.port, () => {
     logger.info(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);
   });
 }
