@@ -84,11 +84,11 @@ What the problems mean:
   - "Gate <id> is approved|rejected, but its signature … is missing", "Gate <id>: signature … is for different content than the gate showed", "… carries <meaning>, not <expected>", "… was made for a different gate|finding": a gate and the signature that closed it disagree. One of them was edited outside the application.
   - "Gate <id> is open|superseded, but names signature <sig>": a gate nobody decided names a signature.
 - **Agents** (each line starts `Step <runId>#<seq> (<kind>)`):
-  - "has no trail entry": a decision, delegation or QA review is not in the audit trail.
+  - "has no trail entry": an agent step (a decision, delegation, QA review, lookup, takeover note or rails refusal) is not in the audit trail. No step is exempt.
   - "its trail entry <id> is missing": the bundle the step names is gone.
   - "is at or after the break in the chain": the step's bundle is not vouched for by the hash chain; investigate the trail break first.
   - "is not an agent's entry for this run": the step points at a bundle written by someone else, or for another run.
-  - Known gap: the worker's takeover note and the rails' refusal step (kind `tool_call`, agent `worker` or `rails`) are bookkeeping and may have no trail entry, so verify accepts them without one. Every other step must name an entry. A follow-up will give these steps entries of their own.
+  - Takeover notes and rails refusals written before these steps got trail entries of their own are reported as having none. Such rows exist only in databases that ran agents before the change.
 - **Documents.**
   - "Trail entry <id> registers document <documentId>, but the document row is missing": a document row was deleted outside the application.
   - "Document <id>: registered as <sha256> in the trail, but the row says <sha256>": the row's SHA-256 was rewritten after registration, so it points at other bytes.

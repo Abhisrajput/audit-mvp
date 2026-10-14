@@ -12,6 +12,7 @@ import { AgentWorker, chooseDecision } from '../src/agents/worker';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
 import { AppError } from '../src/errors';
+import { verifyIntegrity } from '../src/ops/verify';
 import { auditor, FakeProvider, NEW_ENGAGEMENT, newService, noWait, reviewer, TEST_LLM, unattended } from './helpers';
 
 // Lets a test act between the worker's reconcile and its decision (the graph input is loaded in between).
@@ -23,6 +24,13 @@ vi.mock('../src/agents/state', async (importOriginal) => {
     return real.loadGraphInput(...args);
   } };
 });
+
+/** The step's trail entry is the given agent's entry for this run and engagement, and verify finds nothing wrong (REQ-24). */
+async function expectAgentEntry(db: Awaited<ReturnType<typeof started>>['db'], run: { id: string; engagementId: string }, bundleId: string, moduleId: string, actor: string) {
+  const entry = (await readTrail(db, run.engagementId)).find((b) => b.id === bundleId);
+  expect(entry).toMatchObject({ moduleId, actor, inputs: { runId: run.id, onBehalfOf: 'auditor' } });
+  expect((await verifyIntegrity(db, null)).agents.problems).toEqual([]);
+}
 
 const cfg = (over: Partial<AgentConfig> = {}): AgentConfig => ({ ...defaultAgentConfig(), ...over });
 
@@ -59,7 +67,9 @@ describe('the agent worker', () => {
     expect(await getRun(db, run.id)).toMatchObject({
       status: 'needs_human', statusReason: expect.stringMatching(/stopped mid-step 3 times in a row/), failureStreak: 3, spent: { steps: 3 },
     });
-    expect((await listSteps(db, run.id))[0]).toMatchObject({ kind: 'tool_call', agent: 'worker', decision: { recovered: expect.any(String) } });
+    const [note] = await listSteps(db, run.id);
+    expect(note).toMatchObject({ kind: 'tool_call', agent: 'worker', decision: { recovered: expect.any(String) }, trailBundleId: expect.any(String) });
+    await expectAgentEntry(db, run, note.trailBundleId!, 'agent:recovered', 'agent:worker');
   });
 
   it('keeps model spend charged by a worker that dies before handing the run back [REQ-29]', async () => {
@@ -168,7 +178,9 @@ describe('the agent worker', () => {
     vi.spyOn(svc, 'runModuleAsAgent').mockRejectedValue(new AppError(403, 'An agent may not sign', 'AGENT_FORBIDDEN'));
     await worker.tick();
     expect(await getRun(db, run.id)).toMatchObject({ status: 'needs_human', statusReason: 'agent_forbidden: An agent may not sign' });
-    expect((await listSteps(db, run.id)).at(-1)).toMatchObject({ kind: 'tool_call', agent: 'rails', decision: { refused: 'An agent may not sign' } });
+    const refusal = (await listSteps(db, run.id)).at(-1)!;
+    expect(refusal).toMatchObject({ kind: 'tool_call', agent: 'rails', decision: { refused: 'An agent may not sign' }, trailBundleId: expect.any(String) });
+    await expectAgentEntry(db, run, refusal.trailBundleId!, 'agent:refused', 'agent:rails');
   });
 
   it('honours a cancel that arrives mid-step, and takes no further step', async () => {

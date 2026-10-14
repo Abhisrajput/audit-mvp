@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
+import type { Transaction } from 'kysely';
 import { PREPARER_ROLES } from '../auth/roles';
 import { getUser } from '../auth/user-repo';
 import { loadEngagement } from '../db/engagement-repo';
+import type { DB } from '../db/schema';
 import { appendTrail, type Executor } from '../db/trail-repo';
 import type { User } from '../engine/types';
 import { AppError } from '../errors';
@@ -144,13 +146,9 @@ export class AgentWorker {
       if (run.pauseRequested) return { status: 'waiting', reason: 'paused_by_user', pauseHandled: true };
       if (run.takenOver) {
         // leaseNext has already counted the dead worker's step as a failed one; say so in the run's record.
-        await db.transaction().execute(async (trx) => {
-          await assertLease(trx, run.id, this.id);
-          await appendStep(trx, run.id, {
-            kind: 'tool_call', agent: 'worker',
-            decision: { recovered: 'The worker holding this run stopped mid-step. That step was counted as failed, and is redone from the engagement as it is now.' },
-          });
-        });
+        await db.transaction().execute((trx) => this.recordBookkeeping(trx, run, 'worker', 'agent:recovered', {
+          recovered: 'The worker holding this run stopped mid-step. That step was counted as failed, and is redone from the engagement as it is now.',
+        }));
         if (run.failureStreak >= MAX_STREAK) {
           return { status: 'needs_human', reason: `error: the worker running this run stopped mid-step ${run.failureStreak} times in a row` };
         }
@@ -203,6 +201,20 @@ export class AgentWorker {
     return loaded.engagement;
   }
 
+  /**
+   * A takeover note or a rails refusal: bookkeeping, not a decision, but sealed in the trail like every other agent step
+   * so verify can hold each step to its entry (agent spec §9).
+   */
+  private async recordBookkeeping(trx: Transaction<DB>, run: AgentRun, agent: 'worker' | 'rails', moduleId: string, decision: Record<string, string>) {
+    await assertLease(trx, run.id, this.id);
+    const loaded = await loadEngagement(trx, run.engagementId);
+    if (!loaded) throw new AppError(404, `Engagement ${run.engagementId} not found`);
+    const sealed = await appendTrail(trx, this.port.agentBundle(loaded.engagement, {
+      moduleId, agent, runId: run.id, onBehalfOf: run.startedBy, inputs: {}, output: decision,
+    }));
+    await appendStep(trx, run.id, { kind: 'tool_call', agent, decision, trailBundleId: sealed.id });
+  }
+
   private async failed(run: AgentRun, err: unknown, spentSoFar: Spent): Promise<RunUpdate> {
     // A failed iteration still counts as a step against the budget, so a run that keeps failing cannot go on forever.
     // Model calls it made are already in `spentSoFar` (the meter wrote them as they happened).
@@ -219,10 +231,7 @@ export class AgentWorker {
     if (err instanceof AppError && err.code === 'AGENT_FORBIDDEN') {
       logger.warn({ runId: run.id, refused: err.message }, 'agent action refused by the rails');
       try {
-        await this.svc.db.kysely.transaction().execute(async (trx) => {
-          await assertLease(trx, run.id, this.id);
-          await appendStep(trx, run.id, { kind: 'tool_call', agent: 'rails', decision: { refused: err.message } });
-        });
+        await this.svc.db.kysely.transaction().execute((trx) => this.recordBookkeeping(trx, run, 'rails', 'agent:refused', { refused: err.message }));
       } catch (stepErr) {
         if (stepErr instanceof AppError && stepErr.code === 'LEASE_LOST') logger.warn({ runId: run.id }, 'could not record the refused action; the lease is gone');
         else logger.error({ runId: run.id, err: stepErr }, `could not record the refused action: ${stepErr instanceof Error ? stepErr.message : String(stepErr)}`);
