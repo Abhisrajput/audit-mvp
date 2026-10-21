@@ -18,6 +18,7 @@ import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { ifMatch, wrap } from './http-util';
+import { EngagementContextInputSchema } from './judgment/context';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
@@ -31,6 +32,7 @@ const NewEngagementSchema = z.object({
   auditType: z.string().min(1),
   scopeStatement: z.string().min(1),
   packIds: z.array(z.string()).min(1),
+  context: EngagementContextInputSchema.optional(),
 });
 
 const TestInputSchema = z.object({
@@ -152,6 +154,10 @@ export function createApp(
   app.put('/api/engagements/:id/scope', readers, wrap(async (req, res) => {
     const items = z.array(z.object({ controlId: z.string(), included: z.boolean() })).parse(req.body.items);
     res.json(await svc.setScope(param(req, 'id'), items, actorOf(req), ifMatch(req)));
+  }));
+
+  app.put('/api/engagements/:id/context', readers, wrap(async (req, res) => {
+    res.json(await svc.setEngagementContext(param(req, 'id'), EngagementContextInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
   }));
 
   app.put('/api/engagements/:id/tests/:rowId', readers, wrap(async (req, res) => {

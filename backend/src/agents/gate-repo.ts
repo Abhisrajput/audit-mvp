@@ -61,6 +61,19 @@ export async function listGates(db: Executor, engagementId: string): Promise<Gat
   return (await db.selectFrom('gates').selectAll().where('engagement_id', '=', engagementId).orderBy('seq').execute()).map(toGate);
 }
 
+/** True when the engagement has a gate of this kind that has been approved. */
+export async function hasApprovedGate(db: Executor, engagementId: string, kind: string): Promise<boolean> {
+  const row = await db
+    .selectFrom('gates')
+    .select('id')
+    .where('engagement_id', '=', engagementId)
+    .where('kind', '=', kind as never)
+    .where('state', '=', 'approved')
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
 /** The open gate on a subject (a finding id, or a workpaper kind), or null. */
 export async function openGateForSubject(db: Executor, engagementId: string, subjectId: string): Promise<Gate | null> {
   const row = await db

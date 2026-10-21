@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
 import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
-import { closeFindingGate, closeGate, getGate, type Gate } from './agents/gate-repo';
+import { closeFindingGate, closeGate, getGate, hasApprovedGate, type Gate } from './agents/gate-repo';
 import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
@@ -28,6 +28,7 @@ import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/tr
 import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
+import type { EngagementContextInput } from './judgment/context';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
@@ -44,6 +45,8 @@ export interface NewEngagement {
   auditType: string;
   scopeStatement: string;
   packIds: string[];
+  /** What the auditor knows about the business (spec §3.1); the server adds who and when. */
+  context?: EngagementContextInput;
 }
 
 /** One agent action for the trail. */
@@ -208,7 +211,7 @@ export class AuditService {
       testPlans: {},
       findings: [],
       report: null,
-      context: null,
+      context: input.context ? { ...input.context, updatedBy: actor.id, updatedAt: new Date().toISOString() } : null,
       coverage: null,
       memos: {},
     };
@@ -359,6 +362,23 @@ export class AuditService {
         s.included = it.included;
       }
       emit(this.humanBundle(e, 'human:scope-decision', actor, items, { included: e.scope.filter((s) => s.included).map((s) => s.controlId) }));
+      return e;
+    });
+    return result;
+  }
+
+  /**
+   * Set the engagement context (spec §3.1). It feeds the scope's risk assessment, so it is locked once the RCM gate is
+   * approved: after that, late matters belong in the relevant finding or a new engagement.
+   */
+  async setEngagementContext(engagementId: string, input: EngagementContextInput, actor: User, opts: MutationOptions = {}) {
+    this.require(actor, PREPARER_ROLES, 'set the engagement context');
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
+      if (await hasApprovedGate(trx, engagementId, 'rcm')) {
+        throw new AppError(409, 'The scope and RCM are approved; record late matters in the relevant finding, or start a new engagement', 'CONTEXT_LOCKED');
+      }
+      e.context = { ...input, updatedBy: actor.id, updatedAt: new Date().toISOString() };
+      emit(this.humanBundle(e, 'human:set-context', actor, input, { factors: input.factors.length, background: input.background.length }));
       return e;
     });
     return result;

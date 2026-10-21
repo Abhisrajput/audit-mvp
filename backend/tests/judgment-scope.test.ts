@@ -1,23 +1,15 @@
 // backend/tests/judgment-scope.test.ts
 import { describe, expect, it } from 'vitest';
 import { rootBasis } from '../src/agents/subjects';
-import { loadEngagement, saveEngagement } from '../src/db/engagement-repo';
 import { sha256, canonicalJson } from '../src/engine/trail';
-import type { EngagementContext } from '../src/engine/types';
+import type { EngagementContextInput } from '../src/judgment/context';
 import type { GenerateRequest } from '../src/engine/llm/provider';
 import { workpaperContentHash } from '../src/signing/content-hash';
 import { AuditService } from '../src/service';
 import { auditor, FakeProvider, leasedRun, LENIENT, NEW_ENGAGEMENT, newService, registry } from './helpers';
 import { testDb } from './db';
 
-const INCIDENT: EngagementContext = { factors: [{ kind: 'incident', processAreas: ['Procure to pay'], description: 'Duplicate vendor payments found in Q1' }], background: '', updatedBy: 'auditor', updatedAt: '2026-10-21T00:00:00.000Z' };
-
-/** Sets the context on a saved engagement. Task 7 switches this to createEngagement({ ...NEW_ENGAGEMENT, context }). */
-async function withContext(svc: Awaited<ReturnType<typeof newService>>, id: string, context: EngagementContext) {
-  const loaded = (await loadEngagement(svc.db.kysely, id))!;
-  loaded.engagement.context = context;
-  await saveEngagement(svc.db.kysely, loaded);
-}
+const INCIDENT: EngagementContextInput = { factors: [{ kind: 'incident', processAreas: ['Procure to pay'], description: 'Duplicate vendor payments found in Q1' }], background: '' };
 
 /** The model's answer: every candidate included, with the given assessed risks. Candidate lines are `id | area | title | assessed risk | relevance`. */
 function scopeAnswerFrom(req: GenerateRequest<unknown>, raises: Record<string, string>) {
@@ -31,8 +23,7 @@ function scopeAnswerFrom(req: GenerateRequest<unknown>, raises: Record<string, s
 describe('the scope module with the judgment layer (spec §5.1, §5.2)', () => {
   it('assesses risk from the context, includes the best control of a touched empty area, and writes the coverage and memo', async () => {
     const svc = await newService();
-    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
-    await withContext(svc, e.id, INCIDENT);
+    const e = await svc.createEngagement({ ...NEW_ENGAGEMENT, context: INCIDENT }, auditor);
     await svc.runModule(e.id, 'scope', auditor);
     const after = await svc.engagement(e.id);
     const p2p = after.scope.filter((s) => s.processArea === 'Procure to pay');
