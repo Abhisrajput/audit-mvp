@@ -4,14 +4,15 @@ import { useState } from 'react';
 import { formatUtc, gateSigning, sortGates, subjectLabel } from '../../agents';
 import { useSession } from '../../session';
 import { openSigningWindow, signGateWithReauth } from '../../signing';
-import type { Gate } from '../../types';
+import type { Engagement, Gate, JudgmentMemo } from '../../types';
 import { ActionButton } from '../common';
+import MemoView from './MemoView';
 import QaReportView from './QaReportView';
 import type { AgentRunState } from './useAgentRun';
 
 const title = (g: Gate) => (g.kind === 'finding' ? `Finding ${g.subjectId}` : `${subjectLabel(g.subjectKey).replace(/^./, (c) => c.toUpperCase())} gate`);
 
-function GateCard({ gate, agent, onSigned, showFindings }: { gate: Gate; agent: AgentRunState; onSigned: () => Promise<void>; showFindings: () => void }) {
+function GateCard({ gate, memo, agent, onSigned, showFindings }: { gate: Gate; memo?: JudgmentMemo; agent: AgentRunState; onSigned: () => Promise<void>; showFindings: () => void }) {
   const { user } = useSession();
   const [comment, setComment] = useState('');
   const [waiting, setWaiting] = useState<AbortController | null>(null);
@@ -42,6 +43,11 @@ function GateCard({ gate, agent, onSigned, showFindings }: { gate: Gate; agent: 
             {gate.id} · opened {formatUtc(gate.openedAt)}
           </Typography>
         </Stack>
+        {memo && (
+          <Box sx={{ mt: 1 }}>
+            <MemoView memo={memo} />
+          </Box>
+        )}
         {gate.qaReport && (
           <Box sx={{ mt: 1 }}>
             <QaReportView report={gate.qaReport} threshold={agent.settings?.qaThreshold ?? null} />
@@ -94,7 +100,7 @@ function GateCard({ gate, agent, onSigned, showFindings }: { gate: Gate; agent: 
 }
 
 /** The engagement's gates (agent spec §7.2): each open one with its QA review and signing; decided ones on request. */
-export default function GateList({ agent, onSigned, showFindings }: { agent: AgentRunState; onSigned: () => Promise<void>; showFindings: () => void }) {
+export default function GateList({ engagement, agent, onSigned, showFindings }: { engagement: Engagement; agent: AgentRunState; onSigned: () => Promise<void>; showFindings: () => void }) {
   const [history, setHistory] = useState(false);
   if (!agent.gates.length) return null;
   const { open, decided, superseded } = sortGates(agent.gates);
@@ -104,7 +110,7 @@ export default function GateList({ agent, onSigned, showFindings }: { agent: Age
         Gates
       </Typography>
       {open.map((g) => (
-        <GateCard key={g.id} gate={g} agent={agent} onSigned={onSigned} showFindings={showFindings} />
+        <GateCard key={g.id} gate={g} memo={engagement.memos[g.subjectKey]} agent={agent} onSigned={onSigned} showFindings={showFindings} />
       ))}
       {!open.length && (
         <Typography variant="body2" color="text.secondary">

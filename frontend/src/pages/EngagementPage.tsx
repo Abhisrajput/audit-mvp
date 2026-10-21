@@ -106,7 +106,7 @@ export default function EngagementPage() {
         </Typography>
       </Box>
 
-      <RunPanel engagementId={e.id} agent={agent} onSigned={load} showFindings={() => setTab(FINDINGS_TAB)} />
+      <RunPanel engagement={e} agent={agent} onSigned={load} showFindings={() => setTab(FINDINGS_TAB)} />
 
       <Card variant="outlined" sx={{ p: 2 }}>
         <Stepper nonLinear activeStep={tab}>
