@@ -65,7 +65,7 @@ function EditDialog({ finding, ctx, onClose }: { finding: Finding; ctx: CardCont
             await api(`/engagements/${ctx.engagementId}/findings/${finding.id}`, {
               method: 'PUT',
               ifMatch: ctx.version,
-              body: { title: f.title, rating: f.rating, ...Object.fromEntries(FIELDS.map((k) => [k, f[k]])), evidenceRefs: f.evidence.split(',').map((s) => s.trim()).filter(Boolean) },
+              body: { title: f.title, ...Object.fromEntries(FIELDS.map((k) => [k, f[k]])), evidenceRefs: f.evidence.split(',').map((s) => s.trim()).filter(Boolean) },
             });
             await ctx.reload();
             onClose();

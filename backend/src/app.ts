@@ -18,7 +18,9 @@ import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { ifMatch, wrap } from './http-util';
+import type { Impact, Likelihood } from './engine/types';
 import { EngagementContextInputSchema } from './judgment/context';
+import { IMPACTS, LIKELIHOODS } from './judgment/finding';
 import { TOLERANCE_MAX } from './judgment/sampling';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import { AppError, AuditService } from './service';
@@ -47,7 +49,8 @@ const TestInputSchema = z.object({
 const FindingPatchSchema = z
   .object({
     title: z.string().min(1),
-    rating: z.enum(['High', 'Medium', 'Low']),
+    likelihood: z.enum([...LIKELIHOODS] as [Likelihood, ...Likelihood[]]),
+    impact: z.enum([...IMPACTS] as [Impact, ...Impact[]]),
     condition: z.string().min(1),
     criteria: z.string().min(1),
     cause: z.string().min(1),
@@ -55,7 +58,8 @@ const FindingPatchSchema = z
     recommendation: z.string().min(1),
     evidenceRefs: z.array(z.string().min(1)),
   })
-  .partial();
+  .partial()
+  .strict();
 
 /** Routes that parse their own bodies (see documentRoutes). */
 const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);

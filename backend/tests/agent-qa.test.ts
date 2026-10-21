@@ -5,7 +5,8 @@ import { subjectContent } from '../src/agents/qa/rubric';
 import { draftTestPlans } from '../src/agents/specialists/test-plan';
 import { findingKey, rcmRowHash, subjectInfo } from '../src/agents/subjects';
 import type { Action, Menu, QaIssue, QaReport } from '../src/agents/types';
-import { engagement, finding, plan, row, scopeItem } from './agent-fixtures';
+import { engagement, finding, input, plan, result, row, scopeItem } from './agent-fixtures';
+import { LENIENT, registry } from './helpers';
 
 const issues = (r: QaReport) => r.issues.map((i) => [i.severity, i.criterion]);
 
@@ -142,5 +143,36 @@ describe('scope items stored before the risk assessment existed', () => {
     const report = reviewSubject(e, 'scope');
     expect(report.issues.map((i) => i.criterion)).not.toContain('scope.assessed-below-library');
     expect(() => JSON.stringify(subjectContent(e, 'scope'))).not.toThrow();
+  });
+});
+
+describe('the finding judgment checks (spec §5.5) [REQ-32]', () => {
+  const key = findingKey('A');
+  const withResult = (over: object) => ({ ...result('A'), ...over });
+  const withInput = (observation: string) => ({ ...input(), observation });
+
+  it('blocks a rating that is not the matrix cell, and a confirmed cause the observation does not support; flags a severity of none beside negative wording', () => {
+    const mismatch = engagement({ rcm: [row('A')], findings: [finding('A', 'draft', { likelihood: 'rare', impact: 'minor', rating: 'High' })] });
+    expect(issues(reviewSubject(mismatch, key))).toContainEqual(['blocking', 'finding.rating-matrix']);
+
+    const unsupported = engagement({
+      rcm: [row('A')], testInputs: { A: withInput('Checks missed in March') },
+      findings: [finding('A', 'draft', { rootCause: { category: 'people', analysis: 'Understaffing across departments', confirmed: true } })],
+    });
+    expect(issues(reviewSubject(unsupported, key))).toContainEqual(['blocking', 'finding.root-cause-unsupported']);
+
+    const none = engagement({ rcm: [row('A')], testInputs: { A: withInput('Two records missing from the log') }, testResults: { A: withResult({ severity: 'none' }) }, findings: [finding('A')] });
+    expect(issues(reviewSubject(none, key))).toContainEqual(['advisory', 'finding.severity-signal']);
+  });
+
+  it('flags a confirmed cause paired with the library recommendation unchanged (needs the registry)', () => {
+    const library = registry.controls.get('FD-HACCP-03')!.recommendation;
+    const e = engagement({
+      rcm: [row('FD-HACCP-03')], testInputs: { 'FD-HACCP-03': withInput('Checks missed while staffing was short') },
+      findings: [finding('FD-HACCP-03', 'draft', { recommendation: library, rootCause: { category: 'people', analysis: 'Staffing was short that week', confirmed: true } })],
+    });
+    const checks = { registry, policy: LENIENT.citationPolicy };
+    expect(issues(reviewSubject(e, findingKey('FD-HACCP-03'), checks))).toContainEqual(['advisory', 'finding.recommendation-verbatim']);
+    expect(issues(reviewSubject(e, findingKey('FD-HACCP-03')))).not.toContainEqual(['advisory', 'finding.recommendation-verbatim']);
   });
 });

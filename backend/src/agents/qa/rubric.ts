@@ -24,18 +24,19 @@ export const RUBRICS: Readonly<Record<RubricKind, readonly RubricCriterion[]>> =
   rcm: [
     { id: 'rcm.risk-control-link', question: 'Does each control plausibly mitigate the risk it is paired with?' },
     { id: 'rcm.procedure-specificity', question: 'Are the test steps concrete enough for another auditor to repeat?' },
-    { id: 'rcm.sample-appropriateness', question: "Do the sample sizes suit each control's frequency and risk?" },
+    { id: 'rcm.sample-appropriateness', question: "Do the sample sizes suit each control's frequency and risk?", standard: IIA.resources },
   ],
   test_plans: [
-    { id: 'plans.attribute-clarity', question: 'Does each plan state one clear attribute to test?' },
-    { id: 'plans.population', question: 'Is each population defined by period and source, so a sample can be drawn from it?' },
-    { id: 'plans.evidence', question: 'Would the evidence requested show whether the attribute holds?' },
+    { id: 'plans.attribute-clarity', question: 'Does each plan state one clear attribute to test?', standard: IIA.workProgram },
+    { id: 'plans.population', question: 'Is each population defined by period and source, so a sample can be drawn from it?', standard: IIA.workProgram },
+    { id: 'plans.evidence', question: 'Would the evidence requested show whether the attribute holds?', standard: IIA.workProgram },
   ],
   finding: [
-    { id: 'finding.condition-evidence', question: 'Is the condition supported by the recorded test and its evidence references?' },
-    { id: 'finding.criteria-citation', question: 'Do the criteria follow from the clauses cited?' },
-    { id: 'finding.cause-effect', question: 'Are the cause and effect specific and consistent with the condition?' },
-    { id: 'finding.recommendation', question: 'Is the recommendation actionable and aimed at the cause?' },
+    { id: 'finding.condition-evidence', question: 'Is the condition supported by the recorded test and its evidence references?', standard: IIA.gathering },
+    { id: 'finding.criteria-citation', question: 'Do the criteria follow from the clauses cited?', standard: IIA.criteria },
+    { id: 'finding.cause-effect', question: 'Are the cause and effect specific and consistent with the condition?', standard: IIA.analysis },
+    { id: 'finding.recommendation', question: 'Is the recommendation actionable and aimed at the cause?', standard: IIA.recommendations },
+    { id: 'finding.rating-basis', question: 'Do the likelihood, impact and rating follow from the result and the assessed risk?', standard: IIA.evaluation },
   ],
   report: [
     { id: 'report.accuracy', question: 'Does the report state the approved findings without changing their substance?' },
@@ -81,9 +82,9 @@ export function subjectContent(e: Engagement, subjectKey: string): unknown {
   const rowId = rowOfKey(subjectKey);
   const f = rowId ? e.findings.find((x) => x.rowId === rowId) : undefined;
   if (!rowId || !f) return null;
-  const { title, rating, condition, criteria, cause, effect, recommendation, evidenceRefs } = f;
+  const { title, rating, likelihood, impact, rootCause, condition, criteria, cause, effect, recommendation, evidenceRefs } = f;
   return {
-    finding: { title, rating, severity: e.testResults[rowId]?.severity ?? null, condition, criteria, cause, effect, recommendation, evidenceRefs, citations: labels(f.citations) },
+    finding: { title, rating, likelihood: likelihood ?? null, impact: impact ?? null, rootCause: rootCause ?? null, severity: e.testResults[rowId]?.severity ?? null, condition, criteria, cause, effect, recommendation, evidenceRefs, citations: labels(f.citations) },
     test: { input: e.testInputs[rowId] ?? null, result: e.testResults[rowId] ?? null },
   };
 }

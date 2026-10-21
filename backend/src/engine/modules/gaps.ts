@@ -2,17 +2,11 @@ import crypto from 'node:crypto';
 import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { findingCitationGate, toCitation } from '../qa';
-import type { Citation, Finding, RcmRow, RiskRating, TestInput, TestResult } from '../types';
+import { causeSupported, IMPACTS, impactOf, LIKELIHOODS, likelihoodOf, oneStepWorse, PLACEHOLDER_CAUSE, ratingOf } from '../../judgment/finding';
+import { findingMemo } from '../../judgment/memo';
+import type { Citation, Finding, Impact, Likelihood, RcmRow, TestInput, TestResult } from '../types';
 import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
-
-function rate(row: RcmRow, result: TestResult): RiskRating {
-  if (result.conclusion === 'Design deficient') return row.riskRating;
-  const r = result.exceptionRate ?? 0;
-  if (row.riskRating === 'Medium' && r >= 0.2) return 'High';
-  if (row.riskRating === 'High' && r > 0 && r < 0.05) return 'Medium';
-  return row.riskRating;
-}
 
 /** Deterministic finding draft using the 5 C's (condition, criteria, cause, effect, recommendation). */
 export function draftFinding(ctxRegistry: { clauses: Map<string, { regulation: string; ref: string; summary: string }> }, row: RcmRow, input: TestInput, result: TestResult, recommendation: string): Omit<Finding, 'id' | 'bundleId'> {
@@ -23,14 +17,21 @@ export function draftFinding(ctxRegistry: { clauses: Map<string, { regulation: s
       return `${c.regulation} ${c.ref}: ${clause?.summary ?? ''}`.trim();
     })
     .join(' ');
-  return {
+  const likelihood = likelihoodOf(result);
+  const impact = impactOf(row.assessedRisk ?? row.riskRating);
+  const rating = ratingOf(likelihood, impact);
+  const rootCause = { category: 'unknown' as const, analysis: PLACEHOLDER_CAUSE, confirmed: false };
+  const draft: Omit<Finding, 'id' | 'bundleId'> = {
     rowId: row.id,
     controlId: row.controlId,
     title: result.conclusion === 'Design deficient' ? `${row.control}: control design gap` : `${row.control}: exceptions in operation`,
-    rating: rate(row, result),
+    rating,
+    likelihood,
+    impact,
+    rootCause,
     condition: `${input.observation.trim()}${sample}`,
     criteria: `${criteria} Control objective: ${row.objective}`,
-    cause: 'Root cause to be confirmed with the process owner at the exit meeting.',
+    cause: PLACEHOLDER_CAUSE,
     effect: row.risk,
     recommendation,
     citations: row.citations,
@@ -39,6 +40,7 @@ export function draftFinding(ctxRegistry: { clauses: Map<string, { regulation: s
     blockedReasons: [],
     signOffs: [],
   };
+  return { ...draft, memo: findingMemo({ finding: draft, row, result, libraryRecommendation: recommendation, modelMoves: [], producedAt: new Date().toISOString() }) };
 }
 
 const ModelFinding = z.object({
@@ -46,7 +48,9 @@ const ModelFinding = z.object({
     z.object({
       rowId: z.string(),
       title: z.string(),
-      rating: z.enum(['High', 'Medium', 'Low']),
+      likelihood: z.enum(LIKELIHOODS as [Likelihood, ...Likelihood[]]).optional(),
+      impact: z.enum(IMPACTS as [Impact, ...Impact[]]).optional(),
+      rootCause: z.object({ category: z.enum(['people', 'process', 'system', 'governance', 'unknown']), analysis: z.string(), confirmed: z.boolean() }),
       condition: z.string(),
       criteria: z.string(),
       cause: z.string(),
@@ -89,7 +93,10 @@ export const gapsModule: AuditModule<Finding[]> = {
       ctx,
       SYSTEM_PREAMBLE,
       `Draft one audit finding per failed control. Use the 5 C's. "criteria" must quote the clause reference (e.g. "§211.192") for every clause you cite.\n` +
-        `Do not state a root cause as fact unless the record supports it; otherwise say it is to be confirmed.\n\n` +
+        `Do not state a root cause as fact unless the record supports it; otherwise say it is to be confirmed.\n` +
+        `The rating is computed from likelihood and impact, never taken from you. Each row gives the rule's likelihood, impact and severity. You may name a likelihood or an impact exactly one step worse than the rule's value when the record supports it (rare, possible, likely; minor, moderate, major); any other value is refused. Omit them to keep the rule's value.\n` +
+        `Give a root cause: a category (people, process, system, governance or unknown), your analysis in words the record uses, and confirmed true only when the record supports it. Then write a recommendation tailored to that cause category and the engagement context, not a copy of the library text.\n\n` +
+        (e.context ? `Engagement context:\n${asData('engagement-context', { background: e.context.background, factors: e.context.factors })}\n\n` : '') +
         asData(
           'workpaper:failed-controls',
           todo.map((r) => ({
@@ -98,6 +105,9 @@ export const gapsModule: AuditModule<Finding[]> = {
             objective: r.objective,
             risk: r.risk,
             inherentRisk: r.riskRating,
+            assessedRisk: r.assessedRisk ?? r.riskRating,
+            rule: { likelihood: drafts.get(r.id)!.likelihood, impact: drafts.get(r.id)!.impact, rating: drafts.get(r.id)!.rating, severity: e.testResults[r.id].severity },
+            libraryRecommendation: ctx.registry.controls.get(r.controlId)!.recommendation,
             record: e.testInputs[r.id],
             conclusion: e.testResults[r.id],
             allowedClauses: [...allowed.get(r.id)!].map((id) => {
@@ -112,16 +122,47 @@ export const gapsModule: AuditModule<Finding[]> = {
       for (const m of modelOut.findings) {
         const d = drafts.get(m.rowId);
         if (!d) continue;
-        drafts.set(m.rowId, {
+        const row = todo.find((r) => r.id === m.rowId)!;
+        const refuse = (detail: string) => ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: m.rowId, detail, action: 'blocked' });
+        const modelMoves: string[] = [];
+        let likelihood = d.likelihood!;
+        let impact = d.impact!;
+        if (m.likelihood && m.likelihood !== likelihood) {
+          if (oneStepWorse(LIKELIHOODS, likelihood, m.likelihood)) likelihood = m.likelihood;
+          else refuse(`Model proposed likelihood ${m.likelihood} where the rule gives ${likelihood}; only a value exactly one step worse is accepted, so the rule value stands`);
+        }
+        if (m.impact && m.impact !== impact) {
+          if (oneStepWorse(IMPACTS, impact, m.impact)) impact = m.impact;
+          else refuse(`Model proposed impact ${m.impact} where the rule gives ${impact}; only a value exactly one step worse is accepted, so the rule value stands`);
+        }
+        const rating = ratingOf(likelihood, impact);
+        if (likelihood !== d.likelihood || impact !== d.impact) modelMoves.push('rating');
+        let { confirmed } = m.rootCause;
+        if (confirmed && !causeSupported(e.testInputs[m.rowId].observation, m.rootCause.analysis)) {
+          confirmed = false;
+          refuse('Model confirmed a root cause that shares no specific word with the recorded observation, so it stays unconfirmed');
+        }
+        const rootCause = { category: m.rootCause.category, analysis: m.rootCause.analysis, confirmed };
+        modelMoves.push('root cause');
+        const library = ctx.registry.controls.get(row.controlId)!.recommendation;
+        if (m.recommendation !== library) modelMoves.push('recommendation');
+        const next = {
           ...d,
           title: m.title,
-          rating: m.rating,
+          rating,
+          likelihood,
+          impact,
+          rootCause,
           condition: m.condition,
           criteria: m.criteria,
           cause: m.cause,
           effect: m.effect,
           recommendation: m.recommendation,
           citations: m.clauseIds.map((id) => toCitation(ctx.registry, id) ?? { clauseId: id, regulation: '?', ref: '?', label: id }) as Citation[],
+        };
+        drafts.set(m.rowId, {
+          ...next,
+          memo: findingMemo({ finding: next, row, result: e.testResults[m.rowId], libraryRecommendation: library, modelMoves, producedAt: new Date().toISOString() }),
         });
       }
     }

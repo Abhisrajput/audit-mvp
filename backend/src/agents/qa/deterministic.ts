@@ -1,9 +1,10 @@
 import type { Engagement, QaAction } from '../../engine/types';
 import type { PackRegistry } from '../../engine/packs';
-import { rcmCitationGate } from '../../engine/qa';
+import { negativeSignals, rcmCitationGate } from '../../engine/qa';
 import { trustActions, type CitationPolicy } from '../../engine/trust';
 import { areaRisk, isTouched, RANK } from '../../judgment/risk-assessment';
 import { factorsFor } from '../../judgment/context';
+import { causeSupported, ratingOf } from '../../judgment/finding';
 import { statementCoversAll } from '../../judgment/coverage';
 import { rowOfKey, subjectInfo } from '../subjects';
 import type { QaIssue, QaReport } from '../types';
@@ -80,12 +81,19 @@ function planIssues(e: Engagement): QaIssue[] {
 
 function findingIssues(e: Engagement, rowId: string): QaIssue[] {
   const f = e.findings.find((x) => x.rowId === rowId)!;
+  const observation = e.testInputs[rowId]?.observation ?? '';
   const empty = (['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const).filter((k) => !f[k].trim());
   return [
     ...(f.status === 'blocked' ? [blocking('finding.blocked', f.blockedReasons.join('; ') || 'Blocked by the QA gates')] : []),
     ...empty.map((k) => blocking('finding.five-cs', `${f.id} has no ${k}`)),
     ...(f.citations.length ? [] : [blocking('finding.citations', `${f.id} cites no regulatory clause`)]),
     ...(f.evidenceRefs.length ? [] : [blocking('finding.evidence', `${f.id} cites no evidence`)]),
+    ...(f.likelihood && f.impact && f.rating !== ratingOf(f.likelihood, f.impact)
+      ? [blocking('finding.rating-matrix', `${f.id} is rated ${f.rating}, but ${f.likelihood} likelihood and ${f.impact} impact give ${ratingOf(f.likelihood, f.impact)}`)] : []),
+    ...(f.rootCause?.confirmed && !causeSupported(observation, f.rootCause.analysis)
+      ? [blocking('finding.root-cause-unsupported', `${f.id} confirms a root cause that shares no specific word with the recorded observation`)] : []),
+    ...(e.testResults[rowId]?.severity === 'none' && negativeSignals(observation).length
+      ? [advisory('finding.severity-signal', `${f.id}: the test has severity none, yet the observation reads like an exception (${negativeSignals(observation).join(', ')})`)] : []),
   ];
 }
 
@@ -124,7 +132,10 @@ function checkedIssues(e: Engagement, subjectKey: string, c: QaChecks): QaIssue[
   const f = rowId ? e.findings.find((x) => x.rowId === rowId) : undefined;
   if (!f) return [];
   const unknown = f.citations.filter((x) => !c.registry.clauses.has(x.clauseId)).map((x) => x.clauseId);
+  const library = c.registry.controls.get(f.controlId)?.recommendation;
   return [
+    ...(f.rootCause?.confirmed && library && f.recommendation === library
+      ? [advisory('finding.recommendation-verbatim', `${f.id} confirms a root cause but keeps the library recommendation word for word`)] : []),
     ...(unknown.length ? [blocking('finding.citation-unknown', `${f.id} cites clauses not in the corpus: ${unknown.join(', ')}`)] : []),
     ...trustIssues('finding', trustActions(c.registry, f.id, { clauseIds: cites(f.citations), controlId: f.controlId }, c.policy, c.today), true),
   ];

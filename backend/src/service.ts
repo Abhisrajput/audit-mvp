@@ -32,7 +32,8 @@ import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
 import { insertTolerance } from './db/judgment-repo';
 import { TOLERANCE_MAX } from './judgment/sampling';
-import { markEditedByHand, sameMemo } from './judgment/memo';
+import { impactOf, ratingOf } from './judgment/finding';
+import { markEditedByHand, markEditedByPerson, sameMemo } from './judgment/memo';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
@@ -441,7 +442,7 @@ export class AuditService {
   async editFinding(
     engagementId: string,
     findingId: string,
-    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
     actor: User,
     opts: MutationOptions = {},
   ) {
@@ -457,7 +458,7 @@ export class AuditService {
   private async applyFindingEdit(
     engagementId: string,
     findingId: string,
-    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
     actor: User,
     opts: MutationOptions,
   ) {
@@ -474,6 +475,21 @@ export class AuditService {
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
+      if (patch.likelihood || patch.impact) {
+        // A pre-8B finding has neither: fall back to possible and the impact its rating implies, and write both so the matrix check engages from now on.
+        const likelihood = patch.likelihood ?? previous.likelihood ?? 'possible';
+        const impact = patch.impact ?? previous.impact ?? impactOf(previous.rating);
+        edited.likelihood = likelihood;
+        edited.impact = impact;
+        edited.rating = ratingOf(likelihood, impact);
+        if (previous.memo) {
+          const changes = [
+            ...(patch.likelihood ? [`likelihood ${previous.likelihood ?? 'possible'} → ${likelihood}`] : []),
+            ...(patch.impact ? [`impact ${previous.impact ?? impactOf(previous.rating)} → ${impact}`] : []),
+          ];
+          edited.memo = markEditedByPerson(previous.memo, actor.id, changes);
+        }
+      }
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed, this.citationPolicy);
       e.findings[idx] = finding;
       emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));

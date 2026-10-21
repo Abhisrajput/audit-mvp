@@ -132,6 +132,13 @@ describe('the QA agent [REQ-30]', () => {
     expect(r.issues).toContainEqual(expect.objectContaining({ criterion: 'qa.model-unavailable', severity: 'advisory' }));
   });
 
+  it('names the standard of the rating criterion in the finding review prompt', async () => {
+    const e = engagement({ rcm: [row('A')], findings: [finding('A')] });
+    const { fake, models } = withModel(scores(3, RUBRICS.finding));
+    await reviewWithAgent(e, findingKey('A'), 'review', { models });
+    expect(fake.requests[0].user).toMatch(/IIA-14\.3/);
+  });
+
   it('gives the model the workpaper only as data', async () => {
     const { fake, models } = withModel(scores(3, RUBRICS.scope));
     await reviewWithAgent(scoped(), 'scope', 'review', { models });

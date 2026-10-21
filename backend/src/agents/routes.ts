@@ -10,6 +10,7 @@ import type { AgentConfig } from './config';
 import { listGates } from './gate-repo';
 import { getRun, listRuns, listSteps } from './run-repo';
 import { cancelRun, pauseRun, raiseBudget, resumeRun, startRun } from './runs';
+import { rowOfKey } from './subjects';
 
 const BudgetSchema = z.object({ maxSteps: z.number().int().positive(), maxTokens: z.number().int().positive(), maxCostUsd: z.number().positive() }).strict();
 
@@ -70,9 +71,12 @@ export function agentRoutes(svc: AuditService, cfg: AgentConfig) {
   // The judgment memo for a subject (e.g. 'scope'), as data and as the markdown the panel shows.
   r.get('/api/engagements/:id/memos/:subjectKey', readers, wrap(async (req, res) => {
     const key = param(req, 'subjectKey');
-    const memos = (await svc.engagement(param(req, 'id'))).memos;
+    const e = await svc.engagement(param(req, 'id'));
     // Own keys only: a key such as `constructor` must be a 404, not an inherited object.
-    const memo = Object.hasOwn(memos, key) ? memos[key] : undefined;
+    let memo = Object.hasOwn(e.memos, key) ? e.memos[key] : undefined;
+    // A finding's memo lives on the finding.
+    const rowId = rowOfKey(key);
+    if (!memo && rowId) memo = e.findings.find((f) => f.rowId === rowId)?.memo;
     if (!memo) throw new AppError(404, `No memo for ${key}`);
     res.json({ memo, markdown: renderMemo(memo) });
   }));
