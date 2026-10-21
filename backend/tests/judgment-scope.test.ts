@@ -104,6 +104,38 @@ describe('the scope module with the judgment layer (spec §5.1, §5.2)', () => {
     expect(workpaperContentHash('scope', third.engagement)).toBe(workpaperContentHash('scope', after));
   });
 
+  it('recomputes the coverage and flags the memo when a person edits the scope by hand', async () => {
+    const OUT = ['Treasury & commodity risk', 'IT general controls'];
+    const model = new FakeProvider((req) => {
+      const lines = req.user.split('\n').map((line) => line.split(' | ')).filter((parts) => parts.length === 5 && /^[A-Z0-9-]+$/.test(parts[0]));
+      return {
+        items: lines.map(([controlId, area]) => ({ controlId, included: !OUT.includes(area), rationale: `Model: ${controlId}.` })),
+        coverageStatement: 'Treasury & commodity risk and IT general controls are left to the next cycle.',
+        exclusions: OUT.map((processArea) => ({ processArea, reason: `Model: ${processArea} was audited last year` })),
+      };
+    });
+    const svc = new AuditService(await testDb(), registry, model, LENIENT);
+    const e = await svc.createEngagement(COMMON, auditor);
+    const { engagement: drafted } = await svc.runModule(e.id, 'scope', auditor);
+    expect(drafted.coverage!.excluded.map((x) => x.processArea)).toEqual(expect.arrayContaining(OUT));
+    const hashBefore = workpaperContentHash('scope', drafted);
+    const itgc = drafted.scope.find((s) => s.processArea === 'IT general controls')!;
+    await svc.setScope(e.id, [{ controlId: itgc.controlId, included: true }], auditor);
+    const once = await svc.engagement(e.id);
+    expect(once.coverage!.excluded.map((x) => x.processArea)).not.toContain('IT general controls');
+    // The area still out keeps the model's reason; the statement is the rules' sentence for the edited scope.
+    expect(once.coverage!.excluded.find((x) => x.processArea === 'Treasury & commodity risk')!.reason).toBe('Model: Treasury & commodity risk was audited last year');
+    expect(once.coverage!.statement).not.toMatch(/IT general controls/);
+    expect(once.coverage!.statement).toMatch(new RegExp(`^${once.scope.filter((s) => s.included).length} of ${once.scope.length} library controls.*excluded: .*Treasury`));
+    expect(workpaperContentHash('scope', once)).not.toBe(hashBefore);
+    const other = once.scope.find((s) => s.included && s.controlId !== itgc.controlId)!;
+    await svc.setScope(e.id, [{ controlId: other.controlId, included: false }], auditor);
+    const twice = await svc.engagement(e.id);
+    const line = 'The scope was edited by hand after this memo; the coverage shown reflects the edited scope.';
+    expect(twice.memos.scope.forTheReviewer.filter((l) => l === line)).toHaveLength(1);
+    expect(twice.memos.scope.calls).toEqual(drafted.memos.scope.calls);
+  });
+
   it('refuses a control the model lists twice, and keeps its raise to one step', async () => {
     const model = new FakeProvider((req) => {
       const a = scopeAnswerFrom(req, { 'CMN-GOV-01': 'High' });

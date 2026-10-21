@@ -82,6 +82,14 @@ export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; conte
   return { subjectKey: 'scope', calls, forTheReviewer, producedAt: input.producedAt };
 }
 
+/** The line the memo carries once a person has edited the scope it describes. */
+export const EDITED_BY_HAND = 'The scope was edited by hand after this memo; the coverage shown reflects the edited scope.';
+
+/** The memo after a hand edit of the scope: its calls stay the agent's, and the reviewer is told once. */
+export function markEditedByHand(memo: JudgmentMemo): JudgmentMemo {
+  return { ...memo, forTheReviewer: [...memo.forTheReviewer.filter((line) => line !== EDITED_BY_HAND), EDITED_BY_HAND] };
+}
+
 /** Markdown for the gate panel: a heading per call, then "For the reviewer". */
 export function renderMemo(memo: JudgmentMemo): string {
   const sections = memo.calls.map((c) => {

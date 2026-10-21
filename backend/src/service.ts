@@ -29,6 +29,8 @@ import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
+import { recomputedCoverage } from './judgment/coverage';
+import { markEditedByHand } from './judgment/memo';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
@@ -356,6 +358,7 @@ export class AuditService {
   async setScope(engagementId: string, items: { controlId: string; included: boolean }[], actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'change scope');
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      let changed = false;
       for (const it of items) {
         const s = e.scope.find((x) => x.controlId === it.controlId);
         if (!s) throw new AppError(400, `Control ${it.controlId} is not a scope candidate`);
@@ -363,7 +366,14 @@ export class AuditService {
         if (s.included === it.included) continue;
         s.included = it.included;
         s.decidedBy = actor.id;
+        changed = true;
       }
+      // The coverage and the memo are inside the hash the signer approves, so they must describe the edited scope.
+      if (changed && e.coverage) {
+        const candidates = e.scope.map((s) => ({ controlId: s.controlId, processArea: s.processArea, inherentRisk: s.inherentRisk, assessedRisk: s.assessedRisk, relevance: s.relevance }));
+        e.coverage = recomputedCoverage(candidates, new Set(e.scope.filter((s) => s.included).map((s) => s.controlId)), e.scopeStatement, e.coverage);
+      }
+      if (changed && e.memos?.scope) e.memos = { ...e.memos, scope: markEditedByHand(e.memos.scope) };
       emit(this.humanBundle(e, 'human:scope-decision', actor, items, { included: e.scope.filter((s) => s.included).map((s) => s.controlId) }));
       return e;
     });

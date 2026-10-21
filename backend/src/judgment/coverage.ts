@@ -86,3 +86,13 @@ export function statementCoversAll(statement: string, excluded: Coverage['exclud
   const text = statement.toLowerCase();
   return excluded.every((e) => text.includes(e.processArea.toLowerCase()));
 }
+
+/**
+ * The coverage again after a person edited the scope by hand: the rules' areas and sentence for the edited scope. A
+ * reason already given (by the rules or the model) stays for an area that is still excluded.
+ */
+export function recomputedCoverage(candidates: Candidate[], included: Set<string>, scopeStatement: string, previous: Coverage): Coverage {
+  const reasons = new Map(previous.excluded.map((x) => [x.processArea, x.reason]));
+  const excluded = excludedAreas(candidates, included, scopeStatement).map((x) => ({ ...x, reason: reasons.get(x.processArea) ?? x.reason }));
+  return { excluded, statement: coverageStatement(candidates, included, excluded) };
+}
