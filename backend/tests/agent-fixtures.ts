@@ -6,7 +6,7 @@ import type { Citation, Engagement, Finding, RcmRow, ScopeItem, TestInput, TestP
 export const cite: Citation = { clauseId: 'C1', regulation: 'Reg', ref: '§1', label: 'Reg §1' };
 
 export const scopeItem = (id: string, included = true, over: Partial<ScopeItem> = {}): ScopeItem => ({
-  controlId: id, packId: 'p', processArea: 'a', risk: 'r', inherentRisk: 'Medium', assessedRisk: 'Medium', riskFactors: [], relevance: 1, rationale: 'x', citations: [cite], included, ...over,
+  controlId: id, packId: 'p', processArea: 'a', risk: 'r', inherentRisk: 'Medium', assessedRisk: over.inherentRisk ?? 'Medium', riskFactors: [], relevance: 1, rationale: 'x', citations: [cite], included, ...over,
 });
 
 export const row = (id: string, over: Partial<RcmRow> = {}): RcmRow => ({

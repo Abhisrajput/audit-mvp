@@ -15,6 +15,26 @@ describe('the offline QA reviewer', () => {
     expect(r.score).toBe(65);
   });
 
+  it('blocks an assessed risk below the library, and a touched High area left out; flags unknown areas and a thin statement [REQ-30]', () => {
+    const ctxt = { factors: [{ kind: 'incident' as const, processAreas: ['Lab', 'Warehouse'], description: 'OOS' }], background: '', updatedBy: 'u', updatedAt: 't' };
+    const e = engagement({
+      context: ctxt,
+      scope: [scopeItem('A', false, { processArea: 'Lab', inherentRisk: 'Medium', assessedRisk: 'High' }), scopeItem('B', true, { processArea: 'QA', inherentRisk: 'High', assessedRisk: 'Medium' })],
+      coverage: { excluded: [{ processArea: 'Lab', reason: 'below relevance threshold' }], statement: 'All good.' },
+    });
+    const r = reviewSubject(e, 'scope', undefined, new Set(['Lab', 'QA']));
+    expect(issues(r)).toEqual(expect.arrayContaining([
+      ['blocking', 'scope.assessed-below-library'], ['blocking', 'scope.touched-high-excluded'],
+      ['advisory', 'scope.factor-unknown-area'], ['advisory', 'scope.coverage-statement'],
+    ]));
+    expect(issues(r)).not.toContainEqual(['blocking', 'scope.high-risk-excluded']);   // today's check stays advisory
+  });
+
+  it('raises nothing new for a scope with no context, so the golden-trace engagements are unchanged', () => {
+    const r = reviewSubject(engagement({ scope: [scopeItem('A', true), scopeItem('B', false, { inherentRisk: 'High' })] }), 'scope');
+    expect(issues(r)).toEqual([['advisory', 'scope.high-risk-excluded']]);
+  });
+
   it('blocks RCM rows that cite no clause', () => {
     const r = reviewSubject(engagement({ rcm: [row('A'), row('B', { citations: [] })] }), 'rcm');
     expect(issues(r)).toEqual([['blocking', 'rcm.citations']]);

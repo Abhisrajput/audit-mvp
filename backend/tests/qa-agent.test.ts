@@ -138,6 +138,7 @@ describe('the QA agent [REQ-30]', () => {
     const { system, user } = fake.requests[0];
     expect(system).toBe(REVIEW_SYSTEM);
     expect(system).toContain(DATA_RULES);
+    expect(user).toMatch(/IIA-13\.2/);
     const open = user.indexOf('<data source="workpaper:scope">');
     expect(open).toBeGreaterThan(-1);
     expect(user.indexOf('Monthly CCP log review')).toBeGreaterThan(open);

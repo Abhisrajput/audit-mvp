@@ -2,6 +2,8 @@ import type { Engagement, QaAction } from '../../engine/types';
 import type { PackRegistry } from '../../engine/packs';
 import { rcmCitationGate } from '../../engine/qa';
 import { trustActions, type CitationPolicy } from '../../engine/trust';
+import { areaRisk, isTouched, RANK } from '../../judgment/risk-assessment';
+import { statementCoversAll } from '../../judgment/coverage';
 import { rowOfKey, subjectInfo } from '../subjects';
 import type { QaIssue, QaReport } from '../types';
 
@@ -23,12 +25,31 @@ export interface QaChecks {
 const blocking = (criterion: string, detail: string): QaIssue => ({ criterion, severity: 'blocking', detail });
 const advisory = (criterion: string, detail: string): QaIssue => ({ criterion, severity: 'advisory', detail });
 
-function scopeIssues(e: Engagement): QaIssue[] {
+/** The distinct process areas, in order of first appearance. */
+const areasOf = (names: string[]): string[] => [...new Set(names)];
+
+/**
+ * Scope checks. The risk and coverage checks (spec §5.1, §5.2) only have something to say once the engagement has a
+ * context or a coverage, so a scope without them raises nothing new. The unknown-area check runs only when the
+ * caller knows the library's areas.
+ */
+function scopeIssues(e: Engagement, knownAreas?: Set<string>): QaIssue[] {
   const included = e.scope.filter((s) => s.included);
+  const touchedHighExcluded = areasOf(e.scope.map((s) => s.processArea)).filter((area) => {
+    const items = e.scope.filter((s) => s.processArea === area);
+    return isTouched(e.context, area) && areaRisk(items) === 'High' && !items.some((s) => s.included);
+  });
+  const factorAreas = areasOf((e.context?.factors ?? []).flatMap((f) => f.processAreas));
   return [
     ...(included.length ? [] : [blocking('scope.included', 'No control is in scope')]),
     ...included.filter((s) => !s.citations.length).map((s) => advisory('scope.citations', `${s.controlId} is in scope without a regulatory citation`)),
     ...e.scope.filter((s) => !s.included && s.inherentRisk === 'High').map((s) => advisory('scope.high-risk-excluded', `High inherent-risk control ${s.controlId} is out of scope`)),
+    // The assessment may raise a library rating, never lower it.
+    ...e.scope.filter((s) => RANK[s.assessedRisk] < RANK[s.inherentRisk]).map((s) => blocking('scope.assessed-below-library', `${s.controlId} is assessed ${s.assessedRisk}, below its library rating ${s.inherentRisk}`)),
+    // An area the context speaks of, rated High, with nothing of it in scope.
+    ...touchedHighExcluded.map((area) => blocking('scope.touched-high-excluded', `${area} is named by the engagement context and rated High, but none of its controls is in scope`)),
+    ...(knownAreas ? factorAreas.filter((a) => !knownAreas.has(a)).map((a) => advisory('scope.factor-unknown-area', `A context factor names ${a}, which is not a process area of the selected packs`)) : []),
+    ...(e.coverage && !statementCoversAll(e.coverage.statement, e.coverage.excluded) ? [advisory('scope.coverage-statement', 'The coverage statement does not name every excluded process area')] : []),
   ];
 }
 
@@ -108,12 +129,14 @@ function checkedIssues(e: Engagement, subjectKey: string, c: QaChecks): QaIssue[
  * Reviews one subject as it stands now. The report is tied to the content hash it reviewed. With `checks`, the citation
  * gate and the trust rules run as well (the worker always passes them; pure tests may not).
  */
-export function reviewSubject(e: Engagement, subjectKey: string, checks?: QaChecks): QaReport {
+export function reviewSubject(e: Engagement, subjectKey: string, checks?: QaChecks, knownAreas?: Set<string>): QaReport {
   const s = subjectInfo(e, subjectKey);
   if (!s) throw new Error(`Nothing to review for ${subjectKey}`);
   const rowId = rowOfKey(subjectKey);
+  // With the checks, the library's areas come from the controls of the engagement's packs.
+  const areas = knownAreas ?? (checks ? new Set(checks.registry.controlsFor(e.packIds).map((c) => c.processArea)) : undefined);
   const own =
-    subjectKey === 'scope' ? scopeIssues(e)
+    subjectKey === 'scope' ? scopeIssues(e, areas)
     : subjectKey === 'rcm' ? rcmIssues(e)
     : subjectKey === 'test_plans' ? planIssues(e)
     : subjectKey === 'report' ? reportIssues(e)
