@@ -1,7 +1,7 @@
 // backend/tests/judgment-rules.test.ts
 import { describe, expect, it } from 'vitest';
 import { CONTEXT_LIMITS, contextBasis, EngagementContextInputSchema, factorsFor } from '../src/judgment/context';
-import { areaRisk, assessControl, isTouched, stepUp } from '../src/judgment/risk-assessment';
+import { acceptsOverlay, areaRisk, assessControl, isTouched, stepUp } from '../src/judgment/risk-assessment';
 import { contextInclusions, coverageStatement, excludedAreas, includedByRule, INCLUSION_THRESHOLD, statementCoversAll } from '../src/judgment/coverage';
 import { renderMemo, scopeMemo } from '../src/judgment/memo';
 import { IIA } from '../src/judgment/standards';
@@ -117,5 +117,29 @@ describe('review fixes', () => {
     const inc = memo.calls.find((c) => c.standard.includes(IIA.scope) && c.standard.includes(IIA.riskAssessment))!;
     expect(inc.basis).toEqual(['OOS results not investigated']);
     expect(inc.standard).toEqual([IIA.riskAssessment, IIA.scope]);
+  });
+});
+
+describe('model overlay bounds (plan Ruling 4)', () => {
+  it('accepts a raise of exactly one step and nothing else', () => {
+    expect(acceptsOverlay('Low', 'Medium')).toBe(true);
+    expect(acceptsOverlay('Medium', 'High')).toBe(true);
+    expect(acceptsOverlay('Low', 'High')).toBe(false);
+    expect(acceptsOverlay('High', 'High')).toBe(false);
+    expect(acceptsOverlay('High', 'Medium')).toBe(false);
+  });
+
+  it('credits the model on an area it raised, and changes nothing without raises', () => {
+    const items = [{ controlId: 'G1', processArea: 'Governance', inherentRisk: 'Medium', assessedRisk: 'High', riskFactors: [], included: true, rationale: 'r' } as never];
+    const input = { items, coverage: { excluded: [], statement: 's' }, context: null, unknownAreas: [], modelNotes: [], producedAt: 't' };
+    const plain = scopeMemo(input);
+    const withModel = scopeMemo({ ...input, modelRaises: [{ processArea: 'Governance', rationale: 'Board turnover' }, { processArea: 'Nowhere', rationale: 'x' }] });
+    const before = plain.calls.find((c) => c.question.includes('Governance'))!;
+    const after = withModel.calls.find((c) => c.question.includes('Governance'))!;
+    expect(before.source).toBe('rules');
+    expect(after.source).toBe('model');
+    expect(after.rationale).toBe(`${before.rationale} Model: Board turnover`);
+    expect(withModel.calls).toHaveLength(plain.calls.length);
+    expect(scopeMemo({ ...input, modelRaises: [] })).toEqual(plain);
   });
 });

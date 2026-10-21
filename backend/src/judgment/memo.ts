@@ -13,7 +13,7 @@ export function call(partial: Omit<JudgmentCall, 'source'> & { source?: Judgment
 }
 
 /** The scope memo: one call per area whose assessed risk differs from the library (and a "no change" summary when none), one call for the coverage, one per context inclusion; forTheReviewer lists unverified model claims and any factor naming an unknown area. */
-export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string }): JudgmentMemo {
+export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string; modelRaises?: { processArea: string; rationale: string }[] }): JudgmentMemo {
   const { items, coverage } = input;
   const calls: JudgmentCall[] = [];
 
@@ -34,6 +34,13 @@ export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; conte
       basis: [...new Set(group.flatMap((i) => i.riskFactors))],
       standard: [IIA.riskAssessment],
     }));
+  }
+  // Areas the model raised: credit the model on the area's call. An area with no call (its risk did not change) gets nothing.
+  for (const raise of input.modelRaises ?? []) {
+    const target = calls.find((c) => c.question === `Risk of the ${raise.processArea} area`);
+    if (!target) continue;
+    target.source = 'model';
+    target.rationale = `${target.rationale} Model: ${raise.rationale}`;
   }
   if (changed === 0) {
     calls.push(call({

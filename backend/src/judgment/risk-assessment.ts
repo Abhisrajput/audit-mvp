@@ -14,6 +14,11 @@ export function stepUp(rating: RiskRating, steps: number): RiskRating {
   return LEVELS[index];
 }
 
+/** Ruling 4: the model may raise a rule rating by exactly one step. Lowering, staying put, or jumping two steps is refused. */
+export function acceptsOverlay(ruleRating: RiskRating, proposed: RiskRating): boolean {
+  return proposed === stepUp(ruleRating, 1) && proposed !== ruleRating;
+}
+
 export interface Assessed { assessedRisk: RiskRating; riskFactors: string[] }
 
 /** §5.1: one step per distinct factor kind among the factors that apply to the control's area. */
