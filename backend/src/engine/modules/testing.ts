@@ -80,10 +80,10 @@ export const testingModule: AuditModule<Record<string, TestResult>> = {
       for (const d of drafted.results) {
         if (!results[d.rowId] || !e.testInputs[d.rowId]) continue;
         const row = rows.find((r) => r.id === d.rowId)!;
-        const drafted = { ...results[d.rowId], conclusion: d.conclusion, rationale: d.rationale };
+        const applied = { ...results[d.rowId], conclusion: d.conclusion, rationale: d.rationale };
         // The rule's severity follows the conclusion; a model may only make it worse.
-        const rule = severityOf(drafted, e.testInputs[d.rowId]);
-        results[d.rowId] = { ...drafted, severity: rule.severity, severityRationale: rule.rationale };
+        const rule = severityOf(applied, e.testInputs[d.rowId]);
+        results[d.rowId] = { ...applied, severity: rule.severity, severityRationale: rule.rationale };
         if (d.severity !== undefined && d.severity !== rule.severity) {
           if (worsens(rule.severity, d.severity)) {
             results[d.rowId] = { ...results[d.rowId], severity: d.severity, severityRationale: `${rule.rationale} Raised to ${d.severity} by the model: ${d.rationale}` };

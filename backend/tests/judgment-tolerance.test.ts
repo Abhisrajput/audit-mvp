@@ -3,7 +3,7 @@ import { ensureDevUsers } from '../src/auth/dev-users';
 import { reviewSubject } from '../src/agents/qa/deterministic';
 import { concludeTest } from '../src/engine/modules/testing';
 import { testEvidenceGate } from '../src/engine/qa';
-import { auditor, NEW_ENGAGEMENT, newService } from './helpers';
+import { auditor, FakeProvider, NEW_ENGAGEMENT, newService } from './helpers';
 import { appWithDevUsers, signIn } from './http';
 import { row, input } from './agent-fixtures';
 
@@ -73,5 +73,42 @@ describe('tolerance set by a person (spec §3.3, §5.4) [REQ-33]', () => {
 
     const without = await build(null);
     expect(without.after.testResults[control]).toMatchObject({ conclusion: 'Ineffective', toleranceApplied: 0 });
+  });
+
+  it('lets the model make a severity worse but never better, and keeps the severity after a post-gate downgrade [REQ-33]', async () => {
+    const control = 'FD-HACCP-03';
+    let proposed: string = 'systemic';
+    const llm = new FakeProvider((req) => {
+      if (!req.user.includes('Conclude on each control test')) throw new Error('rules only');
+      return { results: [{ rowId: control, conclusion: 'Effective', rationale: 'Within tolerance.', severity: proposed }] };
+    });
+    const svc = await newService(llm);
+    await ensureDevUsers(svc.db.kysely);
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    await svc.runModule(e.id, 'scope', auditor);
+    await svc.setScope(e.id, [{ controlId: control, included: true }], auditor);
+    await svc.runModule(e.id, 'rcm', auditor);
+    await svc.setTolerance(e.id, control, 0.05, auditor);
+    await svc.recordTest(e.id, control, { designAdequate: true, observation: 'One log unsigned.', evidenceRefs: ['CCP-LOG-MAR'], sampleTested: 40, exceptions: 1 }, auditor);
+
+    await svc.runModule(e.id, 'testing', auditor);
+    expect((await svc.engagement(e.id)).testResults[control]).toMatchObject({ conclusion: 'Effective', severity: 'systemic' });
+
+    proposed = 'none';
+    const { bundle } = await svc.runModule(e.id, 'testing', auditor);
+    expect((await svc.engagement(e.id)).testResults[control].severity).toBe('isolated');
+    expect(bundle.qaActions).toContainEqual(expect.objectContaining({ gate: 'judgment-bounds', outcome: 'fail', target: control }));
+
+    // A tolerated row with no evidence is downgraded after the severity is set; the severity and tolerance stay on the result.
+    const bare = await newService();
+    await ensureDevUsers(bare.db.kysely);
+    const b = await bare.createEngagement(NEW_ENGAGEMENT, auditor);
+    await bare.runModule(b.id, 'scope', auditor);
+    await bare.setScope(b.id, [{ controlId: control, included: true }], auditor);
+    await bare.runModule(b.id, 'rcm', auditor);
+    await bare.setTolerance(b.id, control, 0.05, auditor);
+    await bare.recordTest(b.id, control, { designAdequate: true, observation: 'One log unsigned.', evidenceRefs: [], sampleTested: 40, exceptions: 1 }, auditor);
+    await bare.runModule(b.id, 'testing', auditor);
+    expect((await bare.engagement(b.id)).testResults[control]).toMatchObject({ conclusion: 'Not tested', severity: 'isolated', toleranceApplied: 0.05 });
   });
 });
