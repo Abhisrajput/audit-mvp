@@ -16,9 +16,11 @@ export default function ScopeTab({ engagement: e, setEngagement, run, gates }: T
   const packKey = e.packIds.join(',');
   useEffect(() => {
     let live = true;
-    Promise.all(e.packIds.map((id) => api<{ controls: { processArea: string; packId: string }[] }>(`/packs/${id}`)))
-      .then((packs) => live && setPackControls(packs.flatMap((p) => p.controls)))
-      .catch(() => undefined);
+    setPackControls([]);
+    // The server's controls carry no pack id, so tag each with the pack it was requested from.
+    Promise.all(e.packIds.map((id) => api<{ controls: { processArea: string }[] }>(`/packs/${id}`).then((p) => p.controls.map((c) => ({ processArea: c.processArea, packId: id })))))
+      .then((lists) => live && setPackControls(lists.flat()))
+      .catch((err) => console.warn('Could not load the pack controls for the area picker', err));
     return () => {
       live = false;
     };

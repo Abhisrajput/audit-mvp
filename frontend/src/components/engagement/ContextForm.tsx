@@ -1,6 +1,6 @@
 import { Add as AddIcon, DeleteOutline as DeleteIcon } from '@mui/icons-material';
 import { Button, Card, CardContent, IconButton, MenuItem, Select, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from '@mui/material';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
 import { contextProblems, FACTOR_LABELS } from '../../judgment';
 import type { ContextFactor, Engagement, FactorKind } from '../../types';
@@ -11,7 +11,12 @@ export default function ContextForm({ engagement: e, locked, areas, onSaved }: {
   const [factors, setFactors] = useState<ContextFactor[]>([]);
   const [background, setBackground] = useState('');
   // Start from what is saved, and again whenever the saved context changes (a reload, another save).
+  // Only when the saved value really differs, so a reload that returns the same context keeps an unsaved draft.
+  const synced = useRef<string | null>(null);
   useEffect(() => {
+    const saved = JSON.stringify(e.context);
+    if (saved === synced.current) return;
+    synced.current = saved;
     setFactors(e.context?.factors ?? []);
     setBackground(e.context?.background ?? '');
   }, [e.context]);
@@ -40,7 +45,7 @@ export default function ContextForm({ engagement: e, locked, areas, onSaved }: {
               {factors.map((f, i) => (
                 <TableRow key={i}>
                   <TableCell>
-                    <Select size="small" fullWidth value={f.kind} disabled={locked} onChange={(ev) => change(i, { kind: ev.target.value as FactorKind })}>
+                    <Select size="small" fullWidth value={f.kind} disabled={locked} inputProps={{ 'aria-label': 'Factor kind' }} onChange={(ev) => change(i, { kind: ev.target.value as FactorKind })}>
                       {(Object.keys(FACTOR_LABELS) as FactorKind[]).map((k) => (
                         <MenuItem key={k} value={k}>
                           {FACTOR_LABELS[k]}
@@ -53,6 +58,7 @@ export default function ContextForm({ engagement: e, locked, areas, onSaved }: {
                       size="small"
                       fullWidth
                       multiple
+                      inputProps={{ 'aria-label': 'Process areas' }}
                       displayEmpty
                       value={f.processAreas}
                       disabled={locked}
@@ -68,7 +74,7 @@ export default function ContextForm({ engagement: e, locked, areas, onSaved }: {
                     </Select>
                   </TableCell>
                   <TableCell>
-                    <TextField size="small" fullWidth value={f.description} disabled={locked} onChange={(ev) => change(i, { description: ev.target.value })} />
+                    <TextField size="small" fullWidth value={f.description} disabled={locked} inputProps={{ 'aria-label': 'Description' }} onChange={(ev) => change(i, { description: ev.target.value })} />
                   </TableCell>
                   <TableCell padding="checkbox">
                     {!locked && (
