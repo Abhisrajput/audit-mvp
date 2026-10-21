@@ -103,3 +103,19 @@ describe('the scope memo (spec §3.4)', () => {
     expect(md).toMatch(/For the reviewer/);
   });
 });
+
+describe('review fixes', () => {
+  it('matches an area name on word boundaries in the scope statement', () => {
+    const cs = [cand('A1', 'IT', 'Low', 0.1), cand('B1', 'QA', 'High', 0.9)];
+    expect(excludedAreas(cs, new Set(['B1']), 'within collaboration we do not test X')[0].reason).toBe('below relevance threshold');
+    expect(excludedAreas(cs, new Set(['B1']), 'IT is out of scope')[0].reason).toBe('excluded by the scope statement');
+  });
+
+  it('takes the inclusion basis from the rationale alone', () => {
+    const items = [{ controlId: 'A2', processArea: 'Lab', inherentRisk: 'Medium', assessedRisk: 'High', riskFactors: ['New LIMS'], included: true, rationale: 'included: OOS results not investigated' } as never];
+    const memo = scopeMemo({ items, coverage: { excluded: [], statement: 's' }, context: ctx([f('change', ['Lab'], 'New LIMS')]), unknownAreas: [], modelNotes: [], producedAt: 't' });
+    const inc = memo.calls.find((c) => c.standard.includes(IIA.scope) && c.standard.includes(IIA.riskAssessment))!;
+    expect(inc.basis).toEqual(['OOS results not investigated']);
+    expect(inc.standard).toEqual([IIA.riskAssessment, IIA.scope]);
+  });
+});

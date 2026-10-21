@@ -48,12 +48,16 @@ export function contextInclusions(candidates: Candidate[], context: EngagementCo
 
 /** True when the scope statement speaks of leaving the area out, close to where it names it. */
 function statementExcludes(scopeStatement: string, area: string): boolean {
+  const name = area.trim();
+  if (!name) return false;
   const text = scopeStatement.toLowerCase();
-  const name = area.toLowerCase();
   const negation = /\bnot\b|\bexclud(?:e|ing)\b|\bout of scope\b/;
-  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
-    const before = text.slice(Math.max(0, at - 60), at);
-    const after = text.slice(at + name.length, at + name.length + 60);
+  // The area is a whole word or phrase, so "IT" does not match inside "within".
+  const escaped = name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mention = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'gu');
+  for (const m of text.matchAll(mention)) {
+    const before = text.slice(Math.max(0, m.index - 60), m.index);
+    const after = text.slice(m.index + m[0].length, m.index + m[0].length + 60);
     if (negation.test(before) || negation.test(after)) return true;
   }
   return false;

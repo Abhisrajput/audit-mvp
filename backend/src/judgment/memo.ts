@@ -2,7 +2,6 @@
 // it leans on, written so a reviewer can sign against it. Pure: no I/O.
 
 import type { Coverage, EngagementContext, JudgmentCall, JudgmentMemo, RiskRating, ScopeItem } from '../engine/types';
-import { factorsFor } from './context';
 import { areaRisk } from './risk-assessment';
 import { IIA } from './standards';
 
@@ -15,7 +14,7 @@ export function call(partial: Omit<JudgmentCall, 'source'> & { source?: Judgment
 
 /** The scope memo: one call per area whose assessed risk differs from the library (and a "no change" summary when none), one call for the coverage, one per context inclusion; forTheReviewer lists unverified model claims and any factor naming an unknown area. */
 export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string }): JudgmentMemo {
-  const { items, coverage, context } = input;
+  const { items, coverage } = input;
   const calls: JudgmentCall[] = [];
 
   // Items grouped by area, in order of first appearance.
@@ -56,12 +55,12 @@ export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; conte
 
   for (const item of items) {
     if (!item.rationale?.startsWith('included: ')) continue;
-    const factor = factorsFor(context, item.processArea)[0]?.description ?? item.riskFactors[0] ?? item.rationale.slice('included: '.length);
+    const reason = item.rationale.slice('included: '.length);
     calls.push(call({
       question: `Why ${item.controlId} is in scope`,
       decision: `Included, although its relevance is below the threshold`,
       rationale: item.rationale,
-      basis: [factor],
+      basis: [reason],
       standard: [IIA.riskAssessment, IIA.scope],
     }));
   }
