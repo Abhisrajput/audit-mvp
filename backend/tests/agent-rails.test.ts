@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { assertWithinRails, keepScopeDecisions } from '../src/agents/rails';
-import type { SignOff } from '../src/engine/types';
+import type { Engagement, SignOff } from '../src/engine/types';
 import { engagement, finding, input, row, scopeItem } from './agent-fixtures';
 
 const signOff: SignOff = { userId: 'reviewer', userName: 'R', role: 'reviewer', meaning: 'Reviewed', comment: '', at: 't' };
@@ -19,6 +19,13 @@ describe('assertWithinRails', () => {
     const removed = base();
     delete removed.testInputs.R1;
     for (const after of [changed, added, removed]) expect(() => assertWithinRails(base(), after)).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
+  });
+
+  it('refuses an agent write that sets or changes a tolerance or a management response [REQ-33]', () => {
+    const tolerance = { controlId: 'X', rate: 0.05, recordedBy: 'auditor', recordedAt: 't', trailBundleId: 'HUM-1' };
+    expect(() => assertWithinRails(base(), { ...base(), tolerances: { X: tolerance } })).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
+    const response = { findingId: 'F1' } as unknown as Engagement['responses'][string];
+    expect(() => assertWithinRails(base(), { ...base(), responses: { F1: response } })).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
   });
 
   it('refuses a sign-off added to an existing draft finding [REQ-27]', () => {

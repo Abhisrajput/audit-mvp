@@ -71,6 +71,8 @@ function planIssues(e: Engagement): QaIssue[] {
       ...(p.evidenceToRequest.length ? [] : [advisory('plans.evidence', `${r.id}: the plan requests no evidence`)]),
       ...(p.selectionMethod === 'random' && factorsFor(e.context, r.processArea).some((f) => f.kind === 'incident')
         ? [advisory('plans.selection-incident', `${r.id}: an incident touches ${r.processArea}, yet the plan selects at random`)] : []),
+      ...(p.recommendedToleranceRate !== undefined && (e.tolerances[r.controlId]?.rate ?? 0) > p.recommendedToleranceRate
+        ? [advisory('plans.tolerance-above-recommendation', `${r.id}: the tolerance in force, ${e.tolerances[r.controlId].rate}, is above the plan's recommended ${p.recommendedToleranceRate}`)] : []),
       ...(p.selectionMethod !== 'all' && p.sampleSize < r.sampleSize ? [advisory('plans.sample', `${r.id}: a sample of ${p.sampleSize} is below the RCM's ${r.sampleSize}`)] : []),
     ];
   });

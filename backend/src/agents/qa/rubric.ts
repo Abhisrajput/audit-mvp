@@ -74,7 +74,7 @@ export function subjectContent(e: Engagement, subjectKey: string): unknown {
         testOfDesign: r.testOfDesign, testOfEffectiveness: r.testOfEffectiveness, evidenceExpected: r.evidenceExpected, citations: labels(r.citations),
       }));
     case 'test_plans':
-      return e.rcm.map((r) => ({ row: { id: r.id, control: r.control, frequency: r.frequency, sampleSize: r.sampleSize }, plan: e.testPlans[r.id] ?? null }));
+      return e.rcm.map((r) => ({ row: { id: r.id, control: r.control, frequency: r.frequency, sampleSize: r.sampleSize }, plan: e.testPlans[r.id] ?? null, tolerance: e.tolerances[r.controlId] ?? null, recommendedToleranceRate: e.testPlans[r.id]?.recommendedToleranceRate ?? null }));
     case 'report':
       return e.report?.markdown ?? null;
   }
@@ -83,7 +83,7 @@ export function subjectContent(e: Engagement, subjectKey: string): unknown {
   if (!rowId || !f) return null;
   const { title, rating, condition, criteria, cause, effect, recommendation, evidenceRefs } = f;
   return {
-    finding: { title, rating, condition, criteria, cause, effect, recommendation, evidenceRefs, citations: labels(f.citations) },
+    finding: { title, rating, severity: e.testResults[rowId]?.severity ?? null, condition, criteria, cause, effect, recommendation, evidenceRefs, citations: labels(f.citations) },
     test: { input: e.testInputs[rowId] ?? null, result: e.testResults[rowId] ?? null },
   };
 }

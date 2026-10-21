@@ -30,6 +30,8 @@ import type { Engagement, Finding, JudgmentMemo, QaAction, Role, SignOff, TestIn
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
+import { insertTolerance } from './db/judgment-repo';
+import { TOLERANCE_MAX } from './judgment/sampling';
 import { markEditedByHand, sameMemo } from './judgment/memo';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
@@ -412,6 +414,25 @@ export class AuditService {
       e.testInputs[rowId] = record;
       delete e.testResults[rowId];
       emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...input }, record));
+      return e;
+    });
+    return result;
+  }
+
+  /** A person sets the tolerance for a control (spec §3.3). It is locked once the control has a recorded test. */
+  async setTolerance(engagementId: string, controlId: string, rate: number, actor: User, opts: MutationOptions = {}): Promise<Engagement> {
+    this.require(actor, PREPARER_ROLES, 'set a tolerance');
+    if (!Number.isFinite(rate) || rate < 0 || rate > TOLERANCE_MAX) throw new AppError(400, `A tolerance must be between 0 and ${TOLERANCE_MAX}`);
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
+      const rows = e.rcm.filter((r) => r.controlId === controlId);
+      if (!rows.length) throw new AppError(404, `No RCM row for control ${controlId}`);
+      if (rows.some((r) => e.testInputs[r.id])) throw new AppError(409, `Control ${controlId} already has a recorded test, so its tolerance can no longer change`, 'TOLERANCE_LOCKED');
+      const recordedAt = new Date().toISOString();
+      const bundle = this.humanBundle(e, 'human:set-tolerance', actor, { controlId, rate }, { controlId, rate });
+      const record = { controlId, rate, recordedBy: actor.id, recordedAt, trailBundleId: bundle.id };
+      await insertTolerance(trx, engagementId, { id: crypto.randomUUID(), ...record });
+      e.tolerances = { ...e.tolerances, [controlId]: record };
+      emit(bundle);
       return e;
     });
     return result;

@@ -64,6 +64,8 @@ export function assertPlanAttribution(before: Record<string, TestPlan>, after: R
 /** The engagement after an agent's change, checked against the engagement before it. */
 export function assertWithinRails(before: Engagement, after: Engagement): void {
   if (canonicalJson(before.testInputs) !== canonicalJson(after.testInputs)) throw forbidden('An agent may not record or change test results');
+  if (canonicalJson(before.tolerances) !== canonicalJson(after.tolerances)) throw forbidden('An agent may not set or change a tolerance');
+  if (canonicalJson(before.responses) !== canonicalJson(after.responses)) throw forbidden('An agent may not record or change a management response');
   const now = new Map(after.findings.map((f) => [f.id, f]));
   for (const f of before.findings) {
     if (f.status !== 'reviewed' && f.status !== 'approved') continue;

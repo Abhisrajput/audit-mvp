@@ -19,6 +19,7 @@ import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { ifMatch, wrap } from './http-util';
 import { EngagementContextInputSchema } from './judgment/context';
+import { TOLERANCE_MAX } from './judgment/sampling';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
@@ -162,6 +163,11 @@ export function createApp(
 
   app.put('/api/engagements/:id/tests/:rowId', readers, wrap(async (req, res) => {
     res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
+  }));
+
+  app.put('/api/engagements/:id/tolerances/:controlId', readers, wrap(async (req, res) => {
+    const { rate } = z.object({ rate: z.number().min(0).max(TOLERANCE_MAX) }).strict().parse(req.body);
+    res.json(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)));
   }));
 
   app.put('/api/engagements/:id/findings/:fid', readers, wrap(async (req, res) => {

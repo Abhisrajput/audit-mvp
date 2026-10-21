@@ -1,4 +1,5 @@
 import type { PackRegistry } from './packs';
+import { toleratedEffective } from '../judgment/evaluation';
 import { trustActions, type CitationPolicy } from './trust';
 import type { Citation, Finding, QaAction, RcmRow, TestInput, TestResult } from './types';
 
@@ -43,11 +44,11 @@ export function negativeSignals(text: string): string[] {
  * references and a sample; it can never stand when exceptions were recorded;
  * and a narrative that reads like an exception is flagged for the reviewer.
  */
-export function testEvidenceGate(row: RcmRow, input: TestInput, result: TestResult): { result: TestResult; actions: QaAction[] } {
+export function testEvidenceGate(row: RcmRow, input: TestInput, result: TestResult, tolerance = 0): { result: TestResult; actions: QaAction[] } {
   const actions: QaAction[] = [];
   let r = { ...result, qaFlags: [...result.qaFlags] };
 
-  if (r.conclusion === 'Effective' && input.exceptions > 0) {
+  if (r.conclusion === 'Effective' && input.exceptions > 0 && !toleratedEffective(input.exceptions, input.sampleTested, tolerance)) {
     actions.push({ gate: 'evidence', outcome: 'fail', target: row.id, detail: `Conclusion "Effective" contradicts ${input.exceptions} recorded exception(s)`, action: 'downgraded' });
     r = { ...r, conclusion: 'Ineffective', rationale: `${r.rationale} [QA gate: overridden to Ineffective because exceptions were recorded.]` };
   }

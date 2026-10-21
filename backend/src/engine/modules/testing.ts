@@ -1,12 +1,19 @@
 import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { negativeSignals, testEvidenceGate } from '../qa';
-import type { RcmRow, TestInput, TestResult } from '../types';
+import type { RcmRow, Severity, TestInput, TestResult } from '../types';
 import { asData } from '../llm/prompt';
+import { SEVERITIES, severityOf, toleratedEffective, worsens } from '../../judgment/evaluation';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
-/** Deterministic conclusion from the auditor's field record. */
-export function concludeTest(row: RcmRow, input: TestInput | undefined): TestResult {
+/** Deterministic conclusion from the auditor's field record, under the tolerance a person set for the control (0 when none). */
+export function concludeTest(row: RcmRow, input: TestInput | undefined, tolerance = 0): TestResult {
+  const concluded = conclude(row, input, tolerance);
+  const { severity, rationale } = severityOf(concluded, input);
+  return { ...concluded, severity, severityRationale: rationale, toleranceApplied: tolerance };
+}
+
+function conclude(row: RcmRow, input: TestInput | undefined, tolerance: number): TestResult {
   const base = { rowId: row.id, qaFlags: [] as string[] };
   if (!input || (input.designAdequate === null && input.sampleTested === 0)) {
     return { ...base, conclusion: 'Not tested', rationale: 'No field work recorded.', exceptionRate: null };
@@ -18,6 +25,9 @@ export function concludeTest(row: RcmRow, input: TestInput | undefined): TestRes
     return { ...base, conclusion: 'Not tested', rationale: 'Design is adequate but no operating-effectiveness sample was tested.', exceptionRate: null };
   }
   const rate = Math.round((input.exceptions / input.sampleTested) * 1000) / 1000;
+  if (input.exceptions > 0 && toleratedEffective(input.exceptions, input.sampleTested, tolerance)) {
+    return { ...base, conclusion: 'Effective', rationale: `${input.exceptions} exception(s) in ${input.sampleTested} items tested (${Math.round(rate * 1000) / 10}%), within the ${Math.round(tolerance * 1000) / 10}% tolerance set for this control.`, exceptionRate: rate };
+  }
   if (input.exceptions > 0) {
     return { ...base, conclusion: 'Ineffective', rationale: `${input.exceptions} exception(s) in ${input.sampleTested} items tested (${Math.round(rate * 100)}%).`, exceptionRate: rate };
   }
@@ -36,6 +46,7 @@ const ModelTesting = z.object({
       rowId: z.string(),
       conclusion: z.enum(['Effective', 'Ineffective', 'Design deficient', 'Not tested']),
       rationale: z.string(),
+      severity: z.enum(SEVERITIES as readonly [Severity, ...Severity[]]).optional(),
     }),
   ),
 });
@@ -52,7 +63,8 @@ export const testingModule: AuditModule<Record<string, TestResult>> = {
     const e = ctx.engagement;
     const rows = e.rcm;
     const results: Record<string, TestResult> = {};
-    for (const row of rows) results[row.id] = concludeTest(row, e.testInputs[row.id]);
+    const toleranceOf = (row: RcmRow) => e.tolerances[row.controlId]?.rate ?? 0;
+    for (const row of rows) results[row.id] = concludeTest(row, e.testInputs[row.id], toleranceOf(row));
     ctx.step('conclude', `Deterministic conclusions for ${rows.length} rows`);
 
     const tested = rows.filter((r) => e.testInputs[r.id]);
@@ -60,19 +72,30 @@ export const testingModule: AuditModule<Record<string, TestResult>> = {
       ctx,
       SYSTEM_PREAMBLE,
       `Conclude on each control test. Allowed conclusions: Effective, Ineffective, Design deficient, Not tested.\n` +
-        `Any recorded exception means the control is not Effective. Give a one or two sentence rationale based only on the record.\n\n` +
-        asData('workpaper:field-work', tested.map((r) => ({ rowId: r.id, control: r.control, plannedSample: r.sampleSize, testOfEffectiveness: r.testOfEffectiveness, record: e.testInputs[r.id] }))),
+        `Any recorded exception means the control is not Effective, unless the exception rate is within the tolerance a person set for that control (toleranceApplied; 0 means none). Give a one or two sentence rationale based only on the record. You may also give a severity (none, isolated, systemic, pervasive) for each result; it is accepted only when it is worse than the rule's severity shown as data.\n\n` +
+        asData('workpaper:field-work', tested.map((r) => ({ rowId: r.id, control: r.control, plannedSample: r.sampleSize, testOfEffectiveness: r.testOfEffectiveness, record: e.testInputs[r.id], toleranceApplied: toleranceOf(r), severity: results[r.id].severity }))),
       ModelTesting,
     );
     if (drafted) {
       for (const d of drafted.results) {
         if (!results[d.rowId] || !e.testInputs[d.rowId]) continue;
-        results[d.rowId] = { ...results[d.rowId], conclusion: d.conclusion, rationale: d.rationale };
+        const row = rows.find((r) => r.id === d.rowId)!;
+        const drafted = { ...results[d.rowId], conclusion: d.conclusion, rationale: d.rationale };
+        // The rule's severity follows the conclusion; a model may only make it worse.
+        const rule = severityOf(drafted, e.testInputs[d.rowId]);
+        results[d.rowId] = { ...drafted, severity: rule.severity, severityRationale: rule.rationale };
+        if (d.severity !== undefined && d.severity !== rule.severity) {
+          if (worsens(rule.severity, d.severity)) {
+            results[d.rowId] = { ...results[d.rowId], severity: d.severity, severityRationale: `${rule.rationale} Raised to ${d.severity} by the model: ${d.rationale}` };
+          } else {
+            ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: row.id, detail: `Model proposed severity ${d.severity} where the rule gives ${rule.severity}; only a worse value is accepted, so the rule value stands`, action: 'blocked' });
+          }
+        }
       }
     }
 
     for (const row of tested) {
-      const { result, actions } = testEvidenceGate(row, e.testInputs[row.id], results[row.id]);
+      const { result, actions } = testEvidenceGate(row, e.testInputs[row.id], results[row.id], toleranceOf(row));
       results[row.id] = result;
       ctx.gate(...actions);
     }
