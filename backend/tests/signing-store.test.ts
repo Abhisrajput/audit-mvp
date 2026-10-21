@@ -7,6 +7,17 @@ import { findingContentHash, withSignatureStatus } from '../src/signing/content-
 import { auditor, engagementWithFailedControl, newService } from './helpers';
 
 describe('finding content hash', () => {
+  it('covers likelihood, impact, root cause and memo; the same vector is pinned in the frontend mirror', () => {
+    const f = {
+  id: 'F-R1', rowId: 'R1', controlId: 'R1', title: 't', rating: 'Medium', condition: 'c', criteria: 'k', cause: 'u', effect: 'f', recommendation: 'r',
+  citations: [{ clauseId: 'C1', regulation: 'Reg', ref: '§1', label: 'Reg §1' }], evidenceRefs: ['E1'], status: 'draft', blockedReasons: [], signOffs: [], bundleId: 'RUN-1',
+  likelihood: 'rare', impact: 'minor', rootCause: { category: 'people', analysis: 'a', confirmed: false },
+  memo: { subjectKey: 'finding:R1', calls: [{ question: 'q', decision: 'd', rationale: 'r', basis: ['b'], standard: ['IIA-14.3'], source: 'rules' }], forTheReviewer: ['v'], producedAt: 't' },
+} as Finding;
+    expect(findingContentHash(f)).toBe('5150864893bd4a7a7753de9240e3a7a7671760dc03aab09b500b287a7d5ada3d');
+    expect(findingContentHash({ ...f, impact: 'major' })).not.toBe('5150864893bd4a7a7753de9240e3a7a7671760dc03aab09b500b287a7d5ada3d');
+  });
+
   it('covers what the finding says, not its key order, status or sign-offs', async () => {
     const e = await engagementWithFailedControl(await newService());
     const f = e.findings[0];

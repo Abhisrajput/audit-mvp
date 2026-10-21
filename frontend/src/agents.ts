@@ -302,8 +302,8 @@ function canonicalJson(value: unknown): string {
 
 /** The finding's content hash as the server computes it (signing/content-hash.ts): what a gate on the finding was reviewed against. */
 export async function findingContentHash(f: Finding): Promise<string> {
-  const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs } = f;
-  const bytes = new TextEncoder().encode(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs }));
+  const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo } = f;
+  const bytes = new TextEncoder().encode(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo }));
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }

@@ -5,8 +5,8 @@ import type { Engagement, Finding, SignOff } from '../engine/types';
 
 /** SHA-256 of what a finding says — the part a signature vouches for. Status, sign-offs and preparers are not content. */
 export function findingContentHash(f: Finding): string {
-  const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs } = f;
-  return sha256(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs }));
+  const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo } = f;
+  return sha256(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo }));
 }
 
 /** Whether the finding's content last changed after this signature was made. */
@@ -77,8 +77,8 @@ export function signatureState(s: SignOff): 'valid' | 'broken' | 'legacy' {
 export function workpaperContentHash(kind: WorkpaperKind, e: Engagement): string {
   const content =
     kind === 'scope' ? (e.coverage == null && !e.memos?.scope ? e.scope : { items: e.scope, coverage: e.coverage, memo: e.memos?.scope })
-    : kind === 'rcm' ? e.rcm
-    : kind === 'test_plans' ? e.testPlans ?? {}
+    : kind === 'rcm' ? (!e.memos?.rcm ? e.rcm : { rows: e.rcm, memo: e.memos.rcm })
+    : kind === 'test_plans' ? (!e.memos?.test_plans ? e.testPlans ?? {} : { plans: e.testPlans ?? {}, memo: e.memos.test_plans })
     : e.report ? { markdown: e.report.markdown, includedFindingIds: e.report.includedFindingIds, excludedFindingIds: e.report.excludedFindingIds } : null;
   return sha256(canonicalJson({ kind, content }));
 }

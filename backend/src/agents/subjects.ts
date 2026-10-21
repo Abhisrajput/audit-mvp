@@ -24,7 +24,11 @@ export function approvedFindingsBasis(e: Engagement): string {
     .filter((f) => f.status === 'approved')
     .map((f) => ({ id: f.id, hash: findingContentHash(f) }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return sha256(canonicalJson(approved));
+  if (Object.keys(e.responses ?? {}).length === 0) return sha256(canonicalJson(approved));
+  const responses = Object.values(e.responses)
+    .map((r) => ({ findingId: r.findingId, id: r.id }))
+    .sort((a, b) => (a.findingId < b.findingId ? -1 : a.findingId > b.findingId ? 1 : 0));
+  return sha256(canonicalJson({ findings: approved, responses }));
 }
 
 export const rcmRowHash = (row: RcmRow) => sha256(canonicalJson(row));

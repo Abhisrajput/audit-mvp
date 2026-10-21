@@ -217,6 +217,15 @@ describe('finding review currency', () => {
     expect(await findingContentHash({ ...finding, status: 'approved' } as Finding)).toBe(await findingContentHash(finding));
     expect(await findingContentHash({ ...finding, condition: 'changed' })).not.toBe(await findingContentHash(finding));
   });
+  it('pins the hash of a finding with the 8B judgment fields, equal to the backend constant', async () => {
+    const withJudgment = {
+  id: 'F-R1', rowId: 'R1', controlId: 'R1', title: 't', rating: 'Medium', condition: 'c', criteria: 'k', cause: 'u', effect: 'f', recommendation: 'r',
+  citations: [{ clauseId: 'C1', regulation: 'Reg', ref: '§1', label: 'Reg §1' }], evidenceRefs: ['E1'], status: 'draft', blockedReasons: [], signOffs: [], bundleId: 'RUN-1',
+  likelihood: 'rare', impact: 'minor', rootCause: { category: 'people', analysis: 'a', confirmed: false },
+  memo: { subjectKey: 'finding:R1', calls: [{ question: 'q', decision: 'd', rationale: 'r', basis: ['b'], standard: ['IIA-14.3'], source: 'rules' }], forTheReviewer: ['v'], producedAt: 't' },
+} as unknown as Finding;
+    expect(await findingContentHash(withJudgment)).toBe('5150864893bd4a7a7753de9240e3a7a7671760dc03aab09b500b287a7d5ada3d');
+  });
   it('trusts a review only while its hash matches the finding', () => {
     expect(reviewIsCurrent(gate({ subjectHash: 'h' }), 'h')).toBe(true);
     expect(reviewIsCurrent(gate({ subjectHash: 'h' }), 'other')).toBe(false);

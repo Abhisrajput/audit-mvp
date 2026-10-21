@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { namedAreas } from '../../judgment/context';
 import { contextInclusions, coverageStatement, excludedAreas, includedByRule, statementCoversAll, type Candidate } from '../../judgment/coverage';
-import { scopeMemo } from '../../judgment/memo';
+import { sameMemo, scopeMemo } from '../../judgment/memo';
 import { acceptsOverlay, areaRisk, assessControl, RANK } from '../../judgment/risk-assessment';
 import { tokenize } from '../grounding';
 import type { AuditModule } from '../module';
@@ -9,7 +9,6 @@ import { toCitation } from '../qa';
 import type { Citation, Coverage, JudgmentMemo, ScopeItem } from '../types';
 import { asData } from '../llm/prompt';
 import { keepScopeDecisions } from '../../agents/rails';
-import { canonicalJson } from '../trail';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
 const ModelScope = z.object({
@@ -172,7 +171,7 @@ export const scopeModule: AuditModule<ScopeOutput> = {
     // A redraft that decides nothing new keeps the old memo, time stamp included, so the workpaper hash does not move
     // and the agent can tell that the redraft changed nothing.
     const before = e.memos?.scope;
-    const same = before && canonicalJson({ ...before, producedAt: '' }) === canonicalJson({ ...output.memo, producedAt: '' });
+    const same = sameMemo(before, output.memo);
     e.memos = { ...e.memos, scope: same ? before : output.memo };
     e.stage = 'planning';
   },
