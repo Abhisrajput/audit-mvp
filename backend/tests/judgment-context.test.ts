@@ -10,7 +10,7 @@ import { appWithDevUsers, signIn } from './http';
 const CONTEXT = { factors: [{ kind: 'change' as const, processAreas: ['HACCP'], description: 'New metal detector line 2' }], background: 'Single site.' };
 
 describe('the engagement context (spec §3.1) [REQ-35]', () => {
-  it('is set by people, trailed, and refused past its limits', async () => {
+  it('is set by people, trailed, and refused past its limits [REQ-35]', async () => {
     const { app, svc } = await appWithDevUsers();
     const user = await signIn(app, 'auditor');
     const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
@@ -26,7 +26,7 @@ describe('the engagement context (spec §3.1) [REQ-35]', () => {
     expect((await viewer.put(`/api/engagements/${e.id}/context`, CONTEXT)).status).toBe(403);
   });
 
-  it('reopens an approved scope, but not when re-saved unchanged, and locks once the RCM gate is approved', async () => {
+  it('reopens an approved scope, but not when re-saved unchanged, and locks once the RCM gate is approved [REQ-35]', async () => {
     const { svc } = await appWithDevUsers();
     const e = await svc.createEngagement({ ...NEW_ENGAGEMENT, context: CONTEXT }, auditor);
     await startRun(svc, defaultAgentConfig(), e.id, auditor);
@@ -54,7 +54,7 @@ describe('the engagement context (spec §3.1) [REQ-35]', () => {
 });
 
 describe('the scope memo on the gate [REQ-31]', () => {
-  it('is part of the content the scope gate and its signature cover, and is served for the panel', async () => {
+  it('is part of the content the scope gate and its signature cover, and is served for the panel [REQ-31]', async () => {
     const { app, svc } = await appWithDevUsers();
     const user = await signIn(app, 'auditor');
     const e = await svc.createEngagement({ ...NEW_ENGAGEMENT, context: CONTEXT }, auditor);
