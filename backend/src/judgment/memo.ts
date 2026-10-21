@@ -133,7 +133,7 @@ export function rcmMemo(input: { rows: RcmRow[]; scope: ScopeItem[]; context: En
   return { subjectKey: 'rcm', calls, forTheReviewer: ['Nothing to verify beyond the calls above.'], producedAt: input.producedAt };
 }
 
-/** The test-plan memo: one call per plan whose selection is not random, one per non-zero recommended tolerance; refusals and model changes go to the reviewer. */
+/** The test-plan memo: one call per plan whose selection is not random, one per non-zero recommended tolerance; refusals and model changes go to the reviewer. Each modelChanges string starts with `${rowId}: ` (row id, colon, space); that prefix credits the model on that row's selection call. */
 export function planMemo(input: { plans: Record<string, TestPlan>; rows: RcmRow[]; context: EngagementContext | null; refusals: string[]; modelChanges: string[]; producedAt: string }): JudgmentMemo {
   const calls: JudgmentCall[] = [];
   const rowOf = new Map(input.rows.map((r) => [r.id, r]));
@@ -146,7 +146,7 @@ export function planMemo(input: { plans: Record<string, TestPlan>; rows: RcmRow[
         rationale: `Random selection is not used for ${p.rowId}: ${p.selectionMethod} selection fits the control better.`,
         basis: r ? [r.control, `Frequency: ${r.frequency}`] : [],
         standard: [IIA.workProgram],
-        source: input.modelChanges.some((m) => m.startsWith(p.rowId)) ? 'model' : 'rules',
+        source: input.modelChanges.some((m) => m.startsWith(`${p.rowId}: `)) ? 'model' : 'rules',
       }));
     }
     if (p.recommendedToleranceRate) {

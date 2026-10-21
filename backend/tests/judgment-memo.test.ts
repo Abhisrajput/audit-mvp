@@ -40,6 +40,10 @@ describe('memos on the plan and the finding', () => {
     expect(m.calls.some((c) => c.decision.includes('judgemental'))).toBe(true);
     expect(m.calls.some((c) => c.decision.includes('5%') || c.decision.includes('0.05'))).toBe(true);
     expect(m.forTheReviewer).toContain('R1: the model proposed a tolerance of 0.2; kept 0.05');
+    const r10 = row('R10', { frequency: 'Daily' });
+    const credit = planMemo({ plans: { R1: plan(r1, { selectionMethod: 'judgemental' }), R10: plan(r10, { selectionMethod: 'judgemental' }) }, rows: [r1, r10], context: null, refusals: [], modelChanges: ['R10: selection judgemental'], producedAt: 't' });
+    expect(credit.calls.find((c) => c.question.includes('R1 '))?.source).toBe('rules');
+    expect(credit.calls.find((c) => c.question.includes('R10 '))?.source).toBe('model');
     const f = finding('R1', 'draft', { likelihood: 'likely', impact: 'moderate', rating: 'High', rootCause: { category: 'process', analysis: 'No second check', confirmed: true } });
     const fm = findingMemo({ finding: f, row: { assessedRisk: 'Medium', riskRating: 'Medium', control: 'Reconciliation' }, result: { conclusion: 'Ineffective', exceptionRate: 0.25, severity: 'systemic' }, libraryRecommendation: 'Reconcile monthly.', modelMoves: ['root cause'], producedAt: 't' });
     expect(fm.subjectKey).toBe('finding:R1');
@@ -56,10 +60,15 @@ describe('hashes and bases stay exact without the new fields (plan Review Focus 
     expect(workpaperContentHash('test_plans', e)).toBe(sha256(canonicalJson({ kind: 'test_plans', content: e.testPlans })));
     const withMemo = { ...e, memos: { rcm: rcmMemo({ rows: e.rcm, scope: [], context: null, producedAt: 't' }) } };
     expect(workpaperContentHash('rcm', withMemo)).not.toBe(workpaperContentHash('rcm', e));
+    const planMemoValue = planMemo({ plans: e.testPlans, rows: e.rcm, context: null, refusals: [], modelChanges: [], producedAt: 't' });
+    expect(workpaperContentHash('test_plans', { ...e, memos: { test_plans: planMemoValue } })).not.toBe(workpaperContentHash('test_plans', e));
+    expect(workpaperContentHash('rcm', { ...e, memos: {} })).toBe(workpaperContentHash('rcm', { ...e, memos: undefined as never }));
     const f = e.findings[0];
     const { likelihood, impact, rootCause, memo, ...rest } = f as typeof f & { likelihood?: unknown; impact?: unknown; rootCause?: unknown; memo?: unknown };
     void likelihood; void impact; void rootCause; void memo;
-    expect(findingContentHash(f)).toBe(findingContentHash(rest as typeof f));
+    void rest;
+    const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs } = f;
+    expect(findingContentHash(f)).toBe(sha256(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs })));
     expect(findingContentHash({ ...f, likelihood: 'rare', impact: 'minor' })).not.toBe(findingContentHash(f));
     const legacyBasis = sha256(canonicalJson([{ id: f.id, hash: findingContentHash(f) }]));
     expect(approvedFindingsBasis(e)).toBe(legacyBasis);
