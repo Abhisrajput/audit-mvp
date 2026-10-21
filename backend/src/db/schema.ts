@@ -1,7 +1,7 @@
 import type { ColumnType, Generated } from 'kysely';
 import type { Budget, GateKind, GateState, QaReport, RunStatus, SignableWorkpaper, Spent, StepKind, WorkpaperKind } from '../agents/types';
 import type { EvalReport } from '../eval/harness';
-import type { AuditReport, Coverage, EngagementContext, JudgmentMemo, Role, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestInput, TestPlan, TestResult } from '../engine/types';
+import type { AuditReport, Coverage, ResponseKind, EngagementContext, JudgmentMemo, Role, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestInput, TestPlan, TestResult } from '../engine/types';
 
 // JSONB columns are read as parsed values and written as JSON strings.
 type Json<T> = ColumnType<T, string, string>;
@@ -314,6 +314,31 @@ export interface GatesTable {
   closed_at: NullableTimestamp;
 }
 
+export interface TestTolerancesTable {
+  id: string;
+  engagement_id: string;
+  control_id: string;
+  /** numeric(4,3): pg returns it as a string. */
+  rate: ColumnType<string, number | string, never>;
+  recorded_by: string;
+  recorded_at: Timestamp;
+  trail_bundle_id: string;
+}
+
+export interface FindingResponsesTable {
+  id: string;
+  engagement_id: string;
+  finding_id: string;
+  response: ResponseKind;
+  owner: string;
+  /** A date column: the connection parses it as text (see db/index.ts). */
+  due_date: ColumnType<string | null, string | null, never>;
+  action_plan: string;
+  recorded_by: string;
+  recorded_at: Timestamp;
+  trail_bundle_id: string;
+}
+
 export interface DB {
   engagements: EngagementsTable;
   engagement_work: EngagementWorkTable;
@@ -337,4 +362,6 @@ export interface DB {
   agent_runs: AgentRunsTable;
   agent_steps: AgentStepsTable;
   gates: GatesTable;
+  test_tolerances: TestTolerancesTable;
+  finding_responses: FindingResponsesTable;
 }

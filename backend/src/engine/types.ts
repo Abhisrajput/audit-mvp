@@ -152,6 +152,10 @@ export interface RcmRow {
   evidenceExpected: string[];
   checklist: string[];
   citations: Citation[];
+  /** The assessed risk behind riskRating (spec §4.2); absent on rows written before 8B. */
+  assessedRisk?: RiskRating;
+  /** Why this sample size was chosen (spec §5.3); absent on rows written before 8B. */
+  samplingRationale?: string;
 }
 
 export type TestConclusion = 'Effective' | 'Ineffective' | 'Design deficient' | 'Not tested';
@@ -174,6 +178,12 @@ export interface TestResult {
   rationale: string;
   exceptionRate: number | null;
   qaFlags: string[];
+  /** How widespread the exceptions are (spec §5.4); absent on rows written before 8B. */
+  severity?: Severity;
+  /** Why that severity (spec §5.4); absent on rows written before 8B. */
+  severityRationale?: string;
+  /** The tolerance rate a person had set when this was concluded (spec §3.3); absent on rows written before 8B. */
+  toleranceApplied?: number;
 }
 
 /** A drafted test plan for one RCM row (agent spec §3.1). Auditors may edit it; only an auditor sets notTestedJustification. */
@@ -189,8 +199,27 @@ export interface TestPlan {
   procedure: string;
   /** Set by an auditor only: why this row will not be tested. The agent never sets or clears it. */
   notTestedJustification?: string;
+  /** The tolerance rate the agent recommends a person consider (spec §5.3); absent on rows written before 8B. */
+  recommendedToleranceRate?: number;
   editedBy?: string;
   editedAt?: string;
+}
+
+/** How widespread test exceptions are (spec §5.4). */
+export type Severity = 'none' | 'isolated' | 'systemic' | 'pervasive';
+export type Likelihood = 'rare' | 'possible' | 'likely';
+export type Impact = 'minor' | 'moderate' | 'major';
+export type RootCauseCategory = 'people' | 'process' | 'system' | 'governance' | 'unknown';
+export interface RootCause { category: RootCauseCategory; analysis: string; confirmed: boolean }
+
+/** An exception rate a person accepts for one control (spec §3.3). The latest row per control is in force. */
+export interface Tolerance { controlId: string; rate: number; recordedBy: string; recordedAt: string; trailBundleId: string }
+
+export type ResponseKind = 'agree' | 'partially_agree' | 'disagree';
+/** Management's answer to a finding (spec §3.3). The latest row per finding is current. */
+export interface FindingResponse {
+  id: string; findingId: string; response: ResponseKind; owner: string; dueDate: string | null; actionPlan: string;
+  recordedBy: string; recordedAt: string; trailBundleId: string;
 }
 
 export type FindingStatus = 'draft' | 'blocked' | 'reviewed' | 'approved' | 'rejected';
@@ -232,6 +261,14 @@ export interface Finding {
   blockedReasons: string[];
   signOffs: SignOff[];
   bundleId: string;
+  /** How likely the exposure is to cause harm (spec §6); absent on rows written before 8B. */
+  likelihood?: Likelihood;
+  /** How serious the harm would be (spec §6); absent on rows written before 8B. */
+  impact?: Impact;
+  /** The root cause analysis (spec §6); absent on rows written before 8B. */
+  rootCause?: RootCause;
+  /** The judgment memo behind the finding's ratings (spec §6); absent on rows written before 8B. */
+  memo?: JudgmentMemo;
   /** Users who drafted or edited this finding since it was last reset; none of them may sign it. */
   preparedBy?: string[];
   /**
@@ -276,6 +313,10 @@ export interface Engagement {
   coverage: Coverage | null;
   /** Judgment memos by subject key (spec §3.4). */
   memos: Record<string, JudgmentMemo>;
+  /** The tolerance in force per control id, set by a person and kept outside the workpapers (spec §3.3). */
+  tolerances: Record<string, Tolerance>;
+  /** The latest management response per finding id, kept outside the signed findings (spec §3.3). */
+  responses: Record<string, FindingResponse>;
   /** Optimistic-concurrency version from the database; absent on objects not yet saved. */
   version?: number;
 }

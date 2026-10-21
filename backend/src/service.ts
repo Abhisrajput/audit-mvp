@@ -216,6 +216,8 @@ export class AuditService {
       context: input.context ? { ...input.context, updatedBy: actor.id, updatedAt: new Date().toISOString() } : null,
       coverage: null,
       memos: {},
+      tolerances: {},
+      responses: {},
     };
     await this.db.kysely.transaction().execute(async (trx) => {
       await insertEngagement(trx, e);
