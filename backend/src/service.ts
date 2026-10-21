@@ -26,11 +26,11 @@ import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
-import type { Engagement, Finding, JudgmentMemo, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
-import { insertTolerance } from './db/judgment-repo';
+import { insertResponse, insertTolerance, responseHistory } from './db/judgment-repo';
 import { TOLERANCE_MAX } from './judgment/sampling';
 import { impactOf, ratingOf } from './judgment/finding';
 import { markEditedByHand, markEditedByPerson, sameMemo } from './judgment/memo';
@@ -68,6 +68,8 @@ export interface AgentEvent {
 }
 
 /** Optional optimistic-concurrency check: the engagement version the caller last saw. */
+export interface ResponseInput { response: ResponseKind; owner: string; dueDate?: string | null; actionPlan?: string }
+
 export interface MutationOptions {
   expectedVersion?: number;
 }
@@ -437,6 +439,43 @@ export class AuditService {
       return e;
     });
     return result;
+  }
+
+  /**
+   * Management's response to an approved finding (spec §3.3). It lives beside the finding, not in it, so the signatures stay valid;
+   * the report basis covers it. A later response is a new row; the latest is current. Refused once the report gate is approved.
+   */
+  async recordManagementResponse(engagementId: string, findingId: string, input: ResponseInput, actor: User, opts: MutationOptions = {}): Promise<FindingResponse> {
+    this.require(actor, PREPARER_ROLES, 'record a management response');
+    const owner = input.owner.trim();
+    if (!owner) throw new AppError(400, 'A response needs an owner');
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
+      const f = e.findings.find((x) => x.id === findingId);
+      if (!f) throw new AppError(404, `Finding ${findingId} not found`);
+      if (f.status !== 'approved') throw new AppError(409, 'A management response can only be recorded for an approved finding', 'FINDING_NOT_APPROVED');
+      if (await hasApprovedGate(trx, engagementId, 'report')) {
+        throw new AppError(409, 'The report gate is approved, so a management response can no longer be recorded', 'RESPONSE_LOCKED');
+      }
+      const dueDate = input.dueDate ?? null;
+      const actionPlan = input.actionPlan ?? '';
+      const bundle = this.humanBundle(e, 'human:management-response', actor, { findingId, response: input.response, owner, dueDate, actionPlan }, { findingId, response: input.response });
+      const record: FindingResponse = {
+        id: crypto.randomUUID(), findingId, response: input.response, owner, dueDate, actionPlan,
+        recordedBy: actor.id, recordedAt: new Date().toISOString(), trailBundleId: bundle.id,
+      };
+      await insertResponse(trx, engagementId, record);
+      e.responses = { ...e.responses, [findingId]: record };
+      emit(bundle);
+      return record;
+    });
+    return result;
+  }
+
+  /** Every response recorded for a finding, oldest first. */
+  async responsesFor(engagementId: string, findingId: string): Promise<FindingResponse[]> {
+    const e = await this.engagement(engagementId);
+    if (!e.findings.some((f) => f.id === findingId)) throw new AppError(404, `Finding ${findingId} not found`);
+    return responseHistory(this.db.kysely, engagementId, findingId);
   }
 
   async editFinding(

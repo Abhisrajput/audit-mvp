@@ -19,6 +19,8 @@ export interface IntegrityReport {
   signatures: { checked: number; problems: string[] };
   /** Each agent step's trail entry (agent spec §9). */
   agents: { checked: number; problems: string[] };
+  /** People's tolerances and management responses: each names a real trail entry of its kind (spec §3.3). */
+  records: { checked: number; problems: string[] };
   documents: { checked: number; problems: string[]; skipped: string | null };
 }
 
@@ -185,11 +187,40 @@ async function checkDocuments(db: Kysely<DB>, blobs: BlobStore) {
   return { checked: docs.length, problems };
 }
 
+/**
+ * Tolerances and management responses are rows outside the signed finding. Each must name its own trail entry (same engagement,
+ * right kind, same control or finding), and a response needs an approval on its finding.
+ */
+async function checkRecords(db: Kysely<DB>, trail: TrailBundle[]) {
+  const problems: string[] = [];
+  const bundles = new Map(trail.map((b) => [b.id, b]));
+  const names = (b: TrailBundle | undefined, engagementId: string, moduleId: string, key: string, value: string) =>
+    !!b && b.moduleId === moduleId && b.engagementId === engagementId && (b.inputs as Record<string, unknown> | null)?.[key] === value;
+  const tolerances = await db.selectFrom('test_tolerances').select(['id', 'engagement_id', 'control_id', 'trail_bundle_id']).orderBy('recorded_at').orderBy('id').execute();
+  for (const t of tolerances) {
+    if (!names(bundles.get(t.trail_bundle_id), t.engagement_id, 'human:set-tolerance', 'controlId', t.control_id)) {
+      problems.push(`Tolerance ${t.id} (control ${t.control_id}): its trail entry ${t.trail_bundle_id} is missing or is not a human:set-tolerance entry for this control`);
+    }
+  }
+  const responses = await db.selectFrom('finding_responses').select(['id', 'engagement_id', 'finding_id', 'trail_bundle_id']).orderBy('recorded_at').orderBy('id').execute();
+  const approved = new Set(
+    (await db.selectFrom('signatures').select(['engagement_id', 'finding_id']).where('meaning', '=', 'Approved').execute()).map((r) => `${r.engagement_id}|${r.finding_id}`),
+  );
+  for (const r of responses) {
+    if (!names(bundles.get(r.trail_bundle_id), r.engagement_id, 'human:management-response', 'findingId', r.finding_id)) {
+      problems.push(`Response ${r.id} (finding ${r.finding_id}): its trail entry ${r.trail_bundle_id} is missing or is not a human:management-response entry for this finding`);
+    }
+    if (!approved.has(`${r.engagement_id}|${r.finding_id}`)) problems.push(`Response ${r.id} is recorded for finding ${r.finding_id}, which was never approved`);
+  }
+  return { checked: tolerances.length + responses.length, problems };
+}
+
 export async function verifyIntegrity(db: Kysely<DB>, blobs: BlobStore | null, storageSkipped: string | null = null): Promise<IntegrityReport> {
   const chain = await readTrail(db);
   const trail = verifyChain(chain);
   const signatures = await checkSignatures(db, chain);
   const agents = await checkAgentSteps(db, chain, trail);
+  const records = await checkRecords(db, chain);
   // The registrations need no storage, so they are checked even when the storage check is skipped.
   const registrations = await checkRegistrations(db, chain);
   const stored = blobs ? await checkDocuments(db, blobs) : { checked: 0, problems: [] };
@@ -197,6 +228,6 @@ export async function verifyIntegrity(db: Kysely<DB>, blobs: BlobStore | null, s
     checked: stored.checked, problems: [...registrations, ...stored.problems],
     skipped: blobs ? null : storageSkipped ?? 'file storage is not configured',
   };
-  const ok = trail.valid && !signatures.problems.length && !agents.problems.length && !documents.problems.length && documents.skipped === null;
-  return { ok, trail, signatures, agents, documents };
+  const ok = trail.valid && !signatures.problems.length && !agents.problems.length && !records.problems.length && !documents.problems.length && documents.skipped === null;
+  return { ok, trail, signatures, agents, records, documents };
 }

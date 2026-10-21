@@ -174,6 +174,18 @@ export function createApp(
     res.json(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)));
   }));
 
+  app.post('/api/engagements/:id/findings/:fid/responses', readers, wrap(async (req, res) => {
+    const input = z.object({
+      response: z.enum(['agree', 'partially_agree', 'disagree']), owner: z.string().trim().min(1).max(200),
+      dueDate: z.iso.date().nullable().optional(), actionPlan: z.string().max(4000).optional(),
+    }).strict().parse(req.body);
+    res.status(201).json(await svc.recordManagementResponse(param(req, 'id'), param(req, 'fid'), input, actorOf(req), ifMatch(req)));
+  }));
+
+  app.get('/api/engagements/:id/findings/:fid/responses', readers, wrap(async (req, res) => {
+    res.json(await svc.responsesFor(param(req, 'id'), param(req, 'fid')));
+  }));
+
   app.put('/api/engagements/:id/findings/:fid', readers, wrap(async (req, res) => {
     res.json(await svc.editFinding(param(req, 'id'), param(req, 'fid'), FindingPatchSchema.parse(req.body), actorOf(req), ifMatch(req)));
   }));

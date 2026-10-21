@@ -126,6 +126,24 @@ describe('verify', () => {
     ]));
   });
 
+  it('reports a management response whose trail entry is missing, and one for a finding never approved [REQ-24, REQ-34]', async () => {
+    const s = await restoredSystem();
+    const k = s.db.kysely;
+    const row = (id: string, findingId: string) => ({
+      id, engagement_id: s.engagementId, finding_id: findingId, response: 'agree' as const, owner: 'Plant manager', due_date: null,
+      action_plan: '', recorded_by: 'auditor', recorded_at: new Date().toISOString(), trail_bundle_id: 'no-such-bundle',
+    });
+    await k.insertInto('finding_responses').values([row('R-1', s.fid), row('R-2', 'F-never')]).execute();
+    const report = await verifyIntegrity(k, s.blobs);
+    expect(report.ok).toBe(false);
+    expect(report.records.checked).toBe(2);
+    expect(report.records.problems).toEqual([
+      'Response R-1 (finding ' + s.fid + '): its trail entry no-such-bundle is missing or is not a human:management-response entry for this finding',
+      'Response R-2 (finding F-never): its trail entry no-such-bundle is missing or is not a human:management-response entry for this finding',
+      'Response R-2 is recorded for finding F-never, which was never approved',
+    ]);
+  });
+
   it('prints one JSON report and exits 1 when anything is wrong [REQ-24]', async () => {
     const s = await restoredSystem();
     const run = () => spawnSync('npx', ['tsx', 'src/db/cli.ts', 'verify'], {
