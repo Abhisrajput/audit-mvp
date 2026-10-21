@@ -5,7 +5,9 @@ import { trustActions } from '../trust';
 import type { Citation, RcmRow } from '../types';
 import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
-import { sampleSize } from '../../judgment/sampling';
+import { sampleSize, samplingRationale, selectionFor } from '../../judgment/sampling';
+import { rcmMemo, sameMemo } from '../../judgment/memo';
+import type { JudgmentMemo } from '../types';
 export { sampleSize } from '../../judgment/sampling';
 
 const ModelRcm = z.object({
@@ -20,7 +22,7 @@ const ModelRcm = z.object({
 });
 
 /** Control & Risk Writer: turns the accepted scope into a risk & control matrix with test programmes. */
-export const rcmModule: AuditModule<RcmRow[]> = {
+export const rcmModule: AuditModule<{ rows: RcmRow[]; memo: JudgmentMemo }> = {
   id: 'rcm',
   name: 'Control & Risk Writer (RCM)',
   version: '0.1.0',
@@ -33,6 +35,8 @@ export const rcmModule: AuditModule<RcmRow[]> = {
       .filter((s) => s.included)
       .map((s) => {
         const c = ctx.registry.controls.get(s.controlId)!;
+        const assessedRisk = s.assessedRisk ?? c.riskRating;
+        const size = sampleSize(c.frequency, assessedRisk);
         return {
           id: c.id, // one row per control, so field work survives a regeneration
           controlId: c.id,
@@ -45,7 +49,9 @@ export const rcmModule: AuditModule<RcmRow[]> = {
           type: c.type,
           nature: c.nature,
           frequency: c.frequency,
-          sampleSize: sampleSize(c.frequency, c.riskRating),
+          assessedRisk,
+          sampleSize: size,
+          samplingRationale: samplingRationale(c, assessedRisk, size, selectionFor({ frequency: c.frequency, processArea: c.processArea }, e.context)),
           testOfDesign: [...c.testOfDesign],
           testOfEffectiveness: [...c.testOfEffectiveness],
           evidenceExpected: [...c.evidenceExpected],
@@ -61,7 +67,7 @@ export const rcmModule: AuditModule<RcmRow[]> = {
       SYSTEM_PREAMBLE,
       `Tailor these library test programmes to the client context. Keep each step concrete and testable; do not add regulatory references.\n` +
         `Client context:\n${asData('workpaper:engagement', { entity: e.entity, site: e.site, periodFrom: e.periodFrom, periodTo: e.periodTo, scopeStatement: e.scopeStatement })}\n\n` +
-        asData('library:test-programmes', rows.map((r) => ({ controlId: r.controlId, control: r.control, testOfDesign: r.testOfDesign, testOfEffectiveness: r.testOfEffectiveness, checklist: r.checklist }))),
+        asData('library:test-programmes', rows.map((r) => ({ controlId: r.controlId, control: r.control, libraryRating: r.riskRating, assessedRisk: r.assessedRisk, testOfDesign: r.testOfDesign, testOfEffectiveness: r.testOfEffectiveness, checklist: r.checklist }))),
       ModelRcm,
     );
     if (drafted) {
@@ -82,11 +88,16 @@ export const rcmModule: AuditModule<RcmRow[]> = {
       ctx.gate(...trustActions(ctx.registry, r.id, { clauseIds: r.citations.map((c) => c.clauseId), controlId: r.controlId }, ctx.policy));
       if (action.action !== 'blocked') released.push(r);
     }
-    return released;
+    const memo = rcmMemo({ rows: released, scope: e.scope, context: e.context, producedAt: new Date().toISOString() });
+    return { rows: released, memo };
   },
 
-  apply(e, rows) {
+  apply(e, output) {
+    const rows = output.rows;
     e.rcm = rows;
+    // A regeneration that decides nothing new keeps the old memo, so the workpaper hash does not move.
+    const before = e.memos?.rcm;
+    e.memos = { ...e.memos, rcm: sameMemo(before, output.memo) ? before : output.memo };
     // Keep field results only for rows that survived regeneration.
     const keep = new Set(rows.map((r) => r.id));
     e.testInputs = Object.fromEntries(Object.entries(e.testInputs).filter(([id]) => keep.has(id)));

@@ -45,7 +45,7 @@ export function selectionFor(row: Pick<RcmRow, 'frequency' | 'processArea'>, con
   if (factor) {
     return { method: 'judgemental', reason: `${factor.kind.replace('_', ' ')} touches ${row.processArea}: ${factor.description}` };
   }
-  return { method: 'random', reason: `no incident or prior finding touches ${row.processArea}` };
+  return { method: 'random', reason: `no incident or prior finding touching ${row.processArea}` };
 }
 
 /** §5.3: the recommended tolerance for a row: zero for a pharma or food pack, else by the assessed risk. */

@@ -26,11 +26,11 @@ import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
-import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, JudgmentMemo, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
-import { markEditedByHand } from './judgment/memo';
+import { markEditedByHand, sameMemo } from './judgment/memo';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
@@ -323,13 +323,17 @@ export class AuditService {
   }
 
   /** Saves drafted test plans for an agent. The agent never sets or clears a reason not to test a row. */
-  async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions) {
+  async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions, memo?: JudgmentMemo) {
     this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
       await assertLease(trx, acting.runId, acting.leaseOwner);
       assertJustificationsUnchanged(e.testPlans, plans, e.rcm.map((r) => r.id));
       assertPlanAttribution(e.testPlans, plans);
       e.testPlans = plans;
+      if (memo) {
+        const before = e.memos?.test_plans;
+        e.memos = { ...e.memos, test_plans: sameMemo(before, memo) ? before : memo };
+      }
       emit(this.agentBundle(e, {
         moduleId: 'agent:test-plans', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
         inputs: { rows: Object.keys(plans) }, output: plans,

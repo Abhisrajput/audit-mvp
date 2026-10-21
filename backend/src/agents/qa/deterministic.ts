@@ -3,6 +3,7 @@ import type { PackRegistry } from '../../engine/packs';
 import { rcmCitationGate } from '../../engine/qa';
 import { trustActions, type CitationPolicy } from '../../engine/trust';
 import { areaRisk, isTouched, RANK } from '../../judgment/risk-assessment';
+import { factorsFor } from '../../judgment/context';
 import { statementCoversAll } from '../../judgment/coverage';
 import { rowOfKey, subjectInfo } from '../subjects';
 import type { QaIssue, QaReport } from '../types';
@@ -68,6 +69,8 @@ function planIssues(e: Engagement): QaIssue[] {
     if (!p) return [blocking('plans.coverage', `${r.id} has no test plan`)];
     return [
       ...(p.evidenceToRequest.length ? [] : [advisory('plans.evidence', `${r.id}: the plan requests no evidence`)]),
+      ...(p.selectionMethod === 'random' && factorsFor(e.context, r.processArea).some((f) => f.kind === 'incident')
+        ? [advisory('plans.selection-incident', `${r.id}: an incident touches ${r.processArea}, yet the plan selects at random`)] : []),
       ...(p.selectionMethod !== 'all' && p.sampleSize < r.sampleSize ? [advisory('plans.sample', `${r.id}: a sample of ${p.sampleSize} is below the RCM's ${r.sampleSize}`)] : []),
     ];
   });

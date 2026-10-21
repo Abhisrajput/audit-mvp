@@ -116,7 +116,7 @@ describe('the test-plan drafter', () => {
     expect(plans.A).toEqual({
       rowId: 'A', rowHash: rcmRowHash(a), attribute: 'Objective A',
       population: 'Every performance of "Control A" (monthly) from 2026-01-01 to 2026-06-30',
-      sampleSize: 25, selectionMethod: 'random', evidenceToRequest: ['Batch record', 'Line clearance log'], procedure: 'Select batches\nInspect sign-off',
+      sampleSize: 25, selectionMethod: 'random', recommendedToleranceRate: 0.05, evidenceToRequest: ['Batch record', 'Line clearance log'], procedure: 'Select batches\nInspect sign-off',
     });
     expect(plans.B.selectionMethod).toBe('all');
   });
