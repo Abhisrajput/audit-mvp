@@ -93,6 +93,16 @@ describe('workpaper gates', () => {
     expect((await getGate(svc.db.kysely, gate.id))!.state).toBe('open');
   });
 
+  it('tell a demo signer the user id to type, since the app shows only names', async () => {
+    const { app, svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { gate } = await waitingAtGate(svc, id, 'scope');
+    const manager = await signIn(app, 'reviewer');
+    const { popup, status } = await devSignGate(manager, 'reviewer', gate.id, 'approve');
+    expect(popup!.text).toContain('type your user id, <code>reviewer</code>,');
+    expect(status!.status).toBe('signed');
+  });
+
   it('need a reason to reject, and keep it for the agent to redraft from', async () => {
     const { app, svc } = await appWithDevUsers();
     const id = await scoped(svc);
@@ -135,6 +145,50 @@ describe('workpaper gates', () => {
     await sql`UPDATE gates SET state = 'superseded' WHERE id = ${gate.id}`.execute(k);
     expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
       `Gate ${gate.id} is superseded, but names signature ${sig.id}`,
+    ]));
+  });
+
+  it('are checked by verify for a gate signature its gate does not name back [REQ-24, REQ-27]', async () => {
+    const { svc } = await appWithDevUsers();
+    const id = await scoped(svc);
+    const { gate } = await waitingAtGate(svc, id, 'scope');
+    await svc.signGate(gate.id, 'approve', 'In scope as proposed', reviewer, unattended);
+    const k = svc.db.kysely;
+    const [sig] = await listSignatures(k, id);
+    // A second signature row for the same gate, copied from the real one: the gate names only the original.
+    await sql`CREATE TEMP TABLE copied AS SELECT * FROM signatures WHERE id = ${sig.id}`.execute(k);
+    await sql`UPDATE copied SET id = 'SIG-copy'`.execute(k);
+    await sql`INSERT INTO signatures SELECT * FROM copied`.execute(k);
+    expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
+      `Signature SIG-copy (scope gate ${gate.id}): its gate names signature ${sig.id}, not it`,
+    ]));
+    // A signature whose gate is gone, or is another kind of gate in another engagement.
+    await sql`ALTER TABLE signatures DISABLE TRIGGER signatures_append_only`.execute(k);
+    await sql`UPDATE signatures SET gate_id = 'GATE-missing' WHERE id = 'SIG-copy'`.execute(k);
+    expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
+      `Signature SIG-copy (scope gate GATE-missing): its gate is missing`,
+    ]));
+    const other = (await svc.createEngagement(NEW_ENGAGEMENT, auditor)).id;
+    await sql`UPDATE signatures SET gate_id = ${gate.id}, engagement_id = ${other}, workpaper = 'rcm' WHERE id = 'SIG-copy'`.execute(k);
+    expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
+      `Signature SIG-copy (rcm gate ${gate.id}): its gate is a scope gate in ${id}, not an rcm gate in ${other}`,
+    ]));
+  });
+
+  it('are checked by verify for a signature made in another engagement [REQ-24, REQ-27]', async () => {
+    const { svc } = await appWithDevUsers();
+    const e = await engagementWithFailedControl(svc);
+    const f = e.findings[0];
+    const { gate } = await waitingAtGate(svc, e.id, findingKey(f.rowId));
+    await svc.signOff(e.id, f.id, 'review', '', reviewer, {}, unattended);
+    await svc.signOff(e.id, f.id, 'approve', '', approver, {}, unattended);
+    const k = svc.db.kysely;
+    const sigId = (await getGate(k, gate.id))!.signatureId!;
+    const other = (await svc.createEngagement(NEW_ENGAGEMENT, auditor)).id;
+    await sql`ALTER TABLE signatures DISABLE TRIGGER signatures_append_only`.execute(k);
+    await sql`UPDATE signatures SET engagement_id = ${other} WHERE id = ${sigId}`.execute(k);
+    expect((await verifyIntegrity(k, null)).signatures.problems).toEqual(expect.arrayContaining([
+      `Gate ${gate.id}: signature ${sigId} was made in a different engagement`,
     ]));
   });
 });

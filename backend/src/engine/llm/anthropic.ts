@@ -12,10 +12,21 @@ const SERVER_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 /**
  * Socket and TLS error codes that mean the request never reached the API, so nothing can have been billed: the name did
- * not resolve, the connection was refused, or the TLS handshake failed before any of the request was written.
+ * not resolve, the connection was refused, or the TLS handshake failed before any of the request was written. Each
+ * handshake code is named, because the `ERR_TLS_` and `ERR_SSL_` families also hold failures of an open connection (a
+ * bad record MAC, a refused renegotiation), after which the request may have been sent. Only certificate verification
+ * (`CERT_*`, `UNABLE_TO_*`, the self-signed codes) is a whole family that can only happen during the handshake.
  */
-const NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN']);
-const notSent = (code: string) => NOT_SENT.has(code) || /^(ERR_TLS_|ERR_SSL_|CERT_|UNABLE_TO_)/.test(code);
+const NOT_SENT = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_TLS_HANDSHAKE_TIMEOUT', 'ERR_TLS_INVALID_PROTOCOL_VERSION', 'ERR_TLS_PROTOCOL_VERSION_CONFLICT',
+  'ERR_TLS_REQUIRED_SERVER_NAME', 'ERR_TLS_SNI_FROM_SERVER', 'ERR_TLS_DH_PARAM_SIZE',
+  'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_SSL_UNSUPPORTED_PROTOCOL', 'ERR_SSL_NO_PROTOCOLS_AVAILABLE',
+  'ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE', 'ERR_SSL_SSLV3_ALERT_BAD_CERTIFICATE', 'ERR_SSL_SSLV3_ALERT_CERTIFICATE_EXPIRED',
+  'ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION', 'ERR_SSL_TLSV1_ALERT_UNKNOWN_CA', 'ERR_SSL_TLSV1_UNRECOGNIZED_NAME',
+]);
+const notSent = (code: string) => NOT_SENT.has(code) || /^(CERT_|UNABLE_TO_)/.test(code);
 
 /** Every `code` along an error's causes. fetch puts the socket error under its TypeError; an AggregateError holds several. */
 export function causeCodes(err: unknown, depth = 0): string[] {

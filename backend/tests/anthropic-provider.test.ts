@@ -130,7 +130,20 @@ describe('AnthropicProvider.generate (stubbed SDK client)', () => {
     expect((err as Error).message).toMatch(/may have been sent/);
   });
 
-  it.each(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'SELF_SIGNED_CERT_IN_CHAIN'])(
+  it.each(['ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC', 'ERR_SSL_BAD_RECORD_MAC', 'ERR_TLS_RENEGOTIATION_DISABLED', 'ERR_TLS_SESSION_ATTACK'])(
+    'keeps a TLS failure that can happen after sending charged (%s)',
+    async (code) => {
+      const { client } = stub(() => { throw connectionError(code); });
+      const err = await failure(new AnthropicProvider('claude-opus-5-5', client).generate(ASK));
+      expect(err).toBeInstanceOf(ModelTimeoutError);
+      expect((err as Error).message).toMatch(/may have been sent/);
+    },
+  );
+
+  it.each([
+    'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'SELF_SIGNED_CERT_IN_CHAIN',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_HANDSHAKE_TIMEOUT', 'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION',
+  ])(
     'refunds a call that never got through (%s)',
     async (code) => {
       const { client } = stub(() => { throw connectionError(code); });

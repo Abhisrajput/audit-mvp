@@ -45,6 +45,8 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
     (await db.selectFrom('finding_revisions').select(['engagement_id', 'finding_id', 'content_hash']).execute()).map((r) => `${r.engagement_id}|${r.finding_id}|${r.content_hash}`),
   );
   const bundles = new Map(trail.map((b) => [b.id, b]));
+  const gates = await db.selectFrom('gates').select(['id', 'engagement_id', 'kind', 'state', 'signature_id', 'subject_id', 'subject_hash']).orderBy('seq').execute();
+  const gateById = new Map(gates.map((g) => [g.id, g]));
   const workpaperHistory = new Set(
     (await db.selectFrom('workpaper_revisions').select(['engagement_id', 'kind', 'content_hash']).execute()).map((r) => `${r.engagement_id}|${r.kind}|${r.content_hash}`),
   );
@@ -59,6 +61,12 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
         b.moduleId !== 'human:gate-sign' || b.engagementId !== s.engagement_id || out?.signatureId !== s.id || out?.gateId !== s.gate_id ||
         out?.contentHash !== s.content_hash || out?.userId !== s.user_id || out?.meaning !== s.meaning
       ) problems.push(`${label}: does not match its trail entry`);
+      // The link back: a gate signature's gate exists, is the gate the signature describes, and names it (agent spec §9).
+      const g = s.gate_id ? gateById.get(s.gate_id) : undefined;
+      if (!g) problems.push(`${label}: its gate is missing`);
+      else if (g.kind !== s.workpaper || g.engagement_id !== s.engagement_id) {
+        problems.push(`${label}: its gate is a ${g.kind} gate in ${g.engagement_id}, not ${s.workpaper === 'rcm' ? 'an' : 'a'} ${s.workpaper} gate in ${s.engagement_id}`);
+      } else if (g.signature_id !== s.id) problems.push(`${label}: its gate names ${g.signature_id ? `signature ${g.signature_id}` : 'no signature'}, not it`);
       continue;
     }
     const label = `Signature ${s.id} (finding ${s.finding_id})`;
@@ -84,7 +92,6 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
   // Every decided gate names a signature that exists, made on the content the gate showed, with the decision's meaning,
   // for that gate (agent spec §9). A gate nobody decided names none.
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const gates = await db.selectFrom('gates').select(['id', 'kind', 'state', 'signature_id', 'subject_id', 'subject_hash']).orderBy('seq').execute();
   for (const g of gates) {
     if (g.state !== 'approved' && g.state !== 'rejected') {
       if (g.signature_id) problems.push(`Gate ${g.id} is ${g.state}, but names signature ${g.signature_id}`);
@@ -95,6 +102,7 @@ async function checkSignatures(db: Kysely<DB>, trail: Awaited<ReturnType<typeof 
     if (!sig) problems.push(`Gate ${g.id} is ${g.state}, but its signature ${g.signature_id ?? '(none)'} is missing`);
     else if (sig.content_hash !== g.subject_hash) problems.push(`Gate ${g.id}: signature ${sig.id} is for different content than the gate showed`);
     else if (sig.meaning !== meaning) problems.push(`Gate ${g.id}: signature ${sig.id} carries ${sig.meaning}, not ${meaning}`);
+    else if (sig.engagement_id !== g.engagement_id) problems.push(`Gate ${g.id}: signature ${sig.id} was made in a different engagement`);
     else if (g.kind === 'finding' ? sig.finding_id !== g.subject_id : sig.gate_id !== g.id || sig.workpaper !== g.kind) {
       problems.push(`Gate ${g.id}: signature ${sig.id} was made for a different ${g.kind === 'finding' ? 'finding' : 'gate'}`);
     }

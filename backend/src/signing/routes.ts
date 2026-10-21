@@ -107,7 +107,7 @@ export function signingRoutes(svc: AuditService, auth: AuthDeps) {
     const method = reauthMethodFor(user.issuer);
     popupHeaders(res);
     if (method === 'oidc') return res.redirect(await auth.oidc!.reauthUrl({ state: intent.state, nonce: intent.nonce, codeVerifier: intent.codeVerifier }));
-    if (method === 'dev') return devConfirmPage(res, intent, user.name);
+    if (method === 'dev') return devConfirmPage(res, intent, user.name, user.id);
     return page(res, 409, 'Cannot re-authenticate', 'No way to re-authenticate is configured for your account.');
   }));
 

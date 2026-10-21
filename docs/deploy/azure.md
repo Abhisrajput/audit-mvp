@@ -87,7 +87,7 @@ The `worker` app (agent runs, agent spec §2):
 - `AGENT_ENABLED`, `AGENT_MAX_STEPS`, `AGENT_MAX_TOKENS`, `AGENT_MAX_COST_USD` and `AGENT_QA_THRESHOLD` must have the same values on the `api` and `worker` apps: the API shows the budget ceiling and the QA threshold, and the worker enforces them. The model, price, polling, concurrency and timeout settings (`AGENT_POLICY_MODEL`, `AGENT_QA_MODEL`, `AGENT_TEST_PLAN_MODEL`, `AGENT_MODEL_TIMEOUT_MS`, `AGENT_MODEL_PRICES`, `AGENT_POLL_MS`, `AGENT_WORKER_CONCURRENCY`) are the worker's alone.
 - `METRICS_TOKEN` is required in production, as for the API.
 - Min replicas 1. More replicas are safe: each run is leased in Postgres (60-second lease, 15-second heartbeat), so two workers never work on one run. Each replica runs `AGENT_WORKER_CONCURRENCY` loops (default 2).
-- Set the termination grace period to 90 seconds. On SIGTERM the worker finishes its current step within one lease, then exits; a step cut short is redone by another worker.
+- Set the termination grace period to 75 seconds, as in `docker-compose.yml`: one lease (60 seconds) for the iteration in flight to finish, plus a margin for the worker to close its connections and exit. On SIGTERM the worker finishes its current step within one lease, then exits; a step cut short is redone by another worker.
 - Kill switch: `AGENT_ENABLED=false` on both apps. The API then refuses to start runs and the worker leases nothing. Existing runs stay as they are.
 
 Container Apps has no read-only root filesystem setting. The image runs as the non-root `node` user, and the API writes nothing to disk.
