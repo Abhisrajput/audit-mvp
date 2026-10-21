@@ -3,7 +3,7 @@ import { Box, Card, CardContent, Checkbox, LinearProgress, Stack, Table, TableBo
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { TabProps } from '../../pages/EngagementPage';
-import { areaOptions, contextLocked, raisedAreas } from '../../judgment';
+import { areaOptions, assessedRiskOf, contextLocked, raisedAreas, riskFactorsOf } from '../../judgment';
 import type { Engagement } from '../../types';
 import { ActionButton, Citations, RiskChip } from '../common';
 import ContextForm from './ContextForm';
@@ -81,14 +81,14 @@ export default function ScopeTab({ engagement: e, setEngagement, run, gates }: T
                     <RiskChip rating={s.inherentRisk} />
                   </TableCell>
                   <TableCell>
-                    {s.riskFactors.length > 0 ? (
-                      <Tooltip title={s.riskFactors.join('; ')}>
+                    {riskFactorsOf(s).length > 0 ? (
+                      <Tooltip title={riskFactorsOf(s).join('; ')}>
                         <span>
-                          <RiskChip rating={s.assessedRisk} />
+                          <RiskChip rating={assessedRiskOf(s)} />
                         </span>
                       </Tooltip>
                     ) : (
-                      <RiskChip rating={s.assessedRisk} />
+                      <RiskChip rating={assessedRiskOf(s)} />
                     )}
                   </TableCell>
                   <TableCell>

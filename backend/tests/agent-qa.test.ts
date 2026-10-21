@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RULES_VERSION, RulesPolicy, rulesChoice } from '../src/agents/policy/rules';
 import { reviewSubject } from '../src/agents/qa/deterministic';
+import { subjectContent } from '../src/agents/qa/rubric';
 import { draftTestPlans } from '../src/agents/specialists/test-plan';
 import { findingKey, rcmRowHash, subjectInfo } from '../src/agents/subjects';
 import type { Action, Menu, QaIssue, QaReport } from '../src/agents/types';
@@ -129,5 +130,17 @@ describe('the test-plan drafter', () => {
     expect(plans.A).toBe(edited);
     expect(plans.B).toMatchObject({ rowHash: rcmRowHash(b), notTestedJustification: 'Retired in March', editedBy: 'auditor' });
     expect(Object.keys(plans)).toEqual(['A', 'B']);
+  });
+});
+
+describe('scope items stored before the risk assessment existed', () => {
+  it('are reviewed without error, and their missing assessed risk is not read as below the library', () => {
+    const old = scopeItem('OLD', true, { inherentRisk: 'High' }) as Partial<ReturnType<typeof scopeItem>>;
+    delete old.assessedRisk;
+    delete old.riskFactors;
+    const e = engagement({ scope: [old as ReturnType<typeof scopeItem>] });
+    const report = reviewSubject(e, 'scope');
+    expect(report.issues.map((i) => i.criterion)).not.toContain('scope.assessed-below-library');
+    expect(() => JSON.stringify(subjectContent(e, 'scope'))).not.toThrow();
   });
 });

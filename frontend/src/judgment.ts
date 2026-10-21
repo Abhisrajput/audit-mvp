@@ -37,14 +37,21 @@ export function contextLocked(gates: Gate[]): boolean {
   return gates.some((g) => g.kind === 'rcm' && g.state === 'approved');
 }
 
+/** A scope item's assessed risk; rows stored before migration 012 have none, and their library rating stands. */
+export const assessedRiskOf = (s: ScopeItem): RiskRating => s.assessedRisk ?? s.inherentRisk;
+
+/** A scope item's risk factors; rows stored before migration 012 have none. */
+export const riskFactorsOf = (s: ScopeItem): string[] => s.riskFactors ?? [];
+
 /** Areas raised by the context, with library and assessed ratings, for the risk table. */
 export function raisedAreas(scope: ScopeItem[]): { processArea: string; library: RiskRating; assessed: RiskRating; factors: string[] }[] {
   const byArea = new Map<string, { library: RiskRating; assessed: RiskRating; factors: string[] }>();
-  for (const s of scope.filter((i) => RANK[i.assessedRisk] > RANK[i.inherentRisk])) {
-    const row = byArea.get(s.processArea) ?? { library: s.inherentRisk, assessed: s.assessedRisk, factors: [] };
+  for (const s of scope.filter((i) => RANK[assessedRiskOf(i)] > RANK[i.inherentRisk])) {
+    const assessed = assessedRiskOf(s);
+    const row = byArea.get(s.processArea) ?? { library: s.inherentRisk, assessed, factors: [] };
     if (RANK[s.inherentRisk] > RANK[row.library]) row.library = s.inherentRisk;
-    if (RANK[s.assessedRisk] > RANK[row.assessed]) row.assessed = s.assessedRisk;
-    row.factors.push(...s.riskFactors.filter((f) => !row.factors.includes(f)));
+    if (RANK[assessed] > RANK[row.assessed]) row.assessed = assessed;
+    row.factors.push(...riskFactorsOf(s).filter((f) => !row.factors.includes(f)));
     byArea.set(s.processArea, row);
   }
   return [...byArea].map(([processArea, r]) => ({ processArea, ...r })).sort((a, b) => a.processArea.localeCompare(b.processArea));

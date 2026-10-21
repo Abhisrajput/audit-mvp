@@ -119,9 +119,12 @@ export interface ScopeItem {
   processArea: string;
   risk: string;
   inherentRisk: RiskRating;
-  /** Risk after the engagement context is applied (spec §3.2). */
+  /**
+   * Risk after the engagement context is applied (spec §3.2). Rows stored before migration 012 lack it and are not
+   * normalised on load (hash compatibility), so readers of stored rows, the UI included, fall back to inherentRisk.
+   */
   assessedRisk: RiskRating;
-  /** Which context factors raised the assessed risk (spec §3.2). */
+  /** Which context factors raised the assessed risk (spec §3.2). Absent on rows stored before migration 012; read as []. */
   riskFactors: string[];
   relevance: number; // retrieval score normalised 0..1
   rationale: string;

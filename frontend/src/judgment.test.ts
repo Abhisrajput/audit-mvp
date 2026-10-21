@@ -27,4 +27,11 @@ describe('context helpers', () => {
     const rows = raisedAreas([item('A', 'Lab', 'Low', 'High', ['New LIMS']), item('B', 'Lab', 'Medium', 'High', ['New LIMS']), item('C', 'QA', 'High')]);
     expect(rows).toEqual([{ processArea: 'Lab', library: 'Medium', assessed: 'High', factors: ['New LIMS'] }]);
   });
+
+  it('reads scope items stored before the risk assessment existed, which lack assessedRisk and riskFactors', () => {
+    const { assessedRisk: _a, riskFactors: _f, ...old } = item('OLD', 'QA', 'High');
+    const raised = item('NEW', 'Lab', 'Low', 'Medium');
+    delete (raised as Partial<ScopeItem>).riskFactors;
+    expect(raisedAreas([old as unknown as ScopeItem, raised])).toEqual([{ processArea: 'Lab', library: 'Low', assessed: 'Medium', factors: [] }]);
+  });
 });
