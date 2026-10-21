@@ -95,12 +95,34 @@ export interface Citation {
   label: string; // short display form, e.g. "COSO Principle 10"
 }
 
+/** What kind of thing an auditor-entered context factor is (spec §3.1). */
+export type FactorKind = 'change' | 'incident' | 'regulatory' | 'prior_finding' | 'complexity';
+
+/** One auditor-entered fact that bears on risk, tied to the process areas it touches (spec §3.1). */
+export interface ContextFactor { kind: FactorKind; processAreas: string[]; description: string }
+
+/** The auditor-entered engagement context that drives the risk assessment (spec §3.1). */
+export interface EngagementContext { factors: ContextFactor[]; background: string; updatedBy: string; updatedAt: string }
+
+/** The scope coverage statement: which process areas were left out and why (spec §3.2). */
+export interface Coverage { excluded: { processArea: string; reason: string }[]; statement: string }
+
+/** One judgment the engine made, with its decision, reasoning and the standards behind it (spec §3.4). */
+export interface JudgmentCall { question: string; decision: string; rationale: string; basis: string[]; standard: string[]; source: 'rules' | 'model' }
+
+/** The judgment memo for one subject, with the points a reviewer should verify (spec §3.4). */
+export interface JudgmentMemo { subjectKey: string; calls: JudgmentCall[]; forTheReviewer: string[]; producedAt: string }
+
 export interface ScopeItem {
   controlId: string;
   packId: string;
   processArea: string;
   risk: string;
   inherentRisk: RiskRating;
+  /** Risk after the engagement context is applied (spec §3.2). */
+  assessedRisk: RiskRating;
+  /** Which context factors raised the assessed risk (spec §3.2). */
+  riskFactors: string[];
   relevance: number; // retrieval score normalised 0..1
   rationale: string;
   citations: Citation[];
@@ -243,6 +265,12 @@ export interface Engagement {
   testPlans: Record<string, TestPlan>;
   findings: Finding[];
   report: AuditReport | null;
+  /** Auditor-entered context (spec §3.1); null until entered. */
+  context: EngagementContext | null;
+  /** Scope coverage statement (spec §3.2); null until scope is drafted. */
+  coverage: Coverage | null;
+  /** Judgment memos by subject key (spec §3.4). */
+  memos: Record<string, JudgmentMemo>;
   /** Optimistic-concurrency version from the database; absent on objects not yet saved. */
   version?: number;
 }

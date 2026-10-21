@@ -205,6 +205,9 @@ export class AuditService {
       testPlans: {},
       findings: [],
       report: null,
+      context: null,
+      coverage: null,
+      memos: {},
     };
     await this.db.kysely.transaction().execute(async (trx) => {
       await insertEngagement(trx, e);

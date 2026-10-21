@@ -42,6 +42,8 @@ export const scopeModule: AuditModule<ScopeItem[]> = {
         processArea: c.processArea,
         risk: c.risk,
         inherentRisk: c.riskRating,
+        assessedRisk: c.riskRating,
+        riskFactors: [],
         relevance: rel,
         rationale: matched.length
           ? `Scope mentions ${matched.slice(0, 5).join(', ')}; inherent risk ${c.riskRating}.`

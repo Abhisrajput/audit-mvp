@@ -6,7 +6,7 @@ import type { Citation, Engagement, Finding, RcmRow, ScopeItem, TestInput, TestP
 export const cite: Citation = { clauseId: 'C1', regulation: 'Reg', ref: '§1', label: 'Reg §1' };
 
 export const scopeItem = (id: string, included = true, over: Partial<ScopeItem> = {}): ScopeItem => ({
-  controlId: id, packId: 'p', processArea: 'a', risk: 'r', inherentRisk: 'Medium', relevance: 1, rationale: 'x', citations: [cite], included, ...over,
+  controlId: id, packId: 'p', processArea: 'a', risk: 'r', inherentRisk: 'Medium', assessedRisk: 'Medium', riskFactors: [], relevance: 1, rationale: 'x', citations: [cite], included, ...over,
 });
 
 export const row = (id: string, over: Partial<RcmRow> = {}): RcmRow => ({
@@ -31,6 +31,6 @@ export function engagement(over: Partial<Engagement> = {}): Engagement {
   return {
     id: 'ENG-1', name: 'n', entity: 'e', site: 's', periodFrom: '2026-01-01', periodTo: '2026-06-30', auditType: 't', scopeStatement: 'stmt',
     packIds: ['p'], createdBy: 'auditor', createdAt: '2026-01-01T00:00:00.000Z', stage: 'planning', scope: [], rcm: [], testInputs: {},
-    testResults: {}, testPlans: {}, findings: [], report: null, ...over,
+    testResults: {}, testPlans: {}, findings: [], report: null, context: null, coverage: null, memos: {}, ...over,
   };
 }
