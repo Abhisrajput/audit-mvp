@@ -265,6 +265,8 @@ An auditor can hand an engagement to the agent: **Start agent run** on the engag
 
 The agent never signs, records a test result, or edits a reviewed finding: those are code checks, whatever a model says. With `LLM_PROVIDER=offline` it decides by deterministic rules. With `anthropic` the model chooses from the same menu of allowed actions and drafts with Claude, and every call is charged to the run's budget (`AGENT_MAX_STEPS`, `AGENT_MAX_TOKENS`, `AGENT_MAX_COST_USD`) before it is made. The worker is its own process (`npm run worker`; in production `node dist/agents/worker-cli.js`), and `AGENT_ENABLED=false` switches agent runs off.
 
+The auditor records the engagement context on the Scope tab: process or system changes, incidents, deviations or complaints, regulatory actions or inspections, prior audit findings, and complexity or volume, each naming the process areas it touches or the whole engagement. Only people write it; the agent never does. From it the agent assesses risk per process area (a named area's controls step up one rating above the library, never down), writes a coverage statement, and explains its scope in a judgment memo that cites the IIA standards clause it rests on. The signer reads the memo on the scope gate above the QA review, and the gate signature covers it. A change to the context after the scope gate is approved reopens that gate. Once the RCM gate is approved the context is locked (`CONTEXT_LOCKED`, HTTP 409): record late matters in the relevant finding or start a new engagement.
+
 ## Content packs and the knowledge graph
 
 A pack is an OKF Markdown bundle under `backend/packs/<id>/`: `pack.md`, `clauses/`,
@@ -314,6 +316,7 @@ Agreed management actions are tracked, validated and closed on time.
 - **Search.** `GET /api/knowledge/search` returns documents and library concepts together.
   Each concept hit carries its bundle file and whether it is citable. Recording each search
   in the audit trail (spec §6.5) is deferred to a later sub-project.
+- **Methodology pack.** The `iia` pack (`backend/packs/iia/`) holds draft paraphrases of 16 clauses of the IIA Global Internal Audit Standards (2024). Memos and QA criteria cite it. It is a methodology pack, never an engagement pack: it is hidden from `/api/packs` and the default search, and creating an engagement with it is refused (400). Like the other packs it is an unreviewed draft until an expert verifies it.
 
 ## Running in production
 
