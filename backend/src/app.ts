@@ -18,6 +18,7 @@ import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { ifMatch, wrap } from './http-util';
+import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
 
@@ -117,7 +118,7 @@ export function createApp(
 
   // ----- Content library -----
   app.get('/api/packs', readers, (_req, res) =>
-    res.json(svc.registry.list().map(({ clauses, controls, evalCases, ...p }) => ({ ...p, clauseCount: clauses.length, controlCount: controls.length, evalCaseCount: evalCases.length }))),
+    res.json(svc.registry.list().filter((p) => p.id !== METHODOLOGY_PACK_ID).map(({ clauses, controls, evalCases, ...p }) => ({ ...p, clauseCount: clauses.length, controlCount: controls.length, evalCaseCount: evalCases.length }))),
   );
   app.get('/api/packs/:id', readers, wrap((req, res) => {
     const pack = svc.registry.packs.get(param(req, 'id'));
@@ -126,7 +127,7 @@ export function createApp(
   }));
   app.get('/api/search', readers, (req, res) => {
     const q = String(req.query.q ?? '');
-    const packIds = req.query.packs ? String(req.query.packs).split(',') : svc.registry.list().map((p) => p.id);
+    const packIds = req.query.packs ? String(req.query.packs).split(',') : svc.registry.list().filter((p) => p.id !== METHODOLOGY_PACK_ID).map((p) => p.id);
     const allowed = new Set(svc.registry.clausesFor(packIds).map((c) => c.id));
     const hits = svc.grounding.clauses.search(q, 10, (id) => allowed.has(id));
     res.json(hits.map((h) => ({ ...h, clause: svc.registry.clauses.get(h.clauseId) })));

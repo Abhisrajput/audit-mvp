@@ -28,6 +28,7 @@ import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/tr
 import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
+import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
 export { AppError } from './errors';
@@ -190,6 +191,8 @@ export class AuditService {
     this.require(actor, PREPARER_ROLES, 'create engagements');
     if (!input.packIds.length) throw new AppError(400, 'Select at least one content pack');
     input.packIds.forEach((id) => {
+      // The IIA pack holds the standards the judgments cite; it is never loaded into an engagement.
+      if (id === METHODOLOGY_PACK_ID) throw new AppError(400, 'The IIA methodology pack is not an engagement pack');
       if (!this.registry.packs.has(id)) throw new AppError(400, `Unknown pack ${id}`);
     });
     const e: Engagement = {

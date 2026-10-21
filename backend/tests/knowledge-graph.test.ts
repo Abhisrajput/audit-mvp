@@ -108,7 +108,7 @@ describe('compiling bundles', () => {
     const r = await compilePacks(svc.db, bundles);
     const concepts = bundles.flatMap((b) => b.concepts);
 
-    expect(r.packs).toEqual(bundles.map((b) => ({ packId: b.packId, version: '0.2.0', outcome: 'compiled' })));
+    expect(r.packs).toEqual(bundles.map((b) => ({ packId: b.packId, version: b.version, outcome: 'compiled' })));
     expect(r.nodes).toBe(concepts.length);
     expect(r.edges).toBe(concepts.reduce((n, c) => n + c.links.length, 0));
     expect(r.edges).toBeGreaterThan(0);

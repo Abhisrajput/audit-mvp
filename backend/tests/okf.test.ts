@@ -117,15 +117,15 @@ describe('OKF bundles', () => {
 });
 
 describe('the committed MVP bundles', () => {
-  const COUNTS = { common: [10, 10, 7], food: [33, 12, 9], pharma: [25, 13, 9] } as const;
+  const COUNTS = { common: [10, 10, 7], food: [33, 12, 9], iia: [16, 0, 0], pharma: [25, 13, 9] } as const;
 
   it('load into a registry with every concept, all unverified and due for re-review on 2027-10-11', () => {
     const registry = registryFromBundles();
-    expect(registry.list().map((p) => `${p.id}@${p.version}`)).toEqual(['common@0.2.0', 'food@0.2.0', 'pharma@0.2.0']);
+    expect(registry.list().map((p) => `${p.id}@${p.version}`)).toEqual(['common@0.2.0', 'food@0.2.0', 'iia@0.1.0', 'pharma@0.2.0']);
     for (const p of registry.list()) {
       expect([p.clauses.length, p.controls.length, p.evalCases.length], p.id).toEqual(COUNTS[p.id as keyof typeof COUNTS]);
       for (const c of [...p.clauses, ...p.controls]) {
-        expect(c.trust, c.id).toMatchObject({ verifiedBy: null, status: 'active', staleAfter: '2027-10-11' });
+        expect(c.trust, c.id).toMatchObject({ verifiedBy: null, status: 'active', staleAfter: p.id === 'iia' ? '2027-10-21' : '2027-10-11' });
         expect(c.trust!.sourcePath.startsWith(`${p.id}/`)).toBe(true);
       }
       expect(p.clauses.every((c) => c.reviewStatus === 'draft')).toBe(true);

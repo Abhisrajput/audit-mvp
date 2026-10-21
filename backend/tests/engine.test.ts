@@ -8,7 +8,7 @@ const META = { name: 'x', entity: 'x', site: 'x', periodFrom: 'a', periodTo: 'b'
 
 describe('content packs', () => {
   it('loads all packs with valid cross-references [REQ-12]', () => {
-    expect(registry.list().map((p) => p.id).sort()).toEqual(['common', 'food', 'pharma']);
+    expect(registry.list().map((p) => p.id).sort()).toEqual(['common', 'food', 'iia', 'pharma']);
     for (const c of registry.controls.values()) expect(c.clauseRefs.every((r) => registry.clauses.has(r))).toBe(true);
   });
 
