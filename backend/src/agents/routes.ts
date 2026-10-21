@@ -70,7 +70,9 @@ export function agentRoutes(svc: AuditService, cfg: AgentConfig) {
   // The judgment memo for a subject (e.g. 'scope'), as data and as the markdown the panel shows.
   r.get('/api/engagements/:id/memos/:subjectKey', readers, wrap(async (req, res) => {
     const key = param(req, 'subjectKey');
-    const memo = (await svc.engagement(param(req, 'id'))).memos[key];
+    const memos = (await svc.engagement(param(req, 'id'))).memos;
+    // Own keys only: a key such as `constructor` must be a 404, not an inherited object.
+    const memo = Object.hasOwn(memos, key) ? memos[key] : undefined;
     if (!memo) throw new AppError(404, `No memo for ${key}`);
     res.json({ memo, markdown: renderMemo(memo) });
   }));

@@ -29,7 +29,7 @@ describe('the engagement context (spec §3.1) [REQ-35]', () => {
   it('reopens an approved scope, but not when re-saved unchanged, and locks once the RCM gate is approved', async () => {
     const { svc } = await appWithDevUsers();
     const e = await svc.createEngagement({ ...NEW_ENGAGEMENT, context: CONTEXT }, auditor);
-    const { run } = await startRun(svc, defaultAgentConfig(), e.id, auditor);
+    await startRun(svc, defaultAgentConfig(), e.id, auditor);
     const worker = new AgentWorker(svc, defaultAgentConfig(), { id: 'w-ctx' });
     await worker.drain();
     const scopeGate = (await listGates(svc.db.kysely, e.id)).find((g) => g.kind === 'scope' && g.state === 'open')!;
@@ -49,7 +49,7 @@ describe('the engagement context (spec §3.1) [REQ-35]', () => {
     const rcm = (await listGates(svc.db.kysely, e.id)).find((g) => g.kind === 'rcm' && g.state === 'open')!;
     await svc.signGate(rcm.id, 'approve', 'ok', reviewer, unattended);
     await expect(svc.setEngagementContext(e.id, CONTEXT, auditor)).rejects.toMatchObject({ status: 409, code: 'CONTEXT_LOCKED' });
-    void run;
+
   });
 });
 
