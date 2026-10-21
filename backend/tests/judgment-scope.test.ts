@@ -136,6 +136,18 @@ describe('the scope module with the judgment layer (spec §5.1, §5.2)', () => {
     expect(twice.memos.scope.calls).toEqual(drafted.memos.scope.calls);
   });
 
+  it('sends the factor text to the model only inside the engagement-context data fence (spec §5.6)', async () => {
+    const model = new FakeProvider((req) => scopeAnswerFrom(req, {}));
+    const svc = new AuditService(await testDb(), registry, model, LENIENT);
+    const e = await svc.createEngagement({ ...COMMON, context: INCIDENT }, auditor);
+    await svc.runModule(e.id, 'scope', auditor);
+    const prompt = model.requests[0].user;
+    const fence = /<data source="engagement-context">[\s\S]*?<\/data>/g;
+    expect(prompt.match(fence)?.join('')).toContain(INCIDENT.factors[0].description);
+    expect(prompt.replace(fence, '')).not.toContain(INCIDENT.factors[0].description);
+    expect(prompt).toMatch(/risk factors: 1 \(see engagement-context\)/);
+  });
+
   it('refuses a control the model lists twice, and keeps its raise to one step', async () => {
     const model = new FakeProvider((req) => {
       const a = scopeAnswerFrom(req, { 'CMN-GOV-01': 'High' });

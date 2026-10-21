@@ -79,13 +79,15 @@ export const scopeModule: AuditModule<ScopeOutput> = {
     const overlayRationale = new Map<string, string[]>();
     const ruleRisk = new Map(items.map((i) => [i.controlId, i.assessedRisk]));
     const seen = new Set<string>();
+    // Factor text is a person's writing: it reaches the model only inside the engagement-context fence (spec §5.6), so
+    // a candidate line gives just the count.
     const drafted = await askModel(
       ctx,
       SYSTEM_PREAMBLE,
       `Audit details and scope statement:\n${asData('workpaper:scope', { audit: e.name, auditType: e.auditType, entity: e.entity, site: e.site, scopeStatement: e.scopeStatement })}\n\n` +
         (e.context ? `What the auditor recorded about the business (facts that bear on risk):\n${asData('engagement-context', { factors: e.context.factors, background: e.context.background })}\n\n` : '') +
         `Candidate controls (id | process area | title | assessed risk | keyword relevance):\n` +
-        items.map((i) => `${i.controlId} | ${i.processArea} | ${ctx.registry.controls.get(i.controlId)!.title} | ${i.assessedRisk} | ${i.relevance}` + (i.riskFactors.length ? `\n  risk factors: ${i.riskFactors.join('; ')}` : '')).join('\n') +
+        items.map((i) => `${i.controlId} | ${i.processArea} | ${ctx.registry.controls.get(i.controlId)!.title} | ${i.assessedRisk} | ${i.relevance}` + (i.riskFactors.length ? `\n  risk factors: ${i.riskFactors.length} (see engagement-context)` : '')).join('\n') +
         `\n\nFor every candidate decide whether it is in scope for this audit and give a one-sentence rationale tied to the scope statement.` +
         `\nOptionally, set assessedRisk on a candidate if the facts above justify a higher risk. You may raise it by one step only (Low to Medium, or Medium to High), never lower it, and you must say why in the rationale.` +
         `\nOptionally, give coverageStatement (one sentence that names every process area left out of scope) and exclusions (a reason for each process area you leave out).`,
