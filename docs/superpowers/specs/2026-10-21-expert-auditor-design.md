@@ -115,7 +115,7 @@ Entered at engagement creation (optional) or on the Planning tab, by preparer ro
 
 ### 3.2 Workpaper fields added (agent-written, before any gate)
 
-- `ScopeItem`: `assessedRisk: RiskRating`, `riskFactors: string[]` (factor descriptions that raised it). `inherentRisk` keeps the library rating.
+- `ScopeItem`: `assessedRisk: RiskRating`, `riskFactors: string[]` (factor descriptions that raised it). `inherentRisk` keeps the library rating. `decidedBy?: string` (added in 8A): set by the scope-decision endpoint when a person flips `included`; only items with it are pinned across an agent redraft, and an agent write may not add or change it (rail). Hand decisions saved before 8A carry none and are redone once by the next redraft; no backfill, so pre-8A scope hashes stay put. Excluding `decidedBy` from the scope content hash and backfilling it from `human:scope-decision` trail events is left to a later plan.
 - `Engagement.coverage: { excluded: { processArea: string; reason: string }[]; statement: string }`.
 - `RcmRow`: `assessedRisk: RiskRating`, `samplingRationale: string`. Tolerance is not on the row (§3.3).
 - `TestPlan`: `recommendedToleranceRate: number` (the agent's suggestion, never applied by itself).
@@ -186,6 +186,8 @@ interface JudgmentMemo {
 ```
 
 Memos are rendered to Markdown for the gate panel and to a data block for the policy. They are never instructions.
+
+**As built in 8A:** a person's scope edit after the memo recomputes `coverage` and adds or replaces one `forTheReviewer` line saying the scope was edited by hand; the agent's calls stay as written. A call's `source` is `'model'` when the model's text was accepted for it (the coverage statement or an exclusion reason), `'rules'` otherwise; the UI shows the source beside each call.
 
 ## 4. Standards content
 
@@ -341,7 +343,7 @@ UI (existing tabs; no new page):
 
 **QA:** each new check on fixtures, offline and with a fake model; the model can still only add issues or lower the score.
 
-**Injection:** the hostile memo case (§6); a context `background` that tells the scope model to include everything (the context is data, and inclusion still needs the threshold); an observation that tells the gaps model to rate Low (the rating is the matrix).
+**Injection:** the hostile memo case (§6); a context `background` that tells the scope model to include everything (the context is data: the background text reaches no instruction position, the model's inclusions stay per-candidate overlay decisions bounded by the rails and QA as in §5.2, and the memo and coverage statement still account for every exclusion); an observation that tells the gaps model to rate Low (the rating is the matrix).
 
 **Integration (Testcontainers):**
 - Context set at creation → scope gate shows a risk assessment and memo; a factor added after the scope gate is approved → the scope goes back through QA and a fresh gate.
@@ -388,4 +390,5 @@ UI (existing tabs; no new page):
 
 - **The user's:** the boundary (§1.1 row 1). Chat assistant as the next project.
 - **Mine, open to challenge:** deterministic-first with tighten-only overlays; conservative conclusion floor with person-set tolerance; the standards as a pack; memos as subject content; the specific thresholds, tables, matrix and opinion rule in §5; tolerances and responses in their own tables outside the hashes; no new gate or subject; the context locked after the RCM gate; responses accepted until the report gate is approved, with redraft churn while it is open; the CAE's named opinion honoured in either direction; `rating` read-only with people editing likelihood and impact; methodology citations exempt from the trust gate; a touched area always gets a control into scope.
+- **Made during 8A (2026-10-21):** only people's scope decisions are pinned across a redraft (`ScopeItem.decidedBy`, §3.2), with the one-time transition cost for pre-8A hand decisions; a hand edit after the memo recomputes coverage and is named in `forTheReviewer` (§3.4); the model is credited on a coverage call only when its text was accepted; the scope prompt shows candidates a factor count, never factor text; the `iia` pack is hidden from the pack list and the default search, refused as an engagement pack, and never retrieved for citations; memo wording for a factor with no process areas ("the whole entity") is for 8B; the §8 injection case was reworded to match §5.2 as built: a model inclusion is a tightening, so it needs no threshold, and the defence against a hostile background is data placement, rails, QA and the gate, not the threshold.
 - **Left to the builder:** module boundaries inside `judgment/`, memo rendering, the exact clause list after verification, migration details, UI layout within the existing tabs.
