@@ -2,26 +2,11 @@ import { z } from 'zod';
 import type { AuditModule } from '../module';
 import { rcmCitationGate, toCitation } from '../qa';
 import { trustActions } from '../trust';
-import type { Citation, Frequency, RcmRow, RiskRating } from '../types';
+import type { Citation, RcmRow } from '../types';
 import { asData } from '../llm/prompt';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
-
-// Sample sizes by control frequency, [lower risk, high risk]. A common
-// internal-audit convention; calibrate to the client's methodology.
-const SAMPLE_TABLE: Record<Frequency, [number, number]> = {
-  Annual: [1, 1],
-  Quarterly: [2, 2],
-  Monthly: [2, 3],
-  Weekly: [5, 10],
-  Daily: [20, 30],
-  'Per event': [25, 40],
-  'Per batch': [10, 20],
-};
-
-export function sampleSize(frequency: Frequency, risk: RiskRating): number {
-  const [low, high] = SAMPLE_TABLE[frequency];
-  return risk === 'High' ? high : low;
-}
+import { sampleSize } from '../../judgment/sampling';
+export { sampleSize } from '../../judgment/sampling';
 
 const ModelRcm = z.object({
   rows: z.array(
