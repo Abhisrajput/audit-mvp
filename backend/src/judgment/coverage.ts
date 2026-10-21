@@ -3,7 +3,7 @@
 
 import type { Coverage, EngagementContext, RiskRating } from '../engine/types';
 import { factorsFor } from './context';
-import { isTouched } from './risk-assessment';
+import { isTouched, RANK } from './risk-assessment';
 
 /** Today's thresholds: High-rated controls need less relevance than the rest. */
 export const INCLUSION_THRESHOLD = { High: 0.25, other: 0.30 } as const;
@@ -17,8 +17,6 @@ export function includedByRule(assessedRisk: RiskRating, relevance: number): boo
 
 /** A candidate as the scope module sees it before inclusion is decided. */
 export interface Candidate { controlId: string; processArea: string; inherentRisk: RiskRating; assessedRisk: RiskRating; relevance: number }
-
-const RANK: Record<RiskRating, number> = { Low: 0, Medium: 1, High: 2 };
 
 /** Candidates grouped by area, areas in order of first appearance. */
 function byArea(candidates: Candidate[]): Map<string, Candidate[]> {

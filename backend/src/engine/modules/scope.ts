@@ -2,12 +2,13 @@ import { z } from 'zod';
 import { namedAreas } from '../../judgment/context';
 import { contextInclusions, coverageStatement, excludedAreas, includedByRule, statementCoversAll, type Candidate } from '../../judgment/coverage';
 import { scopeMemo } from '../../judgment/memo';
-import { acceptsOverlay, areaRisk, assessControl } from '../../judgment/risk-assessment';
+import { acceptsOverlay, areaRisk, assessControl, RANK } from '../../judgment/risk-assessment';
 import { tokenize } from '../grounding';
 import type { AuditModule } from '../module';
 import { toCitation } from '../qa';
 import type { Citation, Coverage, JudgmentMemo, ScopeItem } from '../types';
 import { asData } from '../llm/prompt';
+import { keepScopeDecisions } from '../../agents/rails';
 import { canonicalJson } from '../trail';
 import { askModel, SYSTEM_PREAMBLE } from './llm-step';
 
@@ -16,8 +17,6 @@ const ModelScope = z.object({
   coverageStatement: z.string().optional(),
   exclusions: z.array(z.object({ processArea: z.string(), reason: z.string() })).optional(),
 });
-
-const RANK = { Low: 0, Medium: 1, High: 2 } as const;
 
 /** What the module produces: the proposed items, the coverage statement and the judgment memo. */
 export interface ScopeOutput { items: ScopeItem[]; coverage: Coverage; memo: JudgmentMemo }
@@ -78,6 +77,8 @@ export const scopeModule: AuditModule<ScopeOutput> = {
 
     const modelNotes: string[] = [];
     const overlayRationale = new Map<string, string[]>();
+    const ruleRisk = new Map(items.map((i) => [i.controlId, i.assessedRisk]));
+    const seen = new Set<string>();
     const drafted = await askModel(
       ctx,
       SYSTEM_PREAMBLE,
@@ -98,21 +99,32 @@ export const scopeModule: AuditModule<ScopeOutput> = {
           ctx.gate({ gate: 'library-only', outcome: 'fail', target: d.controlId, detail: 'Model proposed a control that is not in the library; ignored', action: 'blocked' });
           continue;
         }
-        // The model may raise a rule rating one step; anything else is refused and the rule value stands.
-        if (d.assessedRisk && d.assessedRisk !== item.assessedRisk) {
-          if (acceptsOverlay(item.assessedRisk, d.assessedRisk)) {
-            modelNotes.push(`Model raised the risk of ${item.controlId} from ${item.assessedRisk} to ${d.assessedRisk}: ${d.rationale}`);
+        if (seen.has(d.controlId)) {
+          ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: d.controlId, detail: 'Model listed the control twice; the repeat is ignored', action: 'blocked' });
+          continue;
+        }
+        seen.add(d.controlId);
+        // The model may raise the rule rating one step; anything else is refused and the rule value stands.
+        const rule = ruleRisk.get(d.controlId)!;
+        if (d.assessedRisk && d.assessedRisk !== rule) {
+          if (acceptsOverlay(rule, d.assessedRisk)) {
+            modelNotes.push(`Model raised the risk of ${item.controlId} from ${rule} to ${d.assessedRisk}: ${d.rationale}`);
             overlayRationale.set(item.processArea, [...(overlayRationale.get(item.processArea) ?? []), d.rationale]);
             item.assessedRisk = d.assessedRisk;
           } else {
-            ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: item.controlId, detail: `Model proposed ${d.assessedRisk} for a control the rules rate ${item.assessedRisk}; only a one-step raise is allowed, so the rule value stands`, action: 'blocked' });
+            ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: item.controlId, detail: `Model proposed ${d.assessedRisk} for a control the rules rate ${rule}; only a one-step raise is allowed, so the rule value stands`, action: 'blocked' });
           }
         }
         item.included = d.included;
-        // A context inclusion keeps its own rationale (the memo reads it) as long as the model leaves the control in.
-        if (!(d.included && contextIncluded.has(item.controlId))) item.rationale = d.rationale;
+        // A context inclusion keeps the rules' rationale as long as the model leaves the control in. Model text never
+        // carries the rules' "included: " marker.
+        if (!(d.included && contextIncluded.has(item.controlId))) item.rationale = d.rationale.replace(/^\s*included:\s*/i, '');
       }
     }
+
+    // On an agent rework, people's earlier in/out decisions win. Pin them now, so the coverage, the memo and the hash
+    // are built from the scope that will be saved.
+    if (ctx.input.keepDecisions === true && e.scope.length) keepScopeDecisions(e.scope, items);
 
     // The model's raise counts for the memo only where it moved the area's risk.
     const modelRaises = [...overlayRationale].filter(([area]) => RANK[areaRisk(items.filter((i) => i.processArea === area))] > RANK[areaRiskBefore.get(area)!])
@@ -143,7 +155,7 @@ export const scopeModule: AuditModule<ScopeOutput> = {
     items = items.sort((a, b) => Number(b.included) - Number(a.included) || b.relevance - a.relevance);
     ctx.step('result', `${items.filter((i) => i.included).length} controls proposed in scope`);
     const memo = scopeMemo({
-      items, coverage, context: e.context, modelNotes, modelRaises, producedAt: new Date().toISOString(),
+      items, coverage, context: e.context, modelNotes, modelRaises, contextIncluded: [...contextIncluded.keys()], producedAt: new Date().toISOString(),
       unknownAreas: namedAreas(e.context).filter((area) => !candidatesNow.some((c) => c.processArea === area)),
     });
     return { items, coverage, memo };

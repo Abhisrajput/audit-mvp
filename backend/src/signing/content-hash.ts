@@ -76,7 +76,7 @@ export function signatureState(s: SignOff): 'valid' | 'broken' | 'legacy' {
 /** SHA-256 of a workpaper's content: what a gate and its signature are bound to (agent spec §4.4). */
 export function workpaperContentHash(kind: WorkpaperKind, e: Engagement): string {
   const content =
-    kind === 'scope' ? (e.coverage === null && !e.memos?.scope ? e.scope : { items: e.scope, coverage: e.coverage, memo: e.memos?.scope })
+    kind === 'scope' ? (e.coverage == null && !e.memos?.scope ? e.scope : { items: e.scope, coverage: e.coverage, memo: e.memos?.scope })
     : kind === 'rcm' ? e.rcm
     : kind === 'test_plans' ? e.testPlans ?? {}
     : e.report ? { markdown: e.report.markdown, includedFindingIds: e.report.includedFindingIds, excludedFindingIds: e.report.excludedFindingIds } : null;

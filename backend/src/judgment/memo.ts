@@ -2,10 +2,9 @@
 // it leans on, written so a reviewer can sign against it. Pure: no I/O.
 
 import type { Coverage, EngagementContext, JudgmentCall, JudgmentMemo, RiskRating, ScopeItem } from '../engine/types';
-import { areaRisk } from './risk-assessment';
+import { factorsFor } from './context';
+import { areaRisk, RANK } from './risk-assessment';
 import { IIA } from './standards';
-
-const RANK: Record<RiskRating, number> = { Low: 0, Medium: 1, High: 2 };
 
 /** A judgment call; the source is 'rules' unless the caller says otherwise. */
 export function call(partial: Omit<JudgmentCall, 'source'> & { source?: JudgmentCall['source'] }): JudgmentCall {
@@ -13,7 +12,7 @@ export function call(partial: Omit<JudgmentCall, 'source'> & { source?: Judgment
 }
 
 /** The scope memo: one call per area whose assessed risk differs from the library (and a "no change" summary when none), one call for the coverage, one per context inclusion; forTheReviewer lists unverified model claims and any factor naming an unknown area. */
-export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string; modelRaises?: { processArea: string; rationale: string }[] }): JudgmentMemo {
+export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string; modelRaises?: { processArea: string; rationale: string }[]; contextIncluded?: string[] }): JudgmentMemo {
   const { items, coverage } = input;
   const calls: JudgmentCall[] = [];
 
@@ -60,13 +59,15 @@ export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; conte
     standard: [IIA.scope],
   }));
 
+  // Inclusion calls come from the ids the rules chose, never from the rationale text, which a model can write.
+  const chosen = new Set(input.contextIncluded ?? []);
   for (const item of items) {
-    if (!item.rationale?.startsWith('included: ')) continue;
-    const reason = item.rationale.slice('included: '.length);
+    if (!chosen.has(item.controlId) || !item.included) continue;
+    const reason = factorsFor(input.context, item.processArea)[0]?.description ?? '';
     calls.push(call({
       question: `Why ${item.controlId} is in scope`,
       decision: `Included, although its relevance is below the threshold`,
-      rationale: item.rationale,
+      rationale: `included: ${reason}`,
       basis: [reason],
       standard: [IIA.riskAssessment, IIA.scope],
     }));

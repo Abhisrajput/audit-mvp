@@ -296,7 +296,8 @@ export class AuditService {
     const view = mod.id === 'report'
       ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
       : snapshot;
-    const input = { ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
+    // keepDecisions: the scope module pins people's earlier in/out decisions before it builds coverage and the memo.
+    const input = { keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
     const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting, opts.llm ?? null);
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
       // Lock order is engagement (taken by mutate), then run: a worker that lost the run, or a cancelled run, saves nothing.

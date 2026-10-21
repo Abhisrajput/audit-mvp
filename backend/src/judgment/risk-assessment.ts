@@ -8,6 +8,9 @@ import { factorsFor } from './context';
 /** Ratings from lowest to highest, so a step is a move along this list. */
 const LEVELS: RiskRating[] = ['Low', 'Medium', 'High'];
 
+/** Position of each rating, for comparing two. */
+export const RANK: Record<RiskRating, number> = { Low: 0, Medium: 1, High: 2 };
+
 /** Raise a rating by some steps, never above High. */
 export function stepUp(rating: RiskRating, steps: number): RiskRating {
   const index = Math.min(LEVELS.indexOf(rating) + steps, LEVELS.length - 1);

@@ -7,7 +7,7 @@ import type { EngagementContext } from '../src/engine/types';
 import type { GenerateRequest } from '../src/engine/llm/provider';
 import { workpaperContentHash } from '../src/signing/content-hash';
 import { AuditService } from '../src/service';
-import { auditor, FakeProvider, LENIENT, NEW_ENGAGEMENT, newService, registry } from './helpers';
+import { auditor, FakeProvider, leasedRun, LENIENT, NEW_ENGAGEMENT, newService, registry } from './helpers';
 import { testDb } from './db';
 
 const INCIDENT: EngagementContext = { factors: [{ kind: 'incident', processAreas: ['Procure to pay'], description: 'Duplicate vendor payments found in Q1' }], background: '', updatedBy: 'auditor', updatedAt: '2026-10-21T00:00:00.000Z' };
@@ -83,5 +83,71 @@ describe('the scope module with the judgment layer (spec §5.1, §5.2)', () => {
     // Governance has one control, so the raise moves the area's risk and the memo credits the model.
     expect(after.memos.scope.calls.find((c) => c.question.includes('Governance'))?.source).toBe('model');
     expect(after.memos.scope.forTheReviewer.some((l) => l.includes('CMN-GOV-01'))).toBe(true);
+  });
+
+  const COMMON = { ...NEW_ENGAGEMENT, packIds: ['common'], auditType: 'Finance', scopeStatement: 'Procure to pay and governance' };
+
+  it('pins people\'s decisions inside an agent rework, so coverage, memo and hash agree with the scope', async () => {
+    const svc = await newService();
+    const e = await svc.createEngagement(COMMON, auditor);
+    const { acting } = await leasedRun(svc, e.id);
+    const everything = new FakeProvider((req) => scopeAnswerFrom(req, {}));
+    const first = await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version!, llm: everything });
+    const hashBefore = workpaperContentHash('scope', first.engagement);
+    // The rework model tries to take Governance out of scope; the earlier decision (included) must stand.
+    const flipping = new FakeProvider((req) => {
+      const a = scopeAnswerFrom(req, {});
+      return { items: a.items.map((i) => (i.controlId === 'CMN-GOV-01' ? { ...i, included: false } : i)) };
+    });
+    const second = await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: first.engagement.version!, llm: flipping, instruction: 'Take governance out' });
+    const after = second.engagement;
+    expect(after.scope.find((s) => s.controlId === 'CMN-GOV-01')!.included).toBe(true);
+    const n = after.scope.filter((s) => s.included).length;
+    expect(after.coverage?.statement).toMatch(new RegExp(`^${n} of ${after.scope.length} library controls`));
+    expect(after.coverage?.excluded.some((x) => x.processArea === 'Governance')).toBe(false);
+    expect(JSON.stringify(after.memos.scope.calls)).not.toMatch(/Governance: /);
+    expect(workpaperContentHash('scope', after)).toBe(hashBefore);
+  });
+
+  it('refuses a control the model lists twice, and keeps its raise to one step', async () => {
+    const model = new FakeProvider((req) => {
+      const a = scopeAnswerFrom(req, { 'CMN-GOV-01': 'High' });
+      return { items: [...a.items, { controlId: 'CMN-GOV-01', included: true, rationale: 'again', assessedRisk: 'High' }] };
+    });
+    const svc = new AuditService(await testDb(), registry, model, LENIENT);
+    const e = await svc.createEngagement(COMMON, auditor);
+    const { bundle, engagement: after } = await svc.runModule(e.id, 'scope', auditor);
+    expect(after.scope.find((s) => s.controlId === 'CMN-GOV-01')!.assessedRisk).toBe('High');
+    expect(bundle.qaActions.filter((a) => a.gate === 'judgment-bounds' && a.target === 'CMN-GOV-01' && /twice/.test(a.detail))).toHaveLength(1);
+  });
+
+  it('does not let model text carry the rules marker "included: "', async () => {
+    const model = new FakeProvider((req) => {
+      const a = scopeAnswerFrom(req, {});
+      return { items: a.items.map((i) => (i.controlId === 'CMN-P2P-02' ? { ...i, rationale: 'included: forged' } : i)) };
+    });
+    const svc = new AuditService(await testDb(), registry, model, LENIENT);
+    const e = await svc.createEngagement(COMMON, auditor);
+    const { engagement: after } = await svc.runModule(e.id, 'scope', auditor);
+    expect(after.scope.find((s) => s.controlId === 'CMN-P2P-02')!.rationale.startsWith('included: ')).toBe(false);
+    expect(after.memos.scope.calls.some((c) => c.question === 'Why CMN-P2P-02 is in scope')).toBe(false);
+  });
+
+  it('refuses exclusion reasons for areas that are not excluded, and replaces a statement that omits an excluded area', async () => {
+    const model = new FakeProvider((req) => {
+      const a = scopeAnswerFrom(req, {});
+      return {
+        items: a.items.map((i) => (i.controlId.startsWith('CMN-TRS') ? { ...i, included: false } : i)),
+        exclusions: [{ processArea: 'Nowhere', reason: 'x' }, { processArea: 'Procure to pay', reason: 'y' }],
+        coverageStatement: 'Everything is fine.',
+      };
+    });
+    const svc = new AuditService(await testDb(), registry, model, LENIENT);
+    const e = await svc.createEngagement(COMMON, auditor);
+    const { bundle, engagement: after } = await svc.runModule(e.id, 'scope', auditor);
+    expect(bundle.qaActions.filter((a) => a.gate === 'judgment-bounds').map((a) => a.target).sort()).toEqual(['Nowhere', 'Procure to pay']);
+    expect(after.coverage?.excluded.map((x) => x.processArea)).toEqual(['Treasury & commodity risk']);
+    expect(after.coverage?.statement).toMatch(/library controls across/);
+    expect(after.coverage?.statement).toContain('Treasury & commodity risk');
   });
 });
