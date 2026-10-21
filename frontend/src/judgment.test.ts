@@ -15,6 +15,10 @@ describe('context helpers', () => {
     expect(contextProblems({ factors: [], background: '' })).toEqual([]);
     expect(contextProblems({ factors: [{ kind: 'change', processAreas: [], description: '' }], background: '' })).toEqual(['Factor 1 needs a description']);
     expect(contextProblems({ factors: [], background: 'x'.repeat(4001) })[0]).toMatch(/4000/);
+    const named = (processAreas: string[]) => contextProblems({ factors: [{ kind: 'change', processAreas, description: 'd' }], background: '' });
+    expect(named(Array.from({ length: 50 }, (_, i) => `Area ${i}`))).toEqual([]);
+    expect(named(Array.from({ length: 51 }, (_, i) => `Area ${i}`))).toEqual(['Factor 1 names more than 50 areas']);
+    expect(named(['x'.repeat(101)])).toEqual(['Factor 1 names an area over 100 characters']);
   });
 
   it('locks after an approved RCM gate and lists the raised areas', () => {

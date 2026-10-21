@@ -9,7 +9,7 @@ export const FACTOR_LABELS: Record<FactorKind, string> = {
 };
 
 // The server's limits (backend judgment/context.ts), repeated here so problems show before a save.
-const LIMITS = { factors: 50, description: 500, background: 4000 };
+const LIMITS = { factors: 50, description: 500, background: 4000, areas: 50, areaName: 100 };
 const RANK: Record<RiskRating, number> = { Low: 0, Medium: 1, High: 2 };
 
 /** Distinct process areas of the engagement's scope candidates (after a scope run) or of the chosen packs' controls (before), sorted. */
@@ -25,6 +25,8 @@ export function contextProblems(input: { factors: ContextFactor[]; background: s
   input.factors.forEach((f, i) => {
     if (!f.description.trim()) problems.push(`Factor ${i + 1} needs a description`);
     else if (f.description.length > LIMITS.description) problems.push(`Factor ${i + 1} is over ${LIMITS.description} characters`);
+    if (f.processAreas.length > LIMITS.areas) problems.push(`Factor ${i + 1} names more than ${LIMITS.areas} areas`);
+    if (f.processAreas.some((a) => a.trim().length > LIMITS.areaName)) problems.push(`Factor ${i + 1} names an area over ${LIMITS.areaName} characters`);
   });
   if (input.background.length > LIMITS.background) problems.push(`Background is over ${LIMITS.background} characters`);
   return problems;

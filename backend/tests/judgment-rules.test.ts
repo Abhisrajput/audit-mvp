@@ -4,6 +4,7 @@ import { CONTEXT_LIMITS, contextBasis, EngagementContextInputSchema, factorsFor 
 import { acceptsOverlay, areaRisk, assessControl, isTouched, stepUp } from '../src/judgment/risk-assessment';
 import { contextInclusions, coverageStatement, excludedAreas, includedByRule, INCLUSION_THRESHOLD, statementCoversAll } from '../src/judgment/coverage';
 import { renderMemo, scopeMemo } from '../src/judgment/memo';
+import { rootBasis } from '../src/agents/subjects';
 import { IIA } from '../src/judgment/standards';
 
 const ctx = (factors: object[], background = '') => ({ factors, background, updatedBy: 'u', updatedAt: 't' }) as never;
@@ -46,11 +47,26 @@ describe('the context input (spec §3.1)', () => {
     expect(EngagementContextInputSchema.safeParse({ factors: [f('change', [' '])], background: '' }).success).toBe(false);
   });
 
+  it('refuses a blank description, and caps the areas a factor names and their length', () => {
+    expect(EngagementContextInputSchema.safeParse({ factors: [f('change', ['A'], '   ')], background: '' }).success).toBe(false);
+    const areas = (n: number, len = 3) => Array.from({ length: n }, (_, i) => `${i}`.padStart(len, 'a'));
+    expect(EngagementContextInputSchema.safeParse({ factors: [f('change', areas(CONTEXT_LIMITS.areas, CONTEXT_LIMITS.areaName))], background: '' }).success).toBe(true);
+    const tooMany = EngagementContextInputSchema.safeParse({ factors: [f('change', areas(CONTEXT_LIMITS.areas + 1))], background: '' });
+    expect(tooMany.success).toBe(false);
+    expect(JSON.stringify(tooMany.error?.issues)).toMatch(/processAreas/);
+    expect(EngagementContextInputSchema.safeParse({ factors: [f('change', areas(1, CONTEXT_LIMITS.areaName + 1))], background: '' }).success).toBe(false);
+  });
+
   it('hashes content only: who and when are not part of the basis', () => {
     const a = ctx([f('change', ['A'])], 'bg');
     const b = { ...a, updatedBy: 'someone else', updatedAt: 'later' };
     expect(contextBasis(a)).toEqual(contextBasis(b));
     expect(contextBasis(null)).toBeUndefined();
+    // An empty form is no context: saving one on an older engagement must not move its scope basis.
+    expect(contextBasis(ctx([], '  \n '))).toBeUndefined();
+    const plain = { scopeStatement: 's', packIds: ['common'], context: null } as never;
+    expect(rootBasis({ ...(plain as object), context: ctx([], ' ') } as never)).toBe(rootBasis(plain));
+    expect(contextBasis(ctx([], 'bg '))).toEqual({ factors: [], background: 'bg ' });
     expect(factorsFor(a, 'A')).toHaveLength(1);
     expect(factorsFor(a, 'B')).toHaveLength(0);
   });
