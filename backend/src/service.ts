@@ -299,7 +299,7 @@ export class AuditService {
     const view = mod.id === 'report'
       ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
       : snapshot;
-    // keepDecisions: the scope module pins people's earlier in/out decisions before it builds coverage and the memo.
+    // keepDecisions: the scope module pins the in/out decisions people made (decidedBy) before it builds coverage and the memo.
     const input = { keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
     const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting, opts.llm ?? null);
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
@@ -359,7 +359,10 @@ export class AuditService {
       for (const it of items) {
         const s = e.scope.find((x) => x.controlId === it.controlId);
         if (!s) throw new AppError(400, `Control ${it.controlId} is not a scope candidate`);
+        // The screen sends every item; only a flag that moves is this person's decision, and a redraft keeps it.
+        if (s.included === it.included) continue;
         s.included = it.included;
+        s.decidedBy = actor.id;
       }
       emit(this.humanBundle(e, 'human:scope-decision', actor, items, { included: e.scope.filter((s) => s.included).map((s) => s.controlId) }));
       return e;

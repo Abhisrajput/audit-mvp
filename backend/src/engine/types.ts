@@ -127,6 +127,8 @@ export interface ScopeItem {
   rationale: string;
   citations: Citation[];
   included: boolean;
+  /** Set when a person decided the in/out flag; absent on agent-drafted and pre-8A rows. */
+  decidedBy?: string;
 }
 
 export interface RcmRow {

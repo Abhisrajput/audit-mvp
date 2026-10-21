@@ -3,11 +3,12 @@ import { defaultAgentConfig } from '../src/agents/config';
 import { startRun } from '../src/agents/runs';
 import { subjectInfo } from '../src/agents/subjects';
 import { listGates } from '../src/agents/gate-repo';
+import { getRun } from '../src/agents/run-repo';
 import { AgentWorker } from '../src/agents/worker';
 import { auditor, NEW_ENGAGEMENT, reviewer, unattended } from './helpers';
 import { appWithDevUsers, signIn } from './http';
 
-const CONTEXT = { factors: [{ kind: 'change' as const, processAreas: ['HACCP'], description: 'New metal detector line 2' }], background: 'Single site.' };
+const CONTEXT = { factors: [{ kind: 'change' as const, processAreas: ['Food safety – HACCP'], description: 'New metal detector line 2' }], background: 'Single site.' };
 
 describe('the engagement context (spec §3.1) [REQ-35]', () => {
   it('is set by people, trailed, and refused past its limits [REQ-35]', async () => {
@@ -29,20 +30,31 @@ describe('the engagement context (spec §3.1) [REQ-35]', () => {
   it('reopens an approved scope, but not when re-saved unchanged, and locks once the RCM gate is approved [REQ-35]', async () => {
     const { svc } = await appWithDevUsers();
     const e = await svc.createEngagement({ ...NEW_ENGAGEMENT, context: CONTEXT }, auditor);
-    await startRun(svc, defaultAgentConfig(), e.id, auditor);
+    const { run } = await startRun(svc, defaultAgentConfig(), e.id, auditor);
     const worker = new AgentWorker(svc, defaultAgentConfig(), { id: 'w-ctx' });
     await worker.drain();
+    // An area of the chosen packs with no control in the first scope: the new factor below names it.
+    const first = await svc.engagement(e.id);
+    const left = first.coverage!.excluded.map((x) => x.processArea);
+    const area = left.includes('IT general controls') ? 'IT general controls' : left[0];
+    expect(area).toBeDefined();
+    expect(first.scope.some((s) => s.processArea === area && s.included)).toBe(false);
     const scopeGate = (await listGates(svc.db.kysely, e.id)).find((g) => g.kind === 'scope' && g.state === 'open')!;
     await svc.signGate(scopeGate.id, 'approve', 'ok', reviewer, unattended);
     const before = subjectInfo(await svc.engagement(e.id), 'scope')!;
     await svc.setEngagementContext(e.id, CONTEXT, auditor);                     // same content
     expect(subjectInfo(await svc.engagement(e.id), 'scope')!.basis).toBe(before.basis);
-    await svc.setEngagementContext(e.id, { ...CONTEXT, factors: [...CONTEXT.factors, { kind: 'incident', processAreas: ['Allergens'], description: 'Undeclared allergen recall' }] }, auditor);
+    await svc.setEngagementContext(e.id, { ...CONTEXT, factors: [...CONTEXT.factors, { kind: 'incident', processAreas: [area], description: 'Access review skipped for a quarter' }] }, auditor);
     expect(subjectInfo(await svc.engagement(e.id), 'scope')!.basis).not.toBe(before.basis);
     await worker.drain();
     const gates = await listGates(svc.db.kysely, e.id);
     expect(gates.filter((g) => g.kind === 'scope')).toHaveLength(2);           // the old one approved, a fresh one open
     expect(gates.find((g) => g.kind === 'scope' && g.state === 'open')).toBeDefined();
+    // The rebuilt scope follows the new context: the named area now has a control in scope, and the run waits on the gate.
+    const rebuilt = await svc.engagement(e.id);
+    expect(rebuilt.scope.some((s) => s.processArea === area && s.included)).toBe(true);
+    expect(rebuilt.coverage!.excluded.map((x) => x.processArea)).not.toContain(area);
+    expect((await getRun(svc.db.kysely, run.id))!.status).not.toBe('needs_human');
     // Approve scope again and the RCM, then the context is locked.
     await svc.signGate(gates.find((g) => g.kind === 'scope' && g.state === 'open')!.id, 'approve', 'ok', reviewer, unattended);
     await worker.drain();

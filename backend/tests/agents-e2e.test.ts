@@ -93,7 +93,7 @@ describe('an agent run, end to end (offline)', () => {
     await worker.drain();
     await devSignGate(manager, 'reviewer', (await openGate('scope')).id, 'reject', 'Bring user-access reviews into scope');
     await worker.drain();
-    // Offline, the scope specialist keeps every decision already made, so its redraft is the same scope: a person takes over.
+    // Offline, the scope specialist's rules give the same scope again (no person decided anything to pin), so a person takes over.
     expect(await state()).toMatchObject({ status: 'needs_human', statusReason: expect.stringMatching(/^rework produced no change: scope/) });
 
     const last = (await svc.engagement(id)).scope.at(-1)!;

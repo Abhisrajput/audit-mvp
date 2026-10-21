@@ -84,20 +84,24 @@ describe('the scope module with the judgment layer (spec §5.1, §5.2)', () => {
     const { acting } = await leasedRun(svc, e.id);
     const everything = new FakeProvider((req) => scopeAnswerFrom(req, {}));
     const first = await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: e.version!, llm: everything });
-    const hashBefore = workpaperContentHash('scope', first.engagement);
-    // The rework model tries to take Governance out of scope; the earlier decision (included) must stand.
-    const flipping = new FakeProvider((req) => {
+    expect(first.engagement.scope.find((s) => s.controlId === 'CMN-GOV-01')!.included).toBe(true);
+    // A person takes Governance's control out; the rework model tries to put it back. The person's decision must stand.
+    const edited = await svc.setScope(e.id, [{ controlId: 'CMN-GOV-01', included: false }], auditor);
+    const restoring = new FakeProvider((req) => {
       const a = scopeAnswerFrom(req, {});
-      return { items: a.items.map((i) => (i.controlId === 'CMN-GOV-01' ? { ...i, included: false } : i)) };
+      return { items: a.items.map((i) => (i.controlId === 'CMN-GOV-01' ? { ...i, included: true } : i)) };
     });
-    const second = await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: first.engagement.version!, llm: flipping, instruction: 'Take governance out' });
+    const second = await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: edited.version!, llm: restoring, instruction: 'Bring governance back' });
     const after = second.engagement;
-    expect(after.scope.find((s) => s.controlId === 'CMN-GOV-01')!.included).toBe(true);
+    expect(after.scope.find((s) => s.controlId === 'CMN-GOV-01')).toMatchObject({ included: false, decidedBy: 'auditor' });
     const n = after.scope.filter((s) => s.included).length;
     expect(after.coverage?.statement).toMatch(new RegExp(`^${n} of ${after.scope.length} library controls`));
-    expect(after.coverage?.excluded.some((x) => x.processArea === 'Governance')).toBe(false);
-    expect(JSON.stringify(after.memos.scope.calls)).not.toMatch(/Governance: /);
-    expect(workpaperContentHash('scope', after)).toBe(hashBefore);
+    // Coverage is built from the pinned scope: an area is excluded exactly when none of its controls is in.
+    const areas = [...new Set(after.scope.map((s) => s.processArea))];
+    expect(after.coverage!.excluded.map((x) => x.processArea).sort()).toEqual(areas.filter((a) => !after.scope.some((s) => s.processArea === a && s.included)).sort());
+    // A second identical rework changes nothing: the hash is built from the scope that was saved.
+    const third = await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: after.version!, llm: restoring, instruction: 'Bring governance back' });
+    expect(workpaperContentHash('scope', third.engagement)).toBe(workpaperContentHash('scope', after));
   });
 
   it('refuses a control the model lists twice, and keeps its raise to one step', async () => {

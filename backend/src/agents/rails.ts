@@ -7,10 +7,26 @@ import { AppError } from '../errors';
 
 const forbidden = (message: string) => new AppError(403, message, 'AGENT_FORBIDDEN');
 
-/** A redrafted scope keeps every in/out decision already made for a control it still proposes. */
+/**
+ * A redrafted scope keeps every in/out decision a person made for a control it still proposes, and who made it. The
+ * agent's own earlier flags are not pinned: the fresh rules result (say, after a context change) takes their place.
+ */
 export function keepScopeDecisions(previous: ScopeItem[], next: ScopeItem[]): void {
-  const decided = new Map(previous.map((s) => [s.controlId, s.included]));
-  for (const s of next) if (decided.has(s.controlId)) s.included = decided.get(s.controlId)!;
+  const decided = new Map(previous.filter((s) => s.decidedBy).map((s) => [s.controlId, s]));
+  for (const s of next) {
+    const person = decided.get(s.controlId);
+    if (!person) continue;
+    s.included = person.included;
+    s.decidedBy = person.decidedBy;
+  }
+}
+
+/** Only a person decides a scope item: an agent may not add, change or drop who decided one. */
+export function assertScopeAttribution(before: ScopeItem[], after: ScopeItem[]): void {
+  const was = new Map(before.map((s) => [s.controlId, s.decidedBy]));
+  for (const s of after) {
+    if (s.decidedBy !== was.get(s.controlId)) throw forbidden(`An agent may not attribute a scope decision to a person (${s.controlId})`);
+  }
 }
 
 /** The findings after redrafting only `rows`: every other finding stays exactly as it was. */
@@ -57,4 +73,5 @@ export function assertWithinRails(before: Engagement, after: Engagement): void {
   const signed = new Map(before.findings.map((f) => [f.id, f.signOffs.length]));
   for (const f of after.findings) if (f.signOffs.length > (signed.get(f.id) ?? 0)) throw forbidden('An agent may not sign');
   assertJustificationsUnchanged(before.testPlans, after.testPlans, after.rcm.map((r) => r.id));
+  assertScopeAttribution(before.scope, after.scope);
 }

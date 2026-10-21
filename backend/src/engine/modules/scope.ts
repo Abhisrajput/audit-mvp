@@ -122,8 +122,8 @@ export const scopeModule: AuditModule<ScopeOutput> = {
       }
     }
 
-    // On an agent rework, people's earlier in/out decisions win. Pin them now, so the coverage, the memo and the hash
-    // are built from the scope that will be saved.
+    // On an agent rework, the in/out decisions people made win; the agent's own earlier flags give way to this run's.
+    // Pin them now, so the coverage, the memo and the hash are built from the scope that will be saved.
     if (ctx.input.keepDecisions === true && e.scope.length) keepScopeDecisions(e.scope, items);
 
     // The model's raise counts for the memo only where it moved the area's risk.
