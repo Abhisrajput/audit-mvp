@@ -126,6 +126,12 @@ describe('the scope memo (spec §3.4)', () => {
     expect(coverageCall(scopeMemo({ ...base, coverageByModel: false })).source).toBe('rules');
     expect(coverageCall(scopeMemo({ ...base, coverageByModel: true })).source).toBe('model');
   });
+
+  it('gives no inclusion call for a context-included control a person then took out', () => {
+    const out = { controlId: 'A1', processArea: 'Lab', inherentRisk: 'Low', assessedRisk: 'Low', riskFactors: [], included: false, rationale: 'included: New LIMS', decidedBy: 'auditor' } as never;
+    const memo = scopeMemo({ items: [out], coverage: { excluded: [{ processArea: 'Lab', reason: 'below relevance threshold' }], statement: '0 of 1…' }, context: ctx([f('change', ['Lab'], 'New LIMS')]), unknownAreas: [], modelNotes: [], producedAt: 't', contextIncluded: ['A1'] });
+    expect(memo.calls.some((c) => c.question.startsWith('Why A1'))).toBe(false);
+  });
 });
 
 describe('review fixes', () => {
