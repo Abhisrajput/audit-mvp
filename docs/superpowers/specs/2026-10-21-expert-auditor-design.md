@@ -28,7 +28,7 @@ This sub-project adds the judgment, following the IIA Global Internal Audit Stan
 |---|---|
 | **The boundary** (the user's decision) | The agent does all the thinking and explains it. A person still signs every gate and records every test result, until evidence upload (sub-project 3) lets the agent evaluate evidence. The agent never signs, never records a test result, never edits a Reviewed finding (REQ-27 stands) |
 | **What autonomy means here** | Fewer stops and real judgment at each one. The signer reads a judgment memo and approves a reasoned call, instead of redoing the work |
-| **Deterministic first** (my call) | Every judgment has a rules version so `LLM_PROVIDER=offline` runs the whole chain. The model overlays within bounds and can only tighten: raise a risk, worsen a severity, add an issue, lower a score or an opinion. The only relaxation anywhere is a tolerance a person sets |
+| **Deterministic first** (my call) | Every judgment has a rules version so `LLM_PROVIDER=offline` runs the whole chain. The model overlays within bounds and can only tighten: raise a risk, worsen a severity, add an issue, lower a score or an opinion. The only relaxations anywhere are made by people, each trailed and shown in the memo: a tolerance an auditor sets (§5.3), a likelihood or impact an auditor lowers (§5.5), and an opinion the CAE names in a rejection (§5.6) |
 | **Conservative floor** (my call) | The existing test-conclusion rule (any exception is Ineffective; the evidence gate enforces it) stays as the default. It matches the regulated posture of the pharma and food packs, and the 25 expert-labelled eval cases encode it. Tolerance is opt-in per row, by an auditor |
 | **Standards as content** (my call) | The IIA Standards are copyrighted like COSO and go in as a content pack of paraphrased clause summaries, marked draft, under the same version-bumped change control. The spec names the standards to cover; the builder verifies titles and numbers against the published text before writing a clause |
 | **Memos are content** (my call) | A judgment memo is part of the subject it explains, so the gate's content hash covers it and the signature vouches for the reasoning, not only the result |
@@ -39,7 +39,7 @@ This sub-project adds the judgment, following the IIA Global Internal Audit Stan
 2. With `LLM_PROVIDER=offline` every one of those is produced by the rules alone, the same every time. Existing eval cases and golden traces pass unchanged.
 3. With a model, no model output can lower an assessed risk below the library rating, relax a conclusion, raise an opinion, or set a tolerance. Tests demonstrate this, including with hostile memo text.
 4. A management response recorded after a finding is approved never breaks the finding's signature, and `verify` stays green.
-5. A change to the engagement context after the scope gate is approved sends the scope back through QA and a fresh gate, as any other basis change does.
+5. A change to the engagement context after the scope gate is approved sends the scope back through QA and a fresh gate, as any other basis change does. Once the RCM gate is approved the context is locked (§3.1).
 
 ### 1.3 Out of scope
 
@@ -109,20 +109,43 @@ interface EngagementContext {
 
 Entered at engagement creation (optional) or on the Planning tab, by preparer roles. The agent never writes it. It is part of the scope subject's basis hash, so changing it after the scope gate reopens the scope (success criterion 5).
 
+**Locked after the RCM gate** (my call). A context change after the RCM is approved would rebuild the RCM, wipe recorded test results and stale every later gate, and incidents are typically discovered during fieldwork. So `PUT /context` is refused with 409 once the engagement has an approved RCM gate, with the message that late matters go into the relevant finding's root cause or a new engagement. The Planning tab shows the context read-only from then on.
+
+**Builder note:** the scope basis must hash identically when `context` is null, so in-flight engagements keep their approved scope gates on deploy.
+
 ### 3.2 Workpaper fields added (agent-written, before any gate)
 
 - `ScopeItem`: `assessedRisk: RiskRating`, `riskFactors: string[]` (factor descriptions that raised it). `inherentRisk` keeps the library rating.
 - `Engagement.coverage: { excluded: { processArea: string; reason: string }[]; statement: string }`.
-- `RcmRow`: `toleranceRate: number` (0 unless an auditor sets it), `samplingRationale: string`.
-- `TestPlan`: `recommendedToleranceRate: number | null` (the agent's suggestion, never applied by itself).
+- `RcmRow`: `assessedRisk: RiskRating`, `samplingRationale: string`. Tolerance is not on the row (§3.3).
+- `TestPlan`: `recommendedToleranceRate: number` (the agent's suggestion, never applied by itself).
 - `TestResult`: `severity: 'none' | 'isolated' | 'systemic' | 'pervasive'`, `severityRationale: string`.
-- `Finding`: `likelihood: 'rare' | 'possible' | 'likely'`, `impact: 'minor' | 'moderate' | 'major'`, `rootCause: { category: 'people' | 'process' | 'system' | 'governance' | 'unknown'; analysis: string; confirmed: boolean }`. `rating` stays and is now derived (§5.5). These are written while the finding is `draft`, so Part 11 content binding is unaffected.
+- `Finding`: `likelihood: 'rare' | 'possible' | 'likely'`, `impact: 'minor' | 'moderate' | 'major'`, `rootCause: { category: 'people' | 'process' | 'system' | 'governance' | 'unknown'; analysis: string; confirmed: boolean }`. `rating` stays and is always the matrix of `likelihood` and `impact` (§5.5): `editFinding` no longer accepts `rating`, and a person edits `likelihood` and `impact` instead, in either direction, trailed as today's edits are and named in the memo. These are written while the finding is `draft`, so Part 11 content binding is unaffected.
 - `AuditReport`: `opinion: { rating: Opinion; basis: string }` and the response table in the markdown.
 - `Engagement.memos: Record<SubjectKey, JudgmentMemo>`.
 
-### 3.3 Management responses (outside signed content)
+### 3.3 Tolerances and management responses (outside signed content)
 
-Approved findings are locked by trigger and bound to signatures, so a response cannot live on the finding.
+Two person-made records live outside every workpaper hash, so recording one never stales an approved gate or triggers a redraft cascade. Each is append-only, names its trail entry, and is read into the engagement view by the modules that need it.
+
+**Tolerances** (my call: outside the RCM and plan hashes). The RCM is signed as a whole and rebuilt from the library on any basis change, and test plans are redrafted whenever a row's hash changes. A tolerance on the row would re-sign the RCM gate and redraft every plan each time an auditor set one, and an RCM rebuild would reset it.
+
+```sql
+CREATE TABLE test_tolerances (
+  id              text PRIMARY KEY,
+  engagement_id   text NOT NULL REFERENCES engagements (id),
+  control_id      text NOT NULL,            -- survives an RCM rebuild; rows are keyed by control
+  rate            numeric(4,3) NOT NULL CHECK (rate >= 0 AND rate <= 0.25),
+  recorded_by     text NOT NULL REFERENCES users (id),
+  recorded_at     timestamptz NOT NULL DEFAULT now(),
+  trail_bundle_id text NOT NULL
+);
+CREATE INDEX test_tolerances_by_control ON test_tolerances (engagement_id, control_id, recorded_at);
+```
+
+The latest row per control is the tolerance in force; none means 0. Recorded through `human:set-tolerance`; refused once the control has a recorded test. The testing module reads it (§5.4), the test result records the rate it applied (`toleranceApplied`), QA flags a rate above the plan's recommendation, and the report lists every non-zero tolerance with who set it.
+
+**Management responses.** Approved findings are locked by trigger and bound to signatures, so a response cannot live on the finding.
 
 ```sql
 CREATE TABLE finding_responses (
@@ -140,7 +163,7 @@ CREATE TABLE finding_responses (
 CREATE INDEX finding_responses_by_finding ON finding_responses (engagement_id, finding_id, recorded_at);
 ```
 
-Append-only (a new row supersedes; the latest per finding is shown). Recorded by auditor or audit manager through a `human:management-response` trail entry. The report includes the latest response per finding, so the report subject's content (and gate hash) covers it; a response recorded after the report gate makes the report stale, as any basis change does.
+Append-only (a new row supersedes; the latest per finding is shown). Recorded by auditor or audit manager through a `human:management-response` trail entry, from the moment a finding is Approved until the report gate is approved; after that it is refused with 409 (tracking actions after issue is sub-project 4). The report's basis includes the latest responses, so the report subject (and its gate hash) covers them. Recording a response while the report gate is open supersedes that gate and the run redrafts; the CAE signs once the auditor has recorded them all, and the Report tab says so. `recordManagementResponse` goes through the engagement mutation path so a waiting run wakes (my call: this churn is accepted; a "waiting for responses" state would add a wait reason and change the golden traces).
 
 ### 3.4 Memo
 
@@ -191,6 +214,8 @@ Standards to cover, by expected title. **The builder verifies every number and t
 
 The `iia` pack is loaded for every engagement as the methodology source: memos and QA cite it; findings keep citing regulations and controls. It never appears in `packIds` and the UI does not offer it as a selectable pack.
 
+Methodology citations (memo `standard[]` and rubric criteria) are exempt from the citation trust gate (REQ-22), which exists to keep unverified regulatory text out of findings; a methodology reference supports no finding. The report's trailer names the `iia` pack's verification status once, so the reader sees that the methodology summaries are draft until an expert verifies them.
+
 ## 5. The judgment points
 
 Each follows the platform pattern: a deterministic draft, a bounded model overlay, QA checks that can only add issues or lower the score, and a memo entry.
@@ -199,7 +224,7 @@ Each follows the platform pattern: a deterministic draft, a bounded model overla
 
 **Inputs:** library controls in the chosen packs, the engagement context.
 
-**Rule:** for each process area, `assessedRisk` = library `riskRating`, stepped up one level for each distinct factor `kind` whose `processAreas` include the area or are empty, capped at High. A step never goes down. `riskFactors` lists the descriptions that applied.
+**Rule:** for each control, `assessedRisk` = library `riskRating`, stepped up one level for each distinct factor `kind` whose `processAreas` include the control's area or are empty, capped at High. A step never goes down. `riskFactors` lists the descriptions that applied. An area's assessed risk, where a rule or the UI needs one, is the maximum over its controls. An area is *touched* when at least one factor applies to it.
 
 **Model overlay:** may raise an area by one further level with a rationale (for example, an incident described in `background` that no factor captures). May not lower. May rewrite rationales.
 
@@ -209,29 +234,29 @@ Each follows the platform pattern: a deterministic draft, a bounded model overla
 
 ### 5.2 Scope and coverage (IIA 13.1, 13.3)
 
-**Rule:** inclusion thresholds are today's, keyed on `assessedRisk` instead of the library rating: High ≥ 0.25, otherwise ≥ 0.30. With no context the result is identical to today, so retrieval eval cases are unchanged. `coverage.excluded` lists every process area in the chosen packs with no included control, with the reason `below relevance threshold` or `excluded by the scope statement` (when the scope statement names the area as out of scope). `coverage.statement` is a fixed sentence built from the counts.
+**Rule:** inclusion thresholds are today's, keyed on `assessedRisk` instead of the library rating: High ≥ 0.25, otherwise ≥ 0.30. In addition, a touched area with no control above threshold gets its highest-relevance control included (ties: the higher library rating), with the rationale `included: <factor description>`; a factor naming an area is an auditor's instruction to look there. With no context the result is identical to today, so retrieval eval cases and golden traces are unchanged. `coverage.excluded` lists every process area in the chosen packs with no included control, with the reason `below relevance threshold` or `excluded by the scope statement` (when the scope statement names the area as out of scope). `coverage.statement` is a fixed sentence built from the counts.
 
 **Model overlay:** as today (included flag and rationale per candidate), plus it may rewrite the coverage statement and the exclusion reasons. It may not remove an area from `excluded` without including a control in it.
 
-**QA:** blocking when a High `assessedRisk` area is excluded with the reason `below relevance threshold` (replaces today's advisory for a High library rating); advisory when the coverage statement does not mention every excluded area.
+**QA:** blocking when a *touched* area whose assessed risk is High is excluded (a backstop against the model undoing the rule; the rules draft never produces it, and `keepScopeDecisions` pins the inclusion on rework). Today's advisory for an excluded High library-rated area stays an advisory, so the golden-trace engagements, which exclude several, still reach the report gate. Advisory when the coverage statement does not mention every excluded area.
 
 ### 5.3 Test design: sampling and tolerance (IIA 13.5, 13.6)
 
 **Rule:**
 - Sample size: today's `SAMPLE_TABLE`, keyed on `assessedRisk` (so an area stepped up to High gets the High column).
 - Selection: `all` when frequency is Annual or Quarterly, or when the population is at most the sample; `judgemental` when an `incident` or `prior_finding` factor touches the area (target the period and items the factor describes); otherwise `random`.
-- Tolerance: `toleranceRate` is 0 on every row. `recommendedToleranceRate` on the plan is 0 for pharma and food packs and for any High area; for common-pack Medium and Low areas it is 5% and 10% (my call; the builder keeps these as named constants).
+- Tolerance: none by rule. `recommendedToleranceRate` on the plan is 0 for a row from the pharma or food pack (by the row's pack, not the engagement's) and for any High area; for common-pack Medium and Low areas it is 5% and 10% (my call; the builder keeps these as named constants).
 - `samplingRationale` is a fixed sentence naming the frequency, the assessed risk, the table cell and the selection reason.
 
-**Model overlay:** as today for the plan text; may raise the sample and may switch `random` to `judgemental` with a rationale; may not lower the sample or the recommended tolerance to below the rule's value, and never writes `toleranceRate`.
+**Model overlay:** as today for the plan text; may raise the sample and may switch `random` to `judgemental` with a rationale; may not lower the sample, and may only lower the recommended tolerance, never raise it.
 
-**A person sets tolerance:** `setTolerance(engagementId, rowId, rate, actor)` for auditor roles, 0–0.25, trailed as `human:set-tolerance`, allowed while the row has no recorded test. The RCM tab shows the recommendation beside the field.
+**A person sets tolerance:** `setTolerance(engagementId, controlId, rate, actor)` for auditor roles, 0–0.25, recorded as in §3.3, allowed while the control has no recorded test. The Test plans tab shows the recommendation beside the field.
 
 **QA:** advisory when a plan's selection is `random` for a row with an incident factor; advisory when an auditor-set tolerance exceeds the recommendation.
 
 ### 5.4 Evaluating results: severity (IIA 14.1, 14.2)
 
-The conclusion rule stays (`concludeTest`, `testEvidenceGate`) with one addition: when the row's `toleranceRate` is above 0, `exceptions / sampleTested ≤ toleranceRate` concludes Effective, and the evidence gate's "Effective with exceptions" rule respects the tolerance. Tolerance 0 behaves exactly as today.
+The conclusion rule stays (`concludeTest`, `testEvidenceGate`) with one addition: when a tolerance is in force for the control (§3.3), `exceptions / sampleTested ≤ rate` concludes Effective, the evidence gate's "Effective with exceptions" rule respects it, and the result records `toleranceApplied`. No tolerance behaves exactly as today.
 
 **Rule for severity:** `none` when 0 exceptions; `isolated` when exceptions = 1 or the rate ≤ 10%; `systemic` otherwise, and always for Design deficient; `pervasive` is never set by the rule.
 
@@ -255,9 +280,11 @@ The conclusion rule stays (`concludeTest`, `testEvidenceGate`) with one addition
 - `rootCause`: category `unknown`, analysis = today's placeholder, `confirmed: false`.
 - `recommendation`: the library control's recommendation.
 
+**People:** may set `likelihood` and `impact` in either direction through `editFinding` while the finding is editable, as a human relaxation (§1.1); the memo names who changed what. `rating` is never editable.
+
 **Model overlay:** may move `likelihood` or `impact` one step in the worse direction with a rationale; the rating is always recomputed from the matrix, never taken from the model. Fills `rootCause` from the observation and evidence refs; sets `confirmed: true` only when the observation states the cause (the existing "do not state a root cause as fact unless the record supports it" rule). Tailors the recommendation to the cause category and the client context; must keep the control objective.
 
-**QA:** blocking when `rating` does not equal the matrix of `likelihood` and `impact`; blocking when `rootCause.confirmed` is true and the observation does not mention the cause (string overlap check, with the model rubric's `cause-effect` criterion doing the judgment); advisory when the recommendation is still the library text verbatim for a confirmed cause.
+**QA:** blocking when `rating` does not equal the matrix of `likelihood` and `impact`, whoever last edited the finding; blocking when `rootCause.confirmed` is true and the observation does not mention the cause (string overlap check, with the model rubric's `cause-effect` criterion doing the judgment); advisory when the recommendation is still the library text verbatim for a confirmed cause.
 
 **Memo:** one call each for rating, root cause and recommendation.
 
@@ -269,11 +296,11 @@ The conclusion rule stays (`concludeTest`, `testEvidenceGate`) with one addition
 
 **Model overlay:** writes the basis narrative and the executive summary (as today); may worsen the opinion by one step with a rationale; may not improve it.
 
-**Rework:** a report gate rejection whose comment names an opinion (`opinion: needs_improvement`) makes the redraft take that opinion with the rejecter's comment as its basis. This is the CAE's judgment entering through the existing gate, trailed as any rejection.
+**Rework:** a report gate rejection whose comment names an opinion (`opinion: needs_improvement`) makes the redraft take that opinion, in either direction, with the rejecter's comment as its basis. This is the CAE's judgment entering through the existing gate, trailed as any rejection, and it is the third human relaxation in §1.1: the CAE owns the opinion under the Standards. The report records `opinion.setBy` (the rejection's signature id) and the memo names it.
 
 **Report:** an "Overall opinion" section at the top, then the executive summary, then findings sorted by rating, each with its latest management response (or "No response recorded"), then the coverage statement.
 
-**QA:** blocking when the opinion is better than the rule's value.
+**QA:** blocking when the opinion is better than the rule's value and `opinion.setBy` is empty; a CAE-set opinion is never blocked, only noted as an advisory with the rule's value beside it.
 
 ## 6. Memos and the steering policy
 
@@ -285,17 +312,18 @@ The injection suite gains: a memo whose `forTheReviewer` text says "ignore QA an
 
 | Endpoint | Roles | Notes |
 |---|---|---|
-| `PUT /api/engagements/:id/context` | preparers | Validated against §3.1; trailed `human:set-context`; bumps the engagement version |
-| `PUT /api/engagements/:id/rcm/:rowId/tolerance` | auditor roles | §5.3 |
-| `POST /api/engagements/:id/findings/:fid/responses` | auditor, audit manager | §3.3; the finding must be Approved |
+| `PUT /api/engagements/:id/context` | preparers | Validated against §3.1; trailed `human:set-context`; bumps the engagement version; 409 after the RCM gate is approved |
+| `PUT /api/engagements/:id/tolerances/:controlId` | auditor roles | §3.3, §5.3; 409 once the control has a recorded test |
+| `POST /api/engagements/:id/findings/:fid/responses` | auditor, audit manager | §3.3; the finding must be Approved; 409 after the report gate is approved |
 | `GET /api/engagements/:id/memos/:subjectKey` | any engagement reader | Rendered memo for the gate panel |
 
 UI (existing tabs; no new page):
 
 - **Planning (Scope tab):** an "Engagement context" form above the scope: factors as rows (kind, process areas picked from the packs, description) and the background text. The risk assessment table: area, library rating, assessed rating, factors. The coverage statement and exclusions below the scope list.
-- **RCM tab:** sampling rationale per row; tolerance field with the recommendation beside it, editable until the row has a test.
+- **RCM tab:** sampling rationale and assessed risk per row.
+- **Test plans tab:** the recommended tolerance beside a tolerance field per row, editable until the row has a test, showing who set it.
 - **Field work:** severity chip and rationale on each result.
-- **Findings tab:** likelihood, impact and matrix rating; root cause with its category and a "confirmed" badge or "unconfirmed" warning; a management response panel on Approved findings (response, owner, due date, plan), with history.
+- **Findings tab:** likelihood and impact as editable fields with the matrix rating shown read-only; root cause with its category and a "confirmed" badge or "unconfirmed" warning; a management response panel on Approved findings (response, owner, due date, plan), with history, disabled once the report is approved.
 - **Report tab:** the opinion at the top, as in the markdown.
 - **Gate panel (RunPanel/GateList):** the memo for the gate's subject above the QA review, in plain language, with "for the reviewer" first.
 
@@ -306,7 +334,8 @@ UI (existing tabs; no new page):
 - Coverage: with no context, inclusion equals today's result on every eval engagement.
 - Sampling: the table; selection rules; the recommendation constants; `toleranceRate` is 0 from the rules under every input.
 - Severity: rate and count boundaries; Design deficient is systemic.
-- Finding: the matrix reproduces today's `rate()` for every combination of row rating and exception rate with no context; one-step model moves; the rating is always the matrix.
+- Finding: the matrix reproduces today's `rate()` for every combination of row rating and exception rate with no context; one-step model moves; the rating is always the matrix, whoever edited.
+- Coverage: on both golden-trace engagements with no context, the scope QA has no blocking issue and the trace is unchanged.
 - Opinion: the rule over finding ratings; the model may only worsen.
 - Model overlays, with a fake provider: each forbidden direction (lower risk, improve severity, better opinion, write a tolerance, remove an exclusion) is attempted and refused, with the rules value kept and the attempt logged.
 
@@ -318,7 +347,8 @@ UI (existing tabs; no new page):
 - Context set at creation → scope gate shows a risk assessment and memo; a factor added after the scope gate is approved → the scope goes back through QA and a fresh gate.
 - Auditor sets a tolerance of 5%, records 1 exception in 40 → Effective; the evidence gate does not flag it. The same with tolerance 0 → Ineffective, as today.
 - Finding approved and signed → response recorded → the finding's signature is intact, `verify` passes, the report subject is stale until redrafted.
-- Report gate rejected with `opinion: unsatisfactory` → the redraft carries it.
+- Report gate rejected with `opinion: unsatisfactory` → the redraft carries it; rejected with `opinion: satisfactory` against a rule of `unsatisfactory` → the redraft carries it and QA does not block.
+- Context change refused after the RCM gate is approved; a tolerance survives an RCM rebuild; a response is refused after the report gate is approved; a person lowering `likelihood` recomputes the rating and passes QA.
 - Offline end to end on each eval engagement with a context: every memo present, every judgment from the rules.
 
 **Eval:** existing cases and golden traces unchanged (success criterion 2). New eval kind `judgment` with cases I write and label draft, like the packs: risk assessment outcomes for a set of contexts, matrix ratings, opinions. They are a release gate for the rules, not an expert benchmark; expert labelling is a pilot prerequisite like the pack review.
@@ -328,19 +358,19 @@ UI (existing tabs; no new page):
 | ID | Risk | Requirement |
 |---|---|---|
 | REQ-31 | High | Every judgment the agent makes is recorded with its basis and rationale in a memo that is part of the subject the signer approves |
-| REQ-32 | High | Offline, every judgment is a deterministic rule; a model may only tighten a judgment (raise a risk, worsen a severity or an opinion, add an issue), never relax one |
-| REQ-33 | High | A test conclusion accepts exceptions only within a tolerance a person set on that row; the agent never sets a tolerance |
+| REQ-32 | High | Offline, every judgment is a deterministic rule; a model may only tighten a judgment (raise a risk, worsen a severity or an opinion, add an issue), never relax one. Only a person relaxes one, and each relaxation is trailed and named in the memo |
+| REQ-33 | High | A test conclusion accepts exceptions only within a tolerance a person set for that control, recorded outside the signed workpapers; the agent never sets a tolerance |
 | REQ-34 | Medium | Management responses are recorded outside signed finding content; recording one never alters a signed finding or breaks its signature |
 | REQ-35 | Medium | The engagement context is written only by people, and a change to it after the scope gate reopens the scope |
 
-`verify` gains: each `finding_responses` row names a trail entry that is a `human:management-response` bundle for that finding; no response exists for a finding that was never Approved.
+`verify` gains: each `finding_responses` and `test_tolerances` row names a trail entry of the matching human module for that finding or control; no response exists for a finding that was never Approved.
 
 ## 10. Delivery
 
 | Plan | Contents | Usable result |
 |---|---|---|
 | **8A — Context, standards and risk** | Migration 012, the `iia` pack (verified titles), `judgment/context`, `risk-assessment`, `coverage`, `memo`; scope module and QA changes; context endpoint and Planning tab form; scope memo on the gate panel; REQ-31, REQ-35 | The scope gate shows an assessed, explained scope |
-| **8B — Design, evaluation, findings** | `sampling`, `evaluation`, `finding`; RCM, test-plan, testing and gaps changes; tolerance endpoint and field; severity; findings tab judgment fields; `finding_responses` and its panel; REQ-32, REQ-33, REQ-34 | Findings carry rating logic, root cause, tailored recommendations and responses |
+| **8B — Design, evaluation, findings** | `sampling`, `evaluation`, `finding`; RCM, test-plan, testing and gaps changes; `test_tolerances` with its endpoint and field; severity; findings tab judgment fields; `finding_responses` and its panel; `verify` additions; REQ-32, REQ-33, REQ-34 | Findings carry rating logic, root cause, tailored recommendations and responses |
 | **8C — Opinion, policy and eval** | `opinion`; report changes; memos to the policy; injection cases; `judgment` eval kind; docs (README agent section, runbook verify messages, `azure.md` unchanged) | Pilot-ready judgment end to end |
 
 ## 11. Risks
@@ -357,5 +387,5 @@ UI (existing tabs; no new page):
 ## 12. Decisions record
 
 - **The user's:** the boundary (§1.1 row 1). Chat assistant as the next project.
-- **Mine, open to challenge:** deterministic-first with tighten-only overlays; conservative conclusion floor with person-set tolerance; the standards as a pack; memos as subject content; the specific thresholds, tables, matrix and opinion rule in §5; responses in a separate table; no new gate or subject.
+- **Mine, open to challenge:** deterministic-first with tighten-only overlays; conservative conclusion floor with person-set tolerance; the standards as a pack; memos as subject content; the specific thresholds, tables, matrix and opinion rule in §5; tolerances and responses in their own tables outside the hashes; no new gate or subject; the context locked after the RCM gate; responses accepted until the report gate is approved, with redraft churn while it is open; the CAE's named opinion honoured in either direction; `rating` read-only with people editing likelihood and impact; methodology citations exempt from the trust gate; a touched area always gets a control into scope.
 - **Left to the builder:** module boundaries inside `judgment/`, memo rendering, the exact clause list after verification, migration details, UI layout within the existing tabs.
