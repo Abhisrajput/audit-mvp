@@ -1,9 +1,11 @@
+import { once } from 'node:events';
+import net, { type AddressInfo } from 'node:net';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { defaultAgentConfig } from '../src/agents/config';
 import { startRun } from '../src/agents/runs';
 import { AgentWorker } from '../src/agents/worker';
-import { workerProbeApp } from '../src/agents/worker-server';
+import { listenProbes, workerProbeApp } from '../src/agents/worker-server';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { captureLogs, logger, setLogService } from '../src/observability/log';
 import { auditor, NEW_ENGAGEMENT, newService } from './helpers';
@@ -47,5 +49,24 @@ describe('the worker process', () => {
     expect(metrics.text).not.toMatch(/audit_agent_runs\{/);
     stopping = true;
     expect((await request(app).get('/readyz').expect(503)).body).toMatchObject({ ok: false, checks: { worker: 'stopping' } });
+  });
+
+  it('fails to start, rather than run with no probes, when its port is already taken', async () => {
+    const svc = await newService();
+    const taken = net.createServer().listen(0);
+    await once(taken, 'listening');
+    const port = (taken.address() as AddressInfo).port;
+    const app = workerProbeApp({ db: svc.db, metricsToken: TOKEN, stopping: () => false });
+    try {
+      await expect(listenProbes(app, port)).rejects.toThrow(new RegExp(`port ${port}.*EADDRINUSE`));
+      taken.close();
+      await once(taken, 'close');
+      const server = await listenProbes(app, port);
+      expect((await request(`http://127.0.0.1:${port}`).get('/healthz').expect(200)).body).toEqual({ ok: true });
+      server.close();
+      await once(server, 'close');
+    } finally {
+      if (taken.listening) taken.close();
+    }
   });
 });

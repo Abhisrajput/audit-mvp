@@ -16,7 +16,8 @@ export interface AgentRunState {
 
 /**
  * Keeps the engagement's agent run, its steps and its gates current by polling (there is no push channel): often while
- * the agent works, slowly while it waits for people, not at all once it has ended. Only steps after the last one seen
+ * the agent works, slowly while it waits for people or has ended (a colleague may start a run). A hidden tab skips its
+ * turns and looks again as soon as it is shown. Only steps after the last one seen
  * are fetched. When the agent drafted something, `onEngagementChanged` reloads the engagement, so a person's next save
  * is not refused as stale. Refreshes run one at a time, so a poll and a button press never add the same steps twice.
  */
@@ -94,14 +95,18 @@ export function useAgentRun(engagementId: string, onEngagementChanged: () => voi
   }, [refresh]);
 
   const run = currentRun(runs);
-  const delay = pollDelayMs(run, gates.some((g) => g.state === 'open'));
+  const delay = pollDelayMs(run);
   useEffect(() => {
-    if (delay === null) return;
-    const timer = setInterval(() => {
-      // A hidden tab skips its turn; the next one looks again.
+    // A hidden tab skips its turn, and looks again the moment it is shown rather than waiting out the interval.
+    const tick = () => {
       if (document.visibilityState === 'visible' && pending.current === 0) void refresh();
-    }, delay);
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(tick, delay);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
   }, [delay, refresh]);
 
   return { settings, runs, run, steps, gates, error, refresh };

@@ -34,13 +34,14 @@ describe('which run to show, and how often to look again', () => {
     expect(currentRun([run({ id: 'AR-3', status: 'completed' }), run({ id: 'AR-2', status: 'waiting' })])?.id).toBe('AR-2');
     expect(currentRun([run({ id: 'AR-3', status: 'completed' }), run({ id: 'AR-1', status: 'cancelled' })])?.id).toBe('AR-3');
     expect(currentRun([])).toBeNull();
-    expect(pollDelayMs(run({ status: 'running' }), false)).toBe(3000);
-    expect(pollDelayMs(run({ status: 'runnable' }), false)).toBe(3000);
-    expect(pollDelayMs(run({ status: 'waiting' }), false)).toBe(15000);
-    expect(pollDelayMs(run({ status: 'needs_human' }), true)).toBe(15000);
-    expect(pollDelayMs(run({ status: 'completed' }), true)).toBe(15000);
-    expect(pollDelayMs(run({ status: 'failed' }), false)).toBeNull();
-    expect(pollDelayMs(null, false)).toBe(15000);
+    expect(pollDelayMs(run({ status: 'running' }))).toBe(3000);
+    expect(pollDelayMs(run({ status: 'runnable' }))).toBe(3000);
+    expect(pollDelayMs(run({ status: 'waiting' }))).toBe(15000);
+    expect(pollDelayMs(run({ status: 'needs_human' }))).toBe(15000);
+    // A colleague may start a new run, so polling never stops, only slows.
+    expect(pollDelayMs(run({ status: 'completed' }))).toBe(15000);
+    expect(pollDelayMs(run({ status: 'failed' }))).toBe(15000);
+    expect(pollDelayMs(null)).toBe(15000);
   });
 });
 

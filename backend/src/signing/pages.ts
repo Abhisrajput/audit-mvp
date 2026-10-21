@@ -13,8 +13,11 @@ const subjectOf = (intent: SignIntent) =>
     ? `the <b>${WORKPAPER[intent.workpaper]}</b> workpaper`
     : `finding <b>${escapeHtml(intent.findingId ?? '')}</b>`;
 
-/** Demo users have no password: they re-authenticate by typing their user id. DEV_AUTH only. */
-export function devConfirmPage(res: Response, intent: SignIntent, userName: string) {
+/**
+ * Demo users have no password: they re-authenticate by typing their user id. The page names the id, because the app
+ * shows only display names, so the typed confirmation is a formality that proves presence, not a secret. DEV_AUTH only.
+ */
+export function devConfirmPage(res: Response, intent: SignIntent, userName: string, userId: string) {
   popupHeaders(res);
   res
     .status(200)
@@ -23,7 +26,7 @@ export function devConfirmPage(res: Response, intent: SignIntent, userName: stri
       `<!doctype html><meta charset="utf-8"><title>Confirm your signature</title>` +
         `<h1>Confirm your signature</h1>` +
         `<p>${escapeHtml(userName)}, you are signing ${subjectOf(intent)} as <b>${MEANING[intent.action]}</b>.</p>` +
-        `<p>Demo sign-in has no password, so type your user id to confirm it is you.</p>` +
+        `<p>Demo sign-in has no password, so type your user id, <code>${escapeHtml(userId)}</code>, to confirm it is you.</p>` +
         `<form method="post" action="/auth/sign/${escapeHtml(intent.id)}/dev">` +
         `<input type="hidden" name="nonce" value="${escapeHtml(intent.nonce)}">` +
         `<label>User id <input name="confirm" autocomplete="off" autofocus></label> <button type="submit">Sign</button></form>`,

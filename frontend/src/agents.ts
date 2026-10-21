@@ -58,13 +58,11 @@ export function currentRun(runs: AgentRun[]): AgentRun | null {
 }
 
 /**
- * How soon to look again, or null to stop. Often while the agent works, slowly while it waits for people, and slowly with no
- * live run too (a colleague may start one). Polling stops only once the latest run has ended and no gate is left open.
+ * How soon to look again. Often while the agent works, slowly while it waits for people, and slowly once the latest run
+ * has ended or there is none: a colleague may start a run at any time, so polling never stops.
  */
-export function pollDelayMs(run: AgentRun | null, hasOpenGate: boolean): number | null {
-  if (!run) return 15000;
-  if (hasEnded(run)) return hasOpenGate ? 15000 : null;
-  return run.status === 'running' || run.status === 'runnable' ? 3000 : 15000;
+export function pollDelayMs(run: AgentRun | null): number {
+  return run && !hasEnded(run) && (run.status === 'running' || run.status === 'runnable') ? 3000 : 15000;
 }
 
 export const STATUS_CHIP: Record<RunStatus, { label: string; color: 'default' | 'primary' | 'info' | 'warning' | 'success' | 'error' }> = {

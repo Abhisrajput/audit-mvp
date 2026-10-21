@@ -81,7 +81,8 @@ What the problems mean:
   - "Trail entry <id> records signature <sigId> (finding <fid>), but the signature row is missing": a signature row was deleted.
   - "sign-off <id> (<meaning> by <name>) is broken": the finding's recorded sign-off no longer matches its signature row.
   - "Signature <id> (...) is recorded but missing from the finding": a valid signature on the finding's current content has been removed from the finding.
-  - "Gate <id> is approved|rejected, but its signature … is missing", "Gate <id>: signature … is for different content than the gate showed", "… carries <meaning>, not <expected>", "… was made for a different gate|finding": a gate and the signature that closed it disagree. One of them was edited outside the application.
+  - "Gate <id> is approved|rejected, but its signature … is missing", "Gate <id>: signature … is for different content than the gate showed", "… carries <meaning>, not <expected>", "… was made in a different engagement", "… was made for a different gate|finding": a gate and the signature that closed it disagree. One of them was edited outside the application.
+  - "Signature <id> (<workpaper> gate <gateId>): its gate is missing", "… its gate is a <kind> gate in <engagement>, not …", "… its gate names signature <other>, not it": the link back from a gate signature to its gate is broken. The gate was edited or removed outside the application, or a signature row was added for a gate that was closed by another.
   - "Gate <id> is open|superseded, but names signature <sig>": a gate nobody decided names a signature.
 - **Agents** (each line starts `Step <runId>#<seq> (<kind>)`):
   - "has no trail entry": an agent step (a decision, delegation, QA review, lookup, takeover note or rails refusal) is not in the audit trail. No step is exempt.

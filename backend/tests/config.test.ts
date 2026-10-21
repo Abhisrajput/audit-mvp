@@ -141,6 +141,14 @@ describe('worker configuration', () => {
     expect(loadWorkerConfig(base).agents.enabled).toBe(true);
   });
 
+  it('takes only a plain decimal port, for the worker and the API alike [REQ-25]', () => {
+    for (const bad of ['1e3', '0x3e8', ' 3003', '3003.0', '-1', '70000']) {
+      expect(() => loadWorkerConfig({ ...base, WORKER_PORT: bad }), bad).toThrow(/WORKER_PORT: must be a port number/);
+      expect(() => loadConfig({ ...base, PORT: bad }), bad).toThrow(/PORT/);
+    }
+    expect(loadConfig({ ...base, PORT: '8080' }).port).toBe(8080);
+  });
+
   it('lists every problem at once, and needs the metrics token in production [REQ-25]', () => {
     expect(() => loadWorkerConfig({ ...base, NODE_ENV: 'production', WORKER_PORT: 'x', AGENT_MAX_STEPS: '0', ALLOW_UNVERIFIED_CITATIONS: 'true' })).toThrow(
       /METRICS_TOKEN: required in production[\s\S]*ALLOW_UNVERIFIED_CITATIONS[\s\S]*AGENT_MAX_STEPS[\s\S]*WORKER_PORT/,

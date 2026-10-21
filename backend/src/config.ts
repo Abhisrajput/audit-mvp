@@ -82,9 +82,12 @@ export function prepareEnv(env: NodeJS.ProcessEnv = process.env): void {
   resolveSecretFiles(env);
 }
 
+/** A port is a plain decimal number: `1e3`, hex and padded forms are refused rather than guessed at. */
+const PORT_MESSAGE = 'must be a port number (1-65535)';
+export const isPort = (raw: string) => /^\d{1,5}$/.test(raw) && Number(raw) >= 1 && Number(raw) <= 65535;
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3002),
+  PORT: z.string().default('3002').refine(isPort, PORT_MESSAGE).transform(Number),
   DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection URL'),
   DATABASE_SSL: z.enum(['disable', 'require', 'verify-full']).optional(),
   DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
@@ -225,8 +228,8 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
   if (env.NODE_ENV === 'production' && !env.METRICS_TOKEN) problems.push(METRICS_TOKEN_REQUIRED);
   const citationPolicy = tryLoad(problems, () => loadCitationPolicy(env));
   const agents = tryLoad(problems, () => loadAgentConfig(env));
-  const port = Number(env.WORKER_PORT || '3003');
-  if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push('  - WORKER_PORT: must be a port number (1-65535)');
+  const rawPort = env.WORKER_PORT || '3003';
+  if (!isPort(rawPort)) problems.push(`  - WORKER_PORT: ${PORT_MESSAGE}`);
   if (problems.length) throw invalid(problems);
-  return { core: core!, citationPolicy: citationPolicy!, agents: agents!, port };
+  return { core: core!, citationPolicy: citationPolicy!, agents: agents!, port: Number(rawPort) };
 }

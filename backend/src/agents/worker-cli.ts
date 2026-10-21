@@ -8,7 +8,7 @@ import { instrumentProvider } from '../observability/llm';
 import { logger, setLogLevel, setLogService } from '../observability/log';
 import { AuditService } from '../service';
 import { AgentWorker } from './worker';
-import { workerProbeApp } from './worker-server';
+import { listenProbes, workerProbeApp } from './worker-server';
 
 // The agent worker process: same image as the API, started with `node dist/agents/worker-cli.js` (npm run worker).
 // It connects as the API's database role and never migrates. Its probes and metrics are on WORKER_PORT (default 3003).
@@ -30,7 +30,8 @@ async function main() {
   const svc = new AuditService(db, registry, instrumentProvider(createProvider()), { citationPolicy });
   const worker = new AgentWorker(svc, agents);
   let stopping = false;
-  const server = workerProbeApp({ db, metricsToken: config.metricsToken, stopping: () => stopping }).listen(port);
+  // Before any run is taken: a worker that cannot serve its probes should not start.
+  const server = await listenProbes(workerProbeApp({ db, metricsToken: config.metricsToken, stopping: () => stopping }), port);
   if (!agents.enabled) logger.warn('AGENT_ENABLED=false: this worker takes no agent runs');
   worker.start();
   logger.info(`Agent worker ${worker.id}: ${agents.concurrency} loop(s), polling every ${agents.pollMs} ms, provider ${svc.providerInfo.id}/${svc.providerInfo.model}, probes and metrics on :${port}`);

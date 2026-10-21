@@ -1,4 +1,5 @@
 import express from 'express';
+import type { Server } from 'node:http';
 import type { Db } from '../db';
 import { errorHandler } from '../http/errors';
 import { probeRoutes } from '../observability/probes';
@@ -23,4 +24,20 @@ export function workerProbeApp(deps: WorkerProbeDeps): express.Express {
   }));
   app.use(errorHandler());
   return app;
+}
+
+/**
+ * Starts the probe server, or fails with the reason (the port already taken, most often). Without it a failed listen is
+ * an uncaught error after the worker has started taking runs, or a worker with no probes at all.
+ */
+export function listenProbes(app: express.Express, port: number): Promise<Server> {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port);
+    const failed = (err: Error) => reject(new Error(`Cannot serve probes and metrics on port ${port}: ${err.message}`));
+    server.once('error', failed);
+    server.once('listening', () => {
+      server.off('error', failed);
+      resolve(server);
+    });
+  });
 }
