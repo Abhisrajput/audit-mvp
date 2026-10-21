@@ -127,14 +127,14 @@ export const gapsModule: AuditModule<Finding[]> = {
         const modelMoves: string[] = [];
         let likelihood = d.likelihood!;
         let impact = d.impact!;
-        if (m.likelihood && m.likelihood !== likelihood) {
-          if (oneStepWorse(LIKELIHOODS, likelihood, m.likelihood)) likelihood = m.likelihood;
-          else refuse(`Model proposed likelihood ${m.likelihood} where the rule gives ${likelihood}; only a value exactly one step worse is accepted, so the rule value stands`);
-        }
-        if (m.impact && m.impact !== impact) {
-          if (oneStepWorse(IMPACTS, impact, m.impact)) impact = m.impact;
-          else refuse(`Model proposed impact ${m.impact} where the rule gives ${impact}; only a value exactly one step worse is accepted, so the rule value stands`);
-        }
+        const bound = <T extends Likelihood | Impact>(order: readonly T[], label: string, rule: T, proposed: T | undefined): T => {
+          if (!proposed || proposed === rule) return rule;
+          if (oneStepWorse(order, rule, proposed)) return proposed;
+          refuse(`Model proposed ${label} ${proposed} where the rule gives ${rule}; only a value exactly one step worse is accepted, so the rule value stands`);
+          return rule;
+        };
+        likelihood = bound(LIKELIHOODS, 'likelihood', likelihood, m.likelihood);
+        impact = bound(IMPACTS, 'impact', impact, m.impact);
         const rating = ratingOf(likelihood, impact);
         if (likelihood !== d.likelihood || impact !== d.impact) modelMoves.push('rating');
         let { confirmed } = m.rootCause;

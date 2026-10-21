@@ -56,6 +56,53 @@ describe('finding judgment (spec §5.5) [REQ-32]', () => {
     expect(f.rating).toBe(ratingFromMatrix(f));
   });
 
+  describe('bounds on a model move, against known rule values', () => {
+    const cause = { category: 'process', analysis: 'No second check', confirmed: false };
+    // 1 exception in 40 is a rate of 0.025, below RARE_BELOW, so the rule's likelihood is rare.
+    async function run(overlay: Record<string, unknown>) {
+      const model = new FakeProvider((req) => gapsAnswerFrom(req, { rootCause: cause, ...overlay }));
+      const svc = new AuditService(await testDb(), registry, model, LENIENT);
+      const e0 = await engagementWithFailedControl(svc, 'FD-HACCP-03', undefined, { sampleTested: 40, exceptions: 1 });
+      const { bundle, engagement: e } = await svc.runModule(e0.id, 'gaps', auditor);
+      const f = e.findings.find((x) => x.controlId === 'FD-HACCP-03')!;
+      return { f, refusals: bundle.qaActions.filter((a) => a.gate === 'judgment-bounds' && a.target === f.rowId) };
+    }
+
+    it('accepts a likelihood exactly one step worse', async () => {
+      const { f, refusals } = await run({ likelihood: 'possible' });
+      expect(f.likelihood).toBe('possible');
+      expect(f.rating).toBe(ratingFromMatrix(f));
+      expect(refusals.some((a) => a.detail.includes('likelihood'))).toBe(false);
+    });
+
+    it('refuses a likelihood two steps worse and keeps the rule value', async () => {
+      const { f, refusals } = await run({ likelihood: 'likely' });
+      expect(f.likelihood).toBe('rare');
+      expect(refusals.some((a) => a.detail.includes('likelihood'))).toBe(true);
+    });
+
+    it('keeps the rule values, with no refusal, when the model omits likelihood and impact', async () => {
+      const { f, refusals } = await run({});
+      expect(f.likelihood).toBe('rare');
+      expect(f.impact).toBe('major');
+      expect(refusals).toEqual([]);
+    });
+  });
+
+  it('edits a finding drafted before 8B: likelihood falls back to possible, impact follows the patch, and a memo-less finding edits cleanly', async () => {
+    const svc = await newService();
+    const e0 = await engagementWithFailedControl(svc);
+    // There is no public way to persist a pre-8B finding, so strip the new fields through the service's own mutation.
+    await (svc as unknown as { mutate: (id: string, o: object, fn: (e: typeof e0) => unknown) => Promise<unknown> }).mutate(e0.id, {}, (e) => {
+      e.findings = e.findings.map(({ likelihood, impact, rootCause, memo, ...f }) => f as Finding);
+      return null;
+    });
+    const stripped = (await svc.engagement(e0.id)).findings[0];
+    expect(stripped.memo).toBeUndefined();
+    const edited = await svc.editFinding(e0.id, stripped.id, { impact: 'minor' }, auditor);
+    expect(edited).toMatchObject({ likelihood: 'possible', impact: 'minor', rating: ratingOf('possible', 'minor') });
+  });
+
   it('lets a person lower the likelihood, recomputes the rating, names them in the memo, passes QA, and refuses a rating in the body (plan Review Focus 2, 4)', async () => {
     const { app, svc } = await appWithDevUsers();
     const { auditor: user, id, fid } = await draftFinding(app);
