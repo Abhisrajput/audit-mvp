@@ -48,7 +48,7 @@
   | Memo identity | `sameMemo(a, b)`: equal with `producedAt` blanked and the `EDITED_BY_HAND` line removed from both; used by every module's `apply` |
 
 - **New types are optional where a row may predate 8B:** `RcmRow.assessedRisk?`, `RcmRow.samplingRationale?`, `TestPlan.recommendedToleranceRate?`, `TestResult.severity?`, `TestResult.severityRationale?`, `TestResult.toleranceApplied?`, `Finding.likelihood?`, `Finding.impact?`, `Finding.rootCause?`, `Finding.memo?`. Each carries the doc comment "absent on rows written before 8B". `Engagement.tolerances` and `Engagement.responses` are required (always loaded).
-- **Requirement tags:** `[REQ-32]` (tighten-only, relaxations by people, trailed and named), `[REQ-33]` (tolerance), `[REQ-34]` (responses) inside `it('...')` titles, plus existing ids where they apply (`[REQ-30]` QA, `[REQ-31]` memo on the subject). Task 1 adds the three ids to `backend/validation/requirements.json`, so `npm run traceability` may run from any task on.
+- **Requirement tags:** `[REQ-32]` (tighten-only, relaxations by people, trailed and named), `[REQ-33]` (tolerance), `[REQ-34]` (responses) inside `it('...')` titles, plus existing ids where they apply (`[REQ-30]` QA, `[REQ-31]` memo on the subject). `backend/validation/requirements.json` gains the three ids in **Task 9**: the traceability CLI exits 1 for any uncovered requirement and `tests/api.test.ts` asserts it exits 0, so the ids can only land once their tagged tests exist. **Run `npm run traceability` only in Task 9.**
 - **Commands:**
   - Backend, from `backend/`: `npx vitest run <files>` needs Docker (Testcontainers). `npm run typecheck` covers only `src/`, so every backend task also runs the test files it touches. `ALLOW_UNVERIFIED_CITATIONS=true npm run eval` must keep printing both agent traces as PASS with their existing files.
   - Frontend, from `frontend/`: `npm run typecheck && npx vitest run && npm run build`.
@@ -84,7 +84,7 @@ Inputs the spec implies but no task's tests would otherwise exercise, most likel
 ### Task 1: Types, migration 013, the two record tables and the requirements
 
 **Files:**
-- Modify: `backend/src/engine/types.ts` (RcmRow, TestPlan, TestResult, Finding, Engagement, new types), `backend/src/db/schema.ts` (two tables, `DB`), `backend/src/db/engagement-repo.ts` (`loadEngagement` fills the two maps), `backend/src/errors.ts` (three codes), `backend/validation/requirements.json`, `backend/tests/db-roles.test.ts:23-26` (inventory map), `backend/tests/agent-fixtures.ts` (`engagement()` gets `tolerances: {}`, `responses: {}`)
+- Modify: `backend/src/engine/types.ts` (RcmRow, TestPlan, TestResult, Finding, Engagement, new types), `backend/src/db/schema.ts` (two tables, `DB`), `backend/src/db/engagement-repo.ts` (`loadEngagement` fills the two maps), `backend/src/errors.ts` (three codes), `backend/tests/db-roles.test.ts:23-26` (inventory map), `backend/tests/agent-fixtures.ts` (`engagement()` gets `tolerances: {}`, `responses: {}`)
 - Create: `backend/migrations/013_tolerances_responses.sql`, `backend/src/db/judgment-repo.ts`
 - Test: `backend/tests/judgment-records.test.ts`
 
@@ -111,12 +111,6 @@ Inputs the spec implies but no task's tests would otherwise exercise, most likel
   ```
   `Executor` is whatever type `engagement-repo.ts` uses for its `db` parameter (a `Kysely<DB>` or a transaction); use the same.
 - `errors.ts`: `'TOLERANCE_LOCKED' | 'FINDING_NOT_APPROVED' | 'RESPONSE_LOCKED'` join the `ErrorCode` union.
-- `requirements.json` gains, after REQ-31 and before REQ-35 (keep the one-entry-per-line style and the trailing-comma rule the file uses):
-  ```
-  { "id": "REQ-32", "risk": "High", "text": "Offline, every judgment is a deterministic rule; a model may only tighten a judgment (raise a risk, worsen a severity or an opinion, add an issue), never relax one. Only a person relaxes one, and each relaxation is trailed and named in the memo.", "evalKinds": [] },
-  { "id": "REQ-33", "risk": "High", "text": "A test conclusion accepts exceptions only within a tolerance a person set for that control, recorded outside the signed workpapers; the agent never sets a tolerance.", "evalKinds": [] },
-  { "id": "REQ-34", "risk": "Medium", "text": "Management responses are recorded outside signed finding content; recording one never alters a signed finding or breaks its signature.", "evalKinds": [] },
-  ```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -157,19 +151,19 @@ Expected: FAIL (module `judgment-repo` not found).
 
 - [ ] **Step 3: Write the migration** `013_tolerances_responses.sql`: the two `CREATE TABLE`s from spec §3.3 verbatim (with their indexes), then for each table the two append-only triggers in the pattern of migration 010 (`<table>_append_only BEFORE UPDATE OR DELETE ... reject_change()`, `<table>_no_truncate BEFORE TRUNCATE ...`), then `GRANT SELECT, INSERT ON test_tolerances, finding_responses TO audit_api;`. A header comment names spec §3.3 and says why the rows live outside the workpapers. `rate` is read back as a number (`numeric` comes out of pg as a string: parse it in the repo).
 
-- [ ] **Step 4: Types, schema, repo, loader.** Add the types to `types.ts` next to the structures they extend, with the "absent on rows written before 8B" comment on each optional field. Add `TestTolerancesTable` and `FindingResponsesTable` to `schema.ts` and `DB`. Write `judgment-repo.ts` per Interfaces ("latest per key" = order by `recorded_at, id` and let later rows overwrite earlier ones in the map). In `loadEngagement`, fill `tolerances` and `responses` with the two queries; `insertEngagement`/`saveEngagement` do not touch them. Add the three error codes. Add the three requirements. Add both tables to `db-roles.test.ts` as `'append'`.
+- [ ] **Step 4: Types, schema, repo, loader.** Add the types to `types.ts` next to the structures they extend, with the "absent on rows written before 8B" comment on each optional field. Add `TestTolerancesTable` and `FindingResponsesTable` to `schema.ts` and `DB`. Write `judgment-repo.ts` per Interfaces ("latest per key" = order by `recorded_at, id` and let later rows overwrite earlier ones in the map). In `loadEngagement`, fill `tolerances` and `responses` with the two queries; `insertEngagement`/`saveEngagement` do not touch them. Add the three error codes. Add both tables to `db-roles.test.ts` as `'append'`. The test needs the demo users present before the first insert (`recorded_by` references `users(id)`): call `ensureDevUsers(k)` from `tests/http.ts` (or the helper `newService` uses) after creating the service.
 
 - [ ] **Step 5: Fix every compile error** from the two new required `Engagement` fields (`npm run typecheck`, then `npx vitest run tests/agent-fixtures.ts tests/engine.test.ts tests/agent-qa.test.ts tests/agent-eval.test.ts` to surface fixtures and the eval's in-memory engagements): `tolerances: {}`, `responses: {}`. Then `cd ../frontend && npm run typecheck` (frontend test literals build `Engagement`s too).
 
-- [ ] **Step 6: Run the test, the suite and the traceability**
+- [ ] **Step 6: Run the test and the suite**
 
-Run: `cd backend && npm run typecheck && npx vitest run && npm run traceability`
-Expected: `judgment-records.test.ts` passes; the suite still passes (604 tests before this task); traceability lists REQ-32, REQ-33 and REQ-34 as not yet covered (no error).
+Run: `cd backend && npm run typecheck && npx vitest run`
+Expected: `judgment-records.test.ts` passes; the suite still passes (604 tests before this task).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/migrations/013_tolerances_responses.sql backend/src backend/validation/requirements.json backend/tests
+git add backend/migrations/013_tolerances_responses.sql backend/src backend/tests
 git commit -m "feat(judgment): tolerance and management-response tables, judgment fields on rows, plans, results and findings"
 ```
 
@@ -877,7 +871,15 @@ git commit -m "feat(ui): sampling rationale, tolerance field, severity chip, lik
 ### Task 9: README, runbook, visual check and the full local CI set
 
 **Files:**
-- Modify: `README.md` (the agent section: one paragraph on sampling, tolerance, severity, the finding judgment and responses; the "edit a finding" sentence no longer says rating), `docs/deploy/operations.md` (check §4 and §7 read well after Task 7), `backend/validation/README.md` (if it lists requirements by id)
+- Modify: `backend/validation/requirements.json`, `README.md` (the agent section: one paragraph on sampling, tolerance, severity, the finding judgment and responses; the "edit a finding" sentence no longer says rating), `docs/deploy/operations.md` (check §4 and §7 read well after Task 7), `backend/validation/README.md` (if it lists requirements by id)
+
+- [ ] **Step 0: Requirements.** `requirements.json` gains, after REQ-31 and before REQ-35 (keep the one-entry-per-line style and the trailing-comma rule the file uses):
+  ```
+  { "id": "REQ-32", "risk": "High", "text": "Offline, every judgment is a deterministic rule; a model may only tighten a judgment (raise a risk, worsen a severity or an opinion, add an issue), never relax one. Only a person relaxes one, and each relaxation is trailed and named in the memo.", "evalKinds": [] },
+  { "id": "REQ-33", "risk": "High", "text": "A test conclusion accepts exceptions only within a tolerance a person set for that control, recorded outside the signed workpapers; the agent never sets a tolerance.", "evalKinds": [] },
+  { "id": "REQ-34", "risk": "Medium", "text": "Management responses are recorded outside signed finding content; recording one never alters a signed finding or breaks its signature.", "evalKinds": [] },
+  ```
+  Then `cd backend && npx vitest run tests/api.test.ts && npm run traceability` must pass (the matrix now covers all three).
 
 - [ ] **Step 1: Docs.** Write the README paragraph in the register of the existing agent section; name the two trail module ids and the three 409 codes in the runbook if §7 lists codes.
 
