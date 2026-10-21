@@ -11,8 +11,8 @@ export function call(partial: Omit<JudgmentCall, 'source'> & { source?: Judgment
   return { ...partial, source: partial.source ?? 'rules' };
 }
 
-/** The scope memo: one call per area whose assessed risk differs from the library (and a "no change" summary when none), one call for the coverage, one per context inclusion; forTheReviewer lists unverified model claims and any factor naming an unknown area. */
-export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string; modelRaises?: { processArea: string; rationale: string }[]; contextIncluded?: string[] }): JudgmentMemo {
+/** The scope memo: one call per area whose assessed risk differs from the library (and a "no change" summary when none), one call for the coverage (the model's when coverageByModel), one per context inclusion; forTheReviewer lists unverified model claims and any factor naming an unknown area. */
+export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; context: EngagementContext | null; unknownAreas: string[]; modelNotes: string[]; producedAt: string; modelRaises?: { processArea: string; rationale: string }[]; contextIncluded?: string[]; coverageByModel?: boolean }): JudgmentMemo {
   const { items, coverage } = input;
   const calls: JudgmentCall[] = [];
 
@@ -57,6 +57,8 @@ export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; conte
     rationale: coverage.excluded.length === 0 ? 'Every process area has at least one control in scope.' : 'These process areas have no control in scope.',
     basis: coverage.excluded.map((e) => `${e.processArea}: ${e.reason}`),
     standard: [IIA.scope],
+    // The model's coverage statement or an exclusion reason it gave was accepted.
+    source: input.coverageByModel ? 'model' : 'rules',
   }));
 
   // Inclusion calls come from the ids the rules chose, never from the rationale text, which a model can write.

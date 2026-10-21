@@ -135,10 +135,12 @@ export const scopeModule: AuditModule<ScopeOutput> = {
     const includedIds = new Set(items.filter((i) => i.included).map((i) => i.controlId));
     const candidatesNow = asCandidates();
     const excluded = excludedAreas(candidatesNow, includedIds, e.scopeStatement);
+    let coverageByModel = false;
     for (const x of drafted?.exclusions ?? []) {
       const area = excluded.find((a) => a.processArea === x.processArea);
       if (area) {
         area.reason = x.reason;
+        coverageByModel = true;
         modelNotes.push(`Model gave the reason ${x.processArea} is out of scope: ${x.reason}`);
       } else {
         ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: x.processArea, detail: 'Model gave an exclusion reason for an area that is not excluded; ignored', action: 'blocked' });
@@ -147,6 +149,7 @@ export const scopeModule: AuditModule<ScopeOutput> = {
     let statement = coverageStatement(candidatesNow, includedIds, excluded);
     if (drafted?.coverageStatement && statementCoversAll(drafted.coverageStatement, excluded)) {
       statement = drafted.coverageStatement;
+      coverageByModel = true;
       modelNotes.push('The coverage statement was written by the model.');
     }
     const coverage: Coverage = { excluded, statement };
@@ -157,7 +160,7 @@ export const scopeModule: AuditModule<ScopeOutput> = {
     items = items.sort((a, b) => Number(b.included) - Number(a.included) || b.relevance - a.relevance);
     ctx.step('result', `${items.filter((i) => i.included).length} controls proposed in scope`);
     const memo = scopeMemo({
-      items, coverage, context: e.context, modelNotes, modelRaises, contextIncluded: [...contextIncluded.keys()], producedAt: new Date().toISOString(),
+      items, coverage, context: e.context, modelNotes, modelRaises, contextIncluded: [...contextIncluded.keys()], coverageByModel, producedAt: new Date().toISOString(),
       unknownAreas: namedAreas(e.context).filter((area) => !candidatesNow.some((c) => c.processArea === area)),
     });
     return { items, coverage, memo };

@@ -118,6 +118,7 @@ describe('the scope module with the judgment layer (spec §5.1, §5.2)', () => {
     const e = await svc.createEngagement(COMMON, auditor);
     const { engagement: drafted } = await svc.runModule(e.id, 'scope', auditor);
     expect(drafted.coverage!.excluded.map((x) => x.processArea)).toEqual(expect.arrayContaining(OUT));
+    expect(drafted.memos.scope.calls.find((c) => c.question === 'What is in scope')!.source).toBe('model');
     const hashBefore = workpaperContentHash('scope', drafted);
     const itgc = drafted.scope.find((s) => s.processArea === 'IT general controls')!;
     await svc.setScope(e.id, [{ controlId: itgc.controlId, included: true }], auditor);

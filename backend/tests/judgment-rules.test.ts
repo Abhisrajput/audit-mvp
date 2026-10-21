@@ -118,6 +118,14 @@ describe('the scope memo (spec §3.4)', () => {
     expect(md).toMatch(/^## /m);
     expect(md).toMatch(/For the reviewer/);
   });
+
+  it('credits the model on the coverage call only when its statement or a reason was accepted', () => {
+    const base = { items: [], coverage: { excluded: [], statement: '0 of 0…' }, context: null, unknownAreas: [], modelNotes: [], producedAt: 't' };
+    const coverageCall = (m: ReturnType<typeof scopeMemo>) => m.calls.find((c) => c.question === 'What is in scope')!;
+    expect(coverageCall(scopeMemo(base)).source).toBe('rules');
+    expect(coverageCall(scopeMemo({ ...base, coverageByModel: false })).source).toBe('rules');
+    expect(coverageCall(scopeMemo({ ...base, coverageByModel: true })).source).toBe('model');
+  });
 });
 
 describe('review fixes', () => {

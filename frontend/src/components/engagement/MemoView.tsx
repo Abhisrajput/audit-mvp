@@ -35,11 +35,10 @@ export default function MemoView({ memo }: { memo: JudgmentMemo }) {
               ))}
             </ul>
           )}
-          {c.standard.length > 0 && (
-            <Typography variant="caption" color="text.secondary">
-              {c.standard.map((s) => s.replace('-', ' ')).join(' · ')}
-            </Typography>
-          )}
+          {/* Who made the call: the rules, or the model (accepted within its bounds). */}
+          <Typography variant="caption" color="text.secondary">
+            {[...c.standard.map((s) => s.replace('-', ' ')), c.source].join(' · ')}
+          </Typography>
         </Stack>
       ))}
     </Stack>
