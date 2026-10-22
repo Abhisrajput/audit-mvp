@@ -14,8 +14,12 @@ export const assistantApi = {
   settings: () => api<AssistantSettings>('/assistant/settings'),
   turn: (body: { message: string; context: { engagementId?: string; shown?: ShownItem[] }; history: HistoryTurn[] }) =>
     api<TurnResponse>('/assistant/turns', { method: 'POST', body }),
+  // The server's command body is strict: send exactly these keys, whatever object (a proposal with a summary) is handed in.
   confirm: (proposal: { name: CommandName; args: unknown; expectedVersion?: number }) =>
-    api<CommandResponse>('/assistant/commands', { method: 'POST', body: proposal }),
+    api<CommandResponse>('/assistant/commands', {
+      method: 'POST',
+      body: { name: proposal.name, args: proposal.args, ...(proposal.expectedVersion !== undefined ? { expectedVersion: proposal.expectedVersion } : {}) },
+    }),
 };
 
 export interface Turn {
@@ -102,3 +106,8 @@ export function onChanged(handler: (engagementId: string) => void): () => void {
 }
 
 export const OFFLINE_HINT = 'Offline: I understand a few fixed phrases — list engagements; show ENG-…; list findings; find documents about …; search standards for …; list packs; start the run.';
+
+/** Retriever snippets carry highlight markup; show them as plain text. */
+export function plainSnippet(text: string): string {
+  return text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}

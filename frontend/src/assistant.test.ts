@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { argRows, engagementIdOf, notifyChanged, onChanged, shownFrom, trimHistory, type Turn } from './assistant';
+import { describe, expect, it, vi } from 'vitest';
+import { api } from './api';
+import { argRows, assistantApi, plainSnippet, engagementIdOf, notifyChanged, onChanged, shownFrom, trimHistory, type Turn } from './assistant';
+
+vi.mock('./api', () => ({ api: vi.fn(async () => ({})) }));
 
 const turn = (id: number, over: Partial<Turn> = {}): Turn => ({
   id, message: `q${id}`, response: { say: `a${id}` }, error: null, done: null, cancelled: false, ...over,
@@ -71,5 +74,20 @@ describe('onChanged', () => {
     off();
     notifyChanged('ENG-2');
     expect(seen).toEqual(['ENG-1']);
+  });
+});
+
+describe('assistantApi.confirm', () => {
+  it('posts only name, args and expectedVersion', async () => {
+    await assistantApi.confirm({ name: 'start_run', args: { engagementId: 'E1' }, expectedVersion: 3, summary: 'x' } as never);
+    expect(vi.mocked(api).mock.calls.at(-1)![1]!.body).toEqual({ name: 'start_run', args: { engagementId: 'E1' }, expectedVersion: 3 });
+    await assistantApi.confirm({ name: 'start_run', args: {}, summary: 'x' } as never);
+    expect(Object.keys(vi.mocked(api).mock.calls.at(-1)![1]!.body as object).sort()).toEqual(['args', 'name']);
+  });
+});
+
+describe('plainSnippet', () => {
+  it('strips tags and collapses whitespace', () => {
+    expect(plainSnippet('<b>allergen</b> and\n  physical <i>hazards</i>')).toBe('allergen and physical hazards');
   });
 });
