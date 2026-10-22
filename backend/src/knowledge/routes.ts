@@ -84,6 +84,15 @@ export async function storageCall<T>(what: string, fn: () => Promise<T>): Promis
   }
 }
 
+/** The configured blob store, or 503 when file storage is not set up. */
+export function storeOf(storage: StorageDeps): BlobStore {
+  if (!storage.blobs) throw new AppError(503, 'File storage is not configured', 'STORAGE_UNAVAILABLE');
+  return storage.blobs;
+}
+
+/** Extraction limits: the configured ones, or the defaults sized to the upload cap. */
+export const evidenceConfigOf = (storage: StorageDeps): EvidenceConfig => storage.evidence ?? loadEvidenceConfig({}, { maxBytes: storage.maxUploadBytes });
+
 /** The document if this reader may see it; otherwise "not found", whether or not it exists. */
 export async function readableDocument(db: Executor, id: string, role: Role): Promise<DocumentRecord> {
   const doc = await getDocument(db, id);
@@ -97,11 +106,8 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
   const db = svc.db.kysely;
   const readers = requireRole(READ_ROLES);
   const preparers = requireRole(PREPARER_ROLES);
-  const evidence = storage.evidence ?? loadEvidenceConfig({}, { maxBytes: storage.maxUploadBytes });
-  const blobs = () => {
-    if (!storage.blobs) throw new AppError(503, 'File storage is not configured', 'STORAGE_UNAVAILABLE');
-    return storage.blobs;
-  };
+  const evidence = evidenceConfigOf(storage);
+  const blobs = () => storeOf(storage);
 
   const readable = (id: string, role: Role) => readableDocument(db, id, role);
 

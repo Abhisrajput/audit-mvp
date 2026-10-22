@@ -237,4 +237,104 @@ describe('evidence upload, retry and text routes', () => {
     expect((await send(auditor, url, fx('sample.xlsx'), 'a.xlsx', 'application/octet-stream', { ...FIELDS, retainUntil: '2020-01-01' })).status).toBe(400);
     expect((await send(auditor, url, fx('sample.xlsx'), 'a.xlsx', 'application/octet-stream', { ...FIELDS, retainUntil: '2026-02-30' })).status).toBe(400);
   });
+
+  it('keeps utf-8 filenames intact', async () => {
+    const { app, engagement } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const res = await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.pdf'), 'résumé.pdf', 'application/pdf', FIELDS).expect(201);
+    expect(res.body.filename).toBe('résumé.pdf');
+    expect((await auditor.get(`/api/documents/${res.body.id}`).expect(200)).body.filename).toBe('résumé.pdf');
+  });
+
+  it('treats a part with no Content-Type as undeclared', async () => {
+    const { app, engagement } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const b = '----x1';
+    const body = Buffer.concat([
+      Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="kind"\r\n\r\nevidence\r\n--${b}\r\nContent-Disposition: form-data; name="classification"\r\n\r\ninternal\r\n`),
+      Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="sample.pdf"\r\n\r\n`), fx('sample.pdf'), Buffer.from(`\r\n--${b}--\r\n`),
+    ]);
+    const res = await auditor.agent.post(`/api/engagements/${engagement.id}/evidence`).set('x-csrf-token', auditor.csrf).set('Content-Type', `multipart/form-data; boundary=${b}`).send(body);
+    expect(res.status).toBe(201);
+    expect(res.body.mime).toBe('application/pdf');
+  });
+
+  it('refuses control characters in the filename or note before storing anything', async () => {
+    const { app, engagement, blobs, count } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const url = `/api/engagements/${engagement.id}/evidence`;
+    const bytes = fx('sample.pdf');
+    expect((await send(auditor, url, bytes, 'a\u0000b.pdf', 'application/pdf', FIELDS)).status).toBe(400);
+    expect((await send(auditor, url, bytes, 'a.pdf', 'application/pdf', { ...FIELDS, note: 'x\u0000y' })).status).toBe(400);
+    expect(await blobs.head(sha256Of(bytes))).toBeNull();
+    expect(await count()).toBe(0);
+  });
+
+  it('accepts a 500-character multibyte note', async () => {
+    const { app, engagement } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const res = await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.pdf'), 'a.pdf', 'application/pdf', { ...FIELDS, note: 'é'.repeat(500) });
+    expect(res.status).toBe(201);
+  });
+
+  it('ignores an expired duplicate and makes a new row', async () => {
+    const { app, svc, engagement } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const url = `/api/engagements/${engagement.id}/evidence`;
+    const first = await send(auditor, url, fx('sample.pdf'), 'a.pdf', 'application/pdf', FIELDS).expect(201);
+    await sql`UPDATE documents SET retention_expired = true`.execute(svc.db.kysely);
+    const again = await send(auditor, url, fx('sample.pdf'), 'a.pdf', 'application/pdf', FIELDS);
+    expect(again.status).toBe(201);
+    expect(again.body.id).not.toBe(first.body.id);
+  });
+
+  it('answers 413 from Content-Length before reading the body', async () => {
+    const { app, engagement, blobs, count } = await setup({ maxUploadBytes: 100 });
+    const auditor = await signIn(app, 'auditor');
+    const big = Buffer.concat([Buffer.from('%PDF-1.4 '), Buffer.alloc(70_000, 0x61)]);
+    const res = await send(auditor, `/api/engagements/${engagement.id}/evidence`, big, 'big.pdf', 'application/pdf', FIELDS);
+    expect(res.status).toBe(413);
+    expect(res.body.code).toBe('UPLOAD_TOO_LARGE');
+    expect(await blobs.head(sha256Of(big))).toBeNull();
+    expect(await count()).toBe(0);
+  });
+
+  it('dedups globally, but not across engagements', async () => {
+    const { app, svc, engagement } = await setup();
+    const auditor = await signIn(app, 'auditor');
+    const g = { kind: 'sop', classification: 'internal' };
+    const first = await send(auditor, '/api/documents/upload', fx('sample.pdf'), 's.pdf', 'application/pdf', g).expect(201);
+    const again = await send(auditor, '/api/documents/upload', fx('sample.pdf'), 's.pdf', 'application/pdf', g);
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ id: first.body.id, duplicate: true });
+    const other = await engagementWithFailedControl(svc);
+    const a = await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.pdf'), 's.pdf', 'application/pdf', FIELDS).expect(201);
+    const b = await send(auditor, `/api/engagements/${other.id}/evidence`, fx('sample.pdf'), 's.pdf', 'application/pdf', FIELDS).expect(201);
+    expect(b.body.id).not.toBe(a.body.id);
+  });
+
+  it('retry on no_text or client text is 409, and retainUntil edge cases hold', async () => {
+    const { app, svc, blobs, engagement } = await setup();
+    const db = svc.db.kysely;
+    const auditor = await signIn(app, 'auditor');
+    const scan = await send(auditor, '/api/documents/upload', fx('scanned.pdf'), 'scan.pdf', 'application/pdf', { kind: 'sop', classification: 'internal' }).expect(201);
+    expect(scan.body.extraction.status).toBe('no_text');
+    const r1 = await auditor.post(`/api/documents/${scan.body.id}/extract`);
+    expect([r1.status, r1.body.code]).toEqual([409, 'UNSUPPORTED']);
+
+    const bytes = fx('sample.pdf');
+    await blobs.put(bytes, { mime: 'application/pdf' });
+    const doc = await insertDocument(db, { sha256: sha256Of(bytes), filename: 's.pdf', mime: 'application/pdf', size: bytes.length, kind: 'sop', classification: 'internal', engagementId: null, uploadedBy: 'auditor' });
+    await insertExtraction(db, { documentId: doc.id, extractor: 'client', extractorVersion: '1', status: 'client', chars: 1, pages: null, error: null, by: 'auditor' });
+    const r2 = await auditor.post(`/api/documents/${doc.id}/extract`);
+    expect([r2.status, r2.body.code]).toEqual([409, 'EXTRACTION_EXISTS']);
+
+    const url = `/api/engagements/${engagement.id}/evidence`;
+    const today = new Date().toISOString().slice(0, 10);
+    const t = await send(auditor, url, fx('sample.docx'), 'a.docx', DOCX_MIME, { ...FIELDS, retainUntil: today });
+    expect(t.status).toBe(201);
+    expect(t.body.retainUntil).toBe(today);
+    const none = await send(auditor, url, fx('sample.xlsx'), 'a.xlsx', 'application/octet-stream', FIELDS).expect(201);
+    expect(none.body.retainUntil).toBeNull();
+  });
 });

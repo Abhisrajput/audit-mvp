@@ -8,12 +8,11 @@ import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, mayRead } from '../knowledge/access';
 import { getDocument, insertDocument } from '../knowledge/document-repo';
-import { CalendarDate, readableDocument, storageCall, type StorageDeps } from '../knowledge/routes';
+import { CalendarDate, evidenceConfigOf, readableDocument, storageCall, storeOf, type StorageDeps } from '../knowledge/routes';
 import { recordDocumentEvent } from '../knowledge/trail';
 import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { sha256Of } from '../storage/blob-store';
-import { loadEvidenceConfig } from './config';
 import { runExtraction } from './extraction';
 import { latestExtraction } from './extraction-repo';
 import { ContentMismatch, sniff } from './sniff';
@@ -22,7 +21,12 @@ export const EVIDENCE_UPLOAD_PATH = '/api/engagements/:id/evidence';
 export const DOCUMENT_UPLOAD_PATH = '/api/documents/upload';
 
 const MAX_FIELDS = 8;
-const MAX_FIELD_BYTES = 1024;
+/** The note cap is 500 characters, which can be up to 4 bytes each in UTF-8. */
+const MAX_FIELD_BYTES = 2048;
+/** Multipart framing and the small text fields on top of the file itself. */
+const BODY_OVERHEAD = 64 * 1024;
+
+const NO_CONTROL = (s: string) => !/[\u0000-\u001f\u007f]/.test(s);
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
@@ -38,7 +42,7 @@ const Fields = z.object({
   kind: z.enum(DOCUMENT_KINDS),
   classification: z.enum(CLASSIFICATIONS),
   retainUntil: CalendarDate.optional(),
-  note: z.string().max(500).optional(),
+  note: z.string().max(500).refine(NO_CONTROL, 'contains control characters').optional(),
 });
 
 interface Upload { bytes: Buffer; filename: string; mime: string; fields: Record<string, string> }
@@ -49,9 +53,14 @@ interface Upload { bytes: Buffer; filename: string; mime: string; fields: Record
  */
 function readUpload(req: Request, maxBytes: number): Promise<Upload> {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > maxBytes + BODY_OVERHEAD) {
+      req.resume();
+      return reject(new AppError(413, 'The file is larger than the upload limit', 'UPLOAD_TOO_LARGE'));
+    }
     let parser: busboy.Busboy;
     try {
-      parser = busboy({ headers: req.headers, limits: { files: 1, fileSize: maxBytes, fields: MAX_FIELDS, fieldSize: MAX_FIELD_BYTES, parts: MAX_FIELDS + 2 } });
+      parser = busboy({ headers: req.headers, limits: { files: 1, fileSize: maxBytes, fields: MAX_FIELDS, fieldSize: MAX_FIELD_BYTES, parts: MAX_FIELDS + 2 }, defParamCharset: 'utf8' });
     } catch {
       return reject(new AppError(400, 'Send the file as multipart/form-data'));
     }
@@ -76,7 +85,8 @@ function readUpload(req: Request, maxBytes: number): Promise<Upload> {
         stream.resume();
         return fail(new AppError(400, 'Send exactly one file, in a part named "file"'));
       }
-      file = { filename: info.filename ?? '', mime: info.mimeType };
+      // busboy reports text/plain when the part has no Content-Type; that is undeclared, not a claim of text.
+      file = { filename: info.filename ?? '', mime: info.mimeType === 'text/plain' ? 'application/octet-stream' : info.mimeType };
       stream.on('data', (c: Buffer) => chunks.push(c));
       stream.on('limit', () => fail(new AppError(413, 'The file is larger than the upload limit', 'UPLOAD_TOO_LARGE')));
     });
@@ -91,11 +101,13 @@ function readUpload(req: Request, maxBytes: number): Promise<Upload> {
       resolve({ bytes: Buffer.concat(chunks), filename: file.filename, mime: file.mime, fields });
     });
     req.on('error', () => fail(new AppError(400, 'The upload was interrupted')));
+    // The client went away mid-body: no response can be written, but the handler must not wait forever.
+    req.on('close', () => { if (!req.complete) fail(new AppError(400, 'The upload was interrupted')); });
     req.pipe(parser);
   });
 }
 
-const Filename = z.string().transform((s) => s.replace(/^.*[\\/]/, '').trim()).pipe(z.string().min(1).max(255));
+const Filename = z.string().transform((s) => s.replace(/^.*[\\/]/, '').trim()).pipe(z.string().min(1).max(255).refine(NO_CONTROL, 'contains control characters'));
 const PageQuery = z.object({ page: z.string().regex(/^\d{1,9}$/).transform(Number).optional() });
 
 /** Evidence intake (multipart upload), extraction retry and page text. All under /api, so session, CSRF and role gates apply. */
@@ -104,11 +116,8 @@ export function evidenceRoutes(svc: AuditService, storage: StorageDeps): Router 
   const db = svc.db.kysely;
   const preparers = requireRole(PREPARER_ROLES);
   const readers = requireRole(READ_ROLES);
-  const config = storage.evidence ?? loadEvidenceConfig({}, { maxBytes: storage.maxUploadBytes });
-  const blobs = () => {
-    if (!storage.blobs) throw new AppError(503, 'File storage is not configured', 'STORAGE_UNAVAILABLE');
-    return storage.blobs;
-  };
+  const config = evidenceConfigOf(storage);
+  const blobs = () => storeOf(storage);
 
   async function intake(req: Request, scope: { engagementId: string | null }) {
     const store = blobs();
@@ -132,7 +141,7 @@ export function evidenceRoutes(svc: AuditService, storage: StorageDeps): Router 
 
     const sha256 = sha256Of(up.bytes);
     // Only documents this caller may read count: the answer must not reveal a restricted copy to someone who cannot see it.
-    let q = db.selectFrom('documents').select(['id', 'kind', 'classification']).where('sha256', '=', sha256).where('classification', 'in', [...CLASSIFICATIONS_BY_ROLE[actor.role]]);
+    let q = db.selectFrom('documents').select(['id', 'kind', 'classification']).where('sha256', '=', sha256).where('retention_expired', '=', false).where('classification', 'in', [...CLASSIFICATIONS_BY_ROLE[actor.role]]);
     q = scope.engagementId === null ? q.where('engagement_id', 'is', null) : q.where('engagement_id', '=', scope.engagementId);
     const same = await q.orderBy('uploaded_at').orderBy('id').execute();
     if (same.length) {
