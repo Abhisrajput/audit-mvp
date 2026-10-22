@@ -206,7 +206,7 @@ describe('the engagement graph', () => {
     ]);
   });
 
-  it('honours a rejected report gate\'s directive even when the basis moved before the redraft [REQ-32, REQ-26]', () => {
+  it('honours the directive on a rejected report gate even when the basis moved before the redraft [REQ-32, REQ-26]', () => {
     const { e, gates, qa: reviews } = planned();
     e.testInputs = { A: input() };
     e.testResults = { A: result('A') };
