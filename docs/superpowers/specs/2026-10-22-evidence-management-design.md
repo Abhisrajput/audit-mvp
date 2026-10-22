@@ -179,7 +179,8 @@ export interface TestDraft {
   evidence: (EvidenceLink & { quote: string })[];   // quote ≤ 300 chars, verbatim; page required when the document has pages
   couldNotVerify: string[];                          // what the plan asked for that the evidence did not show
   confidence: 'low' | 'medium' | 'high';
-  draftedBy: { runId: string; stepId: string; model: string; at: string };
+  qa: { blocking: string[]; advisory: string[] };            // deterministic QA flags stored with the draft (planning ruling, §12)
+  draftedBy: { runId: string; at: string; model: string };   // no stepId exists: steps are keyed by run and sequence (planning ruling, §12)
   personEdited?: boolean;
 }
 ```
@@ -194,7 +195,7 @@ Tools, allow-listed for `evidence` only: `search_knowledge` scoped to `{ engagem
 
 ### 9.3 Accepting a draft
 
-The Fieldwork row card shows the draft above the form: the proposal, the quotes as links to the page text, `couldNotVerify`, confidence, and QA flags. **Accept** fills the form from the draft (the person may edit), and **Save record** calls the existing `PUT …/tests/:rowId` with the extra optional field `fromDraft: { runId, stepId }`, which the service copies into the trail bundle's inputs and clears the draft. **Discard** marks the draft `personEdited: true` with an empty proposal so the agent does not redraft it. A record saved without a draft, or after the agent's draft was changed, is simply a human record, as today.
+The Fieldwork row card shows the draft above the form: the proposal, the quotes as links to the page text, `couldNotVerify`, confidence, and QA flags. **Accept** fills the form from the draft (the person may edit), and **Save record** calls the existing `PUT …/tests/:rowId` with the extra optional field `fromDraft: { runId, at }`, which the service copies into the trail bundle's inputs and clears the draft. **Discard** marks the draft `personEdited: true` with an empty proposal so the agent does not redraft it. A record saved without a draft, or after the agent's draft was changed, is simply a human record, as today.
 
 ### 9.4 Eval kind `evidence`
 
@@ -258,3 +259,15 @@ Runbook: `## 9. Evidence` with the retention job (schedule, output, what "retain
 - **`documentId` is bounded with `.max(64)` only, not the `^DOC-…$` pattern:** a regex would give a malformed id a zod error distinct from `EVIDENCE_NOT_FOUND`, the difference in shape REQ-39 forbids.
 - **The report prints a linked document's filename for every reader, with no per-viewer read check:** a report that varied by viewer would change the signed workpaper hash per viewer. The person who cites a restricted document in a finding chooses that disclosure, so a restricted document's filename can reach viewers. A test pins it.
 - **`linkedDocumentIds` counts superseded findings too, while the usage route stays on live rows:** a signed earlier version that cited a document is still part of the record. Cost: a document cited once in a since-revised finding is never auto-expired.
+
+**Made during planning (3B)** (recon of the agent code before plan 3B; these amend §9 where they differ):
+
+- **No `stepId`:** agent steps are keyed by run and sequence and the delegate step is appended after the specialist's write, so a draft is identified by `draftedBy: { runId, at, model }` and accepted with `fromDraft: { runId, at }`; the specialist saves all drafts of a run in one agent write, so one write maps to one delegate step and a budget stop mid-run still saves the rows done so far.
+- **QA state lives on the draft:** `TestDraft.qa: { blocking, advisory }` is computed by code in the specialist before the save. Drafts are not a QA subject of the run (the rules policy reworks on blocking, which would loop), and the rubric criterion `evidence.sufficiency` has no subject kind to attach to: it is deferred.
+- **Blocked versus refused:** a draft whose quote is not found verbatim is saved with `qa.blocking: ['unsupported-quote']` and its proposal removed, so the person sees what was found and why it is blocked; a draft citing a document outside the engagement, or with `exceptions > sampleTested`, is not saved and the delegate step records `noDraft: [{ rowId, reason }]`.
+- **Once per run, by omission:** the graph offers the `evidence` delegate at `awaiting_tests` only when the engagement has an `evidence` document with text (`ok` or `client`), a planned untested row without a person-edited draft exists, and no evidence delegate ran in this run; a repeat is omitted from the menu rather than escalated. The golden trace fixtures have no documents, so their menus and traces are unchanged.
+- **`read_document` is evidence-only:** it reads engagement documents of kind `evidence` the acting person may read, never global ones, with the same not-found answer for missing, unreadable, other-engagement and expired documents; the `evidence` agent's `search_knowledge` is scoped to `kinds: ['evidence']` by the toolbox, not by model arguments; offline quotes come from the chunk text, not the search snippet.
+- **Drafts do not retain documents:** retention scans records only; Accept re-validates the links in `recordTest`, so an expired cited document fails the save with `EVIDENCE_EXPIRED`.
+- **Migration 015** adds `engagement_work.test_drafts jsonb NOT NULL DEFAULT '{}'` (the `memos` pattern) rather than a nullable column; drafts are never part of any content hash or workpaper revision.
+- **Model role:** the specialist uses the existing `specialist` role; no new role, environment variable or price entry.
+- **Discard** is a human write: `POST /api/engagements/:id/tests/:rowId/draft/discard` (preparers) sets `personEdited: true` with no proposal and trails `human:draft-discard`.
