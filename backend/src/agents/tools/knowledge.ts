@@ -3,13 +3,13 @@ import { z } from 'zod';
 import type { DB, KgNodesTable } from '../../db/schema';
 import type { User } from '../../engine/types';
 import { todayUtc, trustProblems } from '../../engine/trust';
-import { CLASSIFICATIONS_BY_ROLE } from '../../knowledge/access';
+import { CLASSIFICATIONS_BY_ROLE, type DocumentKind } from '../../knowledge/access';
 import { PgFtsRetriever } from '../../knowledge/retriever';
 
 // The agents' knowledge tools (spec §2 tools/). Both run with the visibility of the person who started the run: an
 // agent never reads anything its starter could not (REQ-23).
 
-export const TOOL_NAMES = ['search_knowledge', 'node_neighbourhood'] as const;
+export const TOOL_NAMES = ['search_knowledge', 'node_neighbourhood', 'read_document'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export const SearchArgs = z.object({ query: z.string().trim().min(1).max(200), limit: z.number().int().min(1).max(10).default(5) }).strict();
@@ -24,14 +24,18 @@ export interface KnowledgeHit {
   citable: boolean;
   /** Where it came from: a concept id, or a file and page. */
   source: string;
+  /** For chunk hits: the document and page it is from. */
+  documentId?: string;
+  page?: number | null;
 }
 
 /** Full-text search over documents and the knowledge graph, filtered inside the database query to what `user` may read. */
-export async function searchKnowledge(db: Kysely<DB>, user: User, engagementId: string, args: z.infer<typeof SearchArgs>): Promise<KnowledgeHit[]> {
-  const hits = await new PgFtsRetriever(db).search(args.query, { user, engagementId, limit: args.limit });
+export async function searchKnowledge(db: Kysely<DB>, user: User, engagementId: string, args: z.infer<typeof SearchArgs>, scope?: { kinds?: readonly DocumentKind[] }): Promise<KnowledgeHit[]> {
+  const hits = await new PgFtsRetriever(db).search(args.query, { user, engagementId, limit: args.limit, kinds: scope?.kinds });
   return hits.map((h) => ({
     id: h.id, kind: h.kind, title: h.title, snippet: h.snippet, citable: h.citable,
     source: h.kind === 'kg_node' ? h.citation.conceptId : `${h.citation.filename}${h.citation.page ? ` p.${h.citation.page}` : ''}`,
+    ...(h.kind === 'chunk' ? { documentId: h.citation.documentId, page: h.citation.page } : {}),
   }));
 }
 
