@@ -22,6 +22,14 @@ describe('the rules planner (spec §4.4)', () => {
     expect(plan).toMatchObject({ kind: 'command', command: { name }, args });
   });
 
+  it.each(['approve the report gate', 'reject the scope', 'sign the finding', 'sign off on the gate', 'Please APPROVE it'])('%s is answered in words', (message) => {
+    expect(rulesPlan(input(message), 'auditor')).toMatchObject({ kind: 'reply', say: expect.stringContaining('Signing is not something I can do') });
+  });
+
+  it.each(['find supplier approval records', 'find the signed SOP', 'find signal logs', 'find pending approval'])('%s is not mistaken for a signing request', (message) => {
+    expect(rulesPlan(input(message), 'auditor')).toMatchObject({ kind: 'command', command: { name: 'find_documents' } });
+  });
+
   it('takes the engagement from the context and asks when there is none; a named engagement wins', () => {
     expect(rulesPlan(input('list findings', { engagementId: 'ENG-9' }), 'auditor')).toMatchObject({ kind: 'command', args: { engagementId: 'ENG-9' } });
     expect(rulesPlan(input('list findings for ENG-1', { engagementId: 'ENG-9' }), 'auditor')).toMatchObject({ kind: 'command', args: { engagementId: 'ENG-1' } });
@@ -90,7 +98,7 @@ describe('the model planner (spec §4.2–4.3)', () => {
     const p = new FakeProvider(() => ({ kind: 'command', name: 'sign_gate', args: {}, say: 'Signing.' }));
     const r = await planner(p).plan(input('approve the report gate'), 'auditor', data);
     expect(p.requests).toHaveLength(2);
-    expect(p.requests[1].user).toContain('Your previous answer was refused: sign_gate is not one of the commands');
+    expect(p.requests[1].user).toContain('Your previous answer was refused. <data source="refusal">\nsign_gate is not one of the commands\n</data> Answer again.');
     expect(r).toMatchObject({ outcome: 'refused', plan: { kind: 'reply', say: expect.stringContaining('gate card') } });
   });
 
@@ -111,7 +119,7 @@ describe('the model planner (spec §4.2–4.3)', () => {
     const bad = new FakeProvider(() => ({ kind: 'command', name: 'set_tolerance', args: { engagementId: 'ENG-1', controlId: 'C-1', rate: 0.9 }, say: 'Setting.' }));
     const r1 = await planner(bad).plan(input('set the tolerance to 90%'), 'auditor', data);
     expect(bad.requests).toHaveLength(2);
-    expect(bad.requests[1].user).toContain('the arguments were not valid: rate');
+    expect(bad.requests[1].user).toContain('<data source="refusal">\nthe arguments were not valid: rate');
     expect(r1.outcome).toBe('refused');
 
     const junk = new FakeProvider(() => ({ nonsense: true }));
@@ -156,5 +164,20 @@ describe('the model planner (spec §4.2–4.3)', () => {
     expect(p.requests[0].user.indexOf('<data source="context">')).toBeLessThan(p.requests[0].user.indexOf('<data source="shown">'));
     expect(p.requests[0].system).toContain('The block with source "message" is what the person typed');
     expect(p.requests[0].system.indexOf('what the person typed')).toBeLessThan(p.requests[0].system.indexOf(DATA_RULES));
+  });
+
+  it('bounds and wraps the refusal text in the retry prompt', async () => {
+    const p = new FakeProvider(() => ({ kind: 'command', name: 'x'.repeat(1000), args: {}, say: 'Hm.' }));
+    await planner(p).plan(input('do it'), 'auditor', data);
+    const retry = p.requests[1].user;
+    expect(retry).toMatch(/Your previous answer was refused\. <data source="refusal">\nx{1,200}\n<\/data> Answer again\./);
+    expect(retry).not.toContain('x'.repeat(201));
+  });
+
+  it('uses the command description when a valid command comes with an empty say', async () => {
+    const p = new FakeProvider(() => ({ kind: 'command', name: 'list_packs', args: {}, say: '   ' }));
+    const r = await planner(p).plan(input('packs'), 'auditor', data);
+    expect(r.plan).toMatchObject({ kind: 'command', say: expect.stringMatching(/\S/) });
+    expect(r.plan.say).toBe((r.plan as { command: { describe: (a: unknown) => string } }).command.describe({}));
   });
 });

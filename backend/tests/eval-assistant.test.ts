@@ -88,8 +88,8 @@ describe('the assistant eval kind (spec 9)', () => {
     } finally { fs.rmSync(file, { force: true }); }
   });
 
-  it('an offline eval run reports exactly 12 assistant cases', async () => {
+  it('an offline eval run reports exactly 13 assistant cases', async () => {
     const report = await runEval(registryFromBundles(), null, ['food'], LENIENT.citationPolicy);
-    expect(report.byKind.assistant.total).toBe(12);
+    expect(report.byKind.assistant.total).toBe(13);
   });
 });

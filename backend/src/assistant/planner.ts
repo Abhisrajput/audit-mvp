@@ -119,7 +119,7 @@ const RULES: { re: RegExp; name: string; args?: (m: RegExpMatchArray, message: s
 
 export function rulesPlan(input: TurnInput, role: Role): Plan {
   const message = input.message.trim();
-  if (/\b(?:sign\w*|approv\w*|reject\w*)\b/i.test(message)) return { kind: 'reply', say: SIGNING };
+  if (/\b(?:sign|approve|reject)\b/i.test(message)) return { kind: 'reply', say: SIGNING };
   for (const rule of RULES) {
     const m = message.match(rule.re);
     if (!m) continue;
@@ -158,14 +158,14 @@ export class ModelPlanner {
     const prompt = plannerPrompt(input, role, data);
     let refusal = '';
     for (let i = 0; i < 2; i++) {
-      const user = refusal ? `${prompt}\n\nYour previous answer was refused: ${refusal}. Answer again.` : prompt;
+      const user = refusal ? `${prompt}\n\nYour previous answer was refused. ${asData('refusal', refusal.slice(0, 200))} Answer again.` : prompt;
       try {
         const { output } = await this.llm.generate({
           system: ASSISTANT_SYSTEM, user, schema: Answer, model: this.opts.model, maxTokens: 1500, effort: 'low', timeoutMs: this.opts.timeoutMs, sdkRetries: 0,
         });
         if (output.kind === 'reply') return { plan: { kind: 'reply', say: say(output.say) }, outcome: 'reply', detail: 'reply' };
         const checked = validateAnswer(output, role, input.context);
-        if (checked.ok) return { plan: { kind: 'command', command: checked.command, args: checked.args, say: say(output.say) }, outcome: 'command', detail: checked.command.name };
+        if (checked.ok) return { plan: { kind: 'command', command: checked.command, args: checked.args, say: say(output.say) || checked.command.describe(checked.args) }, outcome: 'command', detail: checked.command.name };
         if (checked.missing.length) {
           return { plan: { kind: 'reply', say: say(missingReply(commandNamed(output.name)!, checked.missing)) }, outcome: 'reply', detail: `missing: ${checked.missing.join(', ')}` };
         }
