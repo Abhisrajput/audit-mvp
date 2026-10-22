@@ -37,3 +37,7 @@ with zipfile.ZipFile("sample.docx", "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("word/document.xml", f'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>Training matrix</w:t></w:r></w:p><w:p><w:r><w:t>Operator A signed off on 2026-03-02</w:t></w:r></w:p></w:body></w:document>')
 
 open("sample.csv", "w").write("batch,result\n0142,pass\n")
+
+# Boundary fixtures for the no_text threshold: 19 and 20 non-whitespace characters.
+open("chars19.pdf", "wb").write(build_pdf(["abcdefghij klmnopqrs"]))
+open("chars20.pdf", "wb").write(build_pdf(["abcdefghij klmnopqrst"]))

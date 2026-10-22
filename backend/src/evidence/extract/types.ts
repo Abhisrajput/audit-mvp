@@ -6,3 +6,6 @@ export class NoTextLayer extends Error {
     this.name = 'NoTextLayer';
   }
 }
+
+/** Extractors stop accumulating past this many characters (2 x MAX_TEXT_CHARS); the caller cuts and marks truncation. */
+export const EXTRACT_SOFT_CAP_CHARS = 1_800_000;

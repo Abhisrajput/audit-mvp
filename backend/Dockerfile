@@ -1,8 +1,7 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-# pdfjs-dist's optional canvas binding is not needed for text extraction.
-RUN npm ci --omit=optional
+RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
@@ -12,7 +11,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
 # The runtime runs only `node dist/...`; drop npm, npx and corepack (and their bundled dependencies) from the image.
-# (pdfjs-dist's optional canvas binding is not needed for text extraction.)
+# The build stage keeps optional dependencies (TypeScript 7's native tsc is one); the runtime does not need
+# pdfjs-dist's optional canvas binding, which text extraction never uses.
 RUN npm ci --omit=dev --omit=optional && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
