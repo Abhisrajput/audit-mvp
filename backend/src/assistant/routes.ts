@@ -28,8 +28,8 @@ const TurnBody = z
     message: z.string().trim().min(1).max(LIMITS.message),
     context: z
       .object({
-        engagementId: z.string().min(1).optional(),
-        shown: z.array(z.object({ kind: z.enum(['engagement', 'finding', 'document', 'control', 'clause']), id: z.string().min(1), label: z.string() }).strict()).optional(),
+        engagementId: z.string().min(1).max(200).optional(),
+        shown: z.array(z.object({ kind: z.enum(['engagement', 'finding', 'document', 'control', 'clause']), id: z.string().min(1).max(200), label: z.string() }).strict()).optional(),
       })
       .strict()
       .optional(),
@@ -38,6 +38,9 @@ const TurnBody = z
   .strict();
 
 const CommandBody = z.object({ name: z.enum(COMMAND_NAMES), args: z.unknown(), expectedVersion: z.number().int().min(1).optional() }).strict();
+
+/** The 404 `svc.engagement` raises for an id that does not exist; a turn answers it in words. */
+const isMissingEngagement = (err: unknown) => err instanceof AppError && err.status === 404 && /^Engagement .* not found$/.test(err.message);
 
 /** The chat assistant (spec §7). Mounted under /api, so the session and CSRF gates in app.ts apply. */
 export function assistantRoutes(svc: AuditService, deps: { agents: AgentConfig; assistant: AssistantConfig }) {
@@ -80,11 +83,23 @@ export function assistantRoutes(svc: AuditService, deps: { agents: AgentConfig; 
     const body: TurnResponse = { say: plan.say };
     if (cmd.kind === 'read') {
       body.command = { name: cmd.name, kind: cmd.kind, args, summary };
-      body.result = await cmd.run({ svc, agents, actor }, args, {});
+      try {
+        body.result = await cmd.run({ svc, agents, actor }, args, {});
+      } catch (err) {
+        if (isMissingEngagement(err)) return res.json({ say: `I could not find ${(args as { engagementId?: string }).engagementId}.` } satisfies TurnResponse);
+        throw err;
+      }
     } else {
       body.proposal = { name: cmd.name, args, summary };
       const engagementId = (args as { engagementId?: unknown } | null)?.engagementId;
-      if (cmd.needsEngagement && typeof engagementId === 'string') body.proposal.expectedVersion = (await svc.engagement(engagementId)).version;
+      if (cmd.needsEngagement && typeof engagementId === 'string') {
+        try {
+          body.proposal.expectedVersion = (await svc.engagement(engagementId)).version;
+        } catch (err) {
+          if (isMissingEngagement(err)) return res.json({ say: `I could not find ${engagementId}.` } satisfies TurnResponse);
+          throw err;
+        }
+      }
     }
     res.json(body);
   }));

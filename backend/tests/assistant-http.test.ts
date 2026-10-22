@@ -84,6 +84,21 @@ describe('the assistant over HTTP (spec §7)', () => {
     expect(await listRuns(svc.db.kysely, id)).toEqual([]);
   });
 
+  it('a turn naming a missing engagement answers in words, for a read and for a write', async () => {
+    const { auditor } = await setup();
+    const read = await auditor.post(TURNS, { message: 'show ENG-NOPE' }).expect(200);
+    expect(read.body).toEqual({ say: 'I could not find ENG-NOPE.' });
+    const write = await auditor.post(TURNS, { message: 'start the run on ENG-NOPE' }).expect(200);
+    expect(write.body).toEqual({ say: 'I could not find ENG-NOPE.' });
+  });
+
+  it('context.engagementId and shown ids are capped at 200 characters', async () => {
+    const { auditor } = await setup();
+    expect((await auditor.post(TURNS, { message: 'list packs', context: { engagementId: 'E'.repeat(201) } })).status).toBe(400);
+    expect((await auditor.post(TURNS, { message: 'list packs', context: { shown: [{ kind: 'document', id: 'd'.repeat(201), label: 'x' }] } })).status).toBe(400);
+    await auditor.post(TURNS, { message: 'list packs', context: { engagementId: 'E'.repeat(200) } }).expect(200);
+  });
+
   it('a viewer may not confirm a write, and unknown names or bad args are 400/403', async () => {
     const { app, auditor, id } = await setup();
     const viewer = await signIn(app, 'viewer');
@@ -111,7 +126,7 @@ describe('the assistant over HTTP (spec §7)', () => {
     expect(third.body.code).toBe('RATE_LIMITED');
   });
 
-  it('bodies over the caps are truncated, a 1001-char message is 400, and unknown fields are 400', async () => {
+  it('bodies over the caps are truncated, a 1001-char message is 400, and unknown fields are 400 [REQ-36]', async () => {
     const llm = new FakeProvider(() => ({ kind: 'reply', say: 'ok' }));
     const { auditor } = await setup({ llm });
     const shown = Array.from({ length: 25 }, (_, i) => ({ kind: 'document', id: `d${i}`, label: `L${String(i).padStart(2, '0')}${'x'.repeat(97)}` }));
