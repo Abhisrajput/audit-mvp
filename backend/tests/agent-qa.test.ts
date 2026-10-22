@@ -84,7 +84,7 @@ describe('the rules policy', () => {
   const redo: Action = { type: 'rework', specialist: 'scope', subjectKey: 'scope', instruction: 'fix it' };
   const escalate: Action = { type: 'escalate', reason: 'QA found issues' };
   const qa = (score: number, list: QaIssue[]): QaReport => ({ subjectKey: 'scope', subjectHash: 'h', mode: 'review', reviewer: 't', score, issues: list });
-  const menu = (actions: Action[], report: QaReport | null): Menu => ({ stage: 'scope', actions, qa: report, qaThreshold: 70 });
+  const menu = (actions: Action[], report: QaReport | null): Menu => ({ stage: 'scope', actions, qa: report, qaThreshold: 70, memo: null });
   const block: QaIssue = { criterion: 'x', severity: 'blocking', detail: 'd' };
   const note: QaIssue = { criterion: 'y', severity: 'advisory', detail: 'd' };
 

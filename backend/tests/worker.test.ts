@@ -323,7 +323,7 @@ describe('choosing a decision', () => {
   const gate: Action = { type: 'open_gate', subjectKey: 'scope' };
   const escalate: Action = { type: 'escalate', reason: 'QA found issues' };
   const menu: Menu = {
-    stage: 'scope', actions: [gate, escalate], qaThreshold: 70,
+    stage: 'scope', actions: [gate, escalate], qaThreshold: 70, memo: null,
     qa: { subjectKey: 'scope', subjectHash: 'h', mode: 'review', reviewer: 't', score: 90, issues: [] },
   };
   const rogue: Policy = {

@@ -26,7 +26,7 @@ async function setup() {
   const apply = async (action: Action, qa: QaReport | null = null, engagement?: Engagement) => {
     const ctx: ExecutorContext = {
       db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: engagement ?? await svc.engagement(e.id),
-      gates: await listGates(svc.db.kysely, e.id), menu: { stage: 'scope', actions: [action], qa, qaThreshold: 70 },
+      gates: await listGates(svc.db.kysely, e.id), menu: { stage: 'scope', actions: [action], qa, qaThreshold: 70, memo: null },
     };
     return applyDecision(ctx, { action, rationale: 'test', policy: 'rules', policyVersion: RULES_VERSION });
   };

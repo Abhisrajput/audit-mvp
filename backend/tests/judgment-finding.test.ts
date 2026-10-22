@@ -4,22 +4,9 @@ import { findingKey } from '../src/agents/subjects';
 import { impactOf, IMPACTS, LIKELIHOODS, likelihoodOf, oneStepWorse, ratingOf } from '../src/judgment/finding';
 import { AuditService } from '../src/service';
 import type { Finding } from '../src/engine/types';
-import { auditor, engagementWithFailedControl, FakeProvider, LENIENT, newService, registry } from './helpers';
+import { auditor, engagementWithFailedControl, FakeProvider, gapsAnswerFrom, LENIENT, newService, registry } from './helpers';
 import { appWithDevUsers, draftFinding } from './http';
 import { testDb } from './db';
-
-/** The gaps prompt's answer: every finding as the data gives it, plus the overlay; any other request throws so the module falls back to its rules. */
-function gapsAnswerFrom(req: { user: string }, overlay: Record<string, unknown>) {
-  if (!req.user.includes('Draft one audit finding')) throw new Error('not the gaps prompt');
-  const open = req.user.indexOf('>\n', req.user.indexOf('<data source="workpaper:failed-controls"')) + 2;
-  const rows = JSON.parse(req.user.slice(open, req.user.lastIndexOf('\n</data>'))) as { rowId: string; control: string; risk: string; record: { observation: string }; allowedClauses: { clauseId: string }[] }[];
-  return {
-    findings: rows.map((r) => ({
-      rowId: r.rowId, title: r.control, condition: r.record.observation, criteria: 'criteria', cause: 'cause', effect: r.risk,
-      recommendation: 'Tailored recommendation', clauseIds: r.allowedClauses.map((c) => c.clauseId).slice(0, 1), ...overlay,
-    })),
-  };
-}
 
 const ratingFromMatrix = (f: Finding) => ratingOf(f.likelihood!, f.impact!);
 

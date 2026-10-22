@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { canonicalJson } from '../engine/trail';
-import type { Engagement } from '../engine/types';
+import type { Engagement, JudgmentMemo } from '../engine/types';
 import type { AgentModels } from './llm/models';
 
 export type RunStatus = 'running' | 'runnable' | 'waiting' | 'needs_human' | 'completed' | 'cancelled' | 'failed';
@@ -140,6 +140,8 @@ export interface Menu {
   actions: Action[];
   qa: QaReport | null;
   qaThreshold: number;
+  /** The judgment memo on the subject this menu is about, shown to the model as data. Never stored. */
+  memo: JudgmentMemo | null;
 }
 
 export interface Policy {

@@ -1,6 +1,6 @@
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { Engagement } from '../engine/types';
-import { findingKey, rowBasis, subjectInfo } from './subjects';
+import { findingKey, menuMemo, rowBasis, subjectInfo } from './subjects';
 import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type GraphInput, type Menu, type QaReport, type Specialist, type Stage } from './types';
 
 // The engagement graph (spec §4): a pure function from the engagement, its gates and this run's QA and redraft
@@ -11,7 +11,7 @@ import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type Gr
 
 const FAILED = new Set(['Ineffective', 'Design deficient']);
 
-type Step = { passed: true } | { passed: false; actions: Action[]; qa: QaReport | null };
+type Step = { passed: true } | { passed: false; actions: Action[]; qa: QaReport | null; subjectKey?: string };
 const act = (actions: Action[], qa: QaReport | null = null): Step => ({ passed: false, actions, qa });
 
 function findLast<T>(xs: readonly T[], match: (x: T) => boolean): T | undefined {
@@ -68,6 +68,11 @@ const summarise = (r: QaReport) => r.issues.map((i) => `${i.criterion}: ${i.deta
 
 /** One subject: produce it, review it, gate it, and react to the gate. `passed` once its gate is approved and current. */
 function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
+  const step = subjectStepOf(input, key, o);
+  return step.passed ? step : { ...step, subjectKey: key };
+}
+
+function subjectStepOf(input: GraphInput, key: string, o: StepOptions): Step {
   const s = subjectInfo(input.engagement, key);
   if (!s || !s.present) return act([delegate(input, o.specialist, key, o.rows)]);
   const g = latestGate(input.gates, key);
@@ -130,8 +135,8 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
 /** The actions the supervisor may take next. Every reachable state offers at least one. */
 export function allowedActions(input: GraphInput): Menu {
   const e = input.engagement;
-  const menu = (stage: Stage, step: Exclude<Step, { passed: true }>): Menu => ({ stage, actions: step.actions, qa: step.qa, qaThreshold: input.qaThreshold });
-  const only = (stage: Stage, action: Action): Menu => ({ stage, actions: [action], qa: null, qaThreshold: input.qaThreshold });
+  const menu = (stage: Stage, step: Exclude<Step, { passed: true }>): Menu => ({ stage, actions: step.actions, qa: step.qa, qaThreshold: input.qaThreshold, memo: menuMemo(e, step.subjectKey) });
+  const only = (stage: Stage, action: Action): Menu => ({ stage, actions: [action], qa: null, qaThreshold: input.qaThreshold, memo: null });
 
   const workpapers: [Stage, string, Specialist][] = [['scope', 'scope', 'scope'], ['rcm', 'rcm', 'rcm'], ['test_plans', 'test_plans', 'test-plan']];
   for (const [stage, key, specialist] of workpapers) {

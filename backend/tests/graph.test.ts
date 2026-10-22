@@ -227,3 +227,30 @@ describe('the engagement graph', () => {
     expect(menu(e, { qa: [qa(e, 'scope', [], 90)] }).actions).toEqual([{ type: 'open_gate', subjectKey: 'scope' }]);
   });
 });
+
+describe('the memo on the menu', () => {
+  const memo = (subjectKey: string) => ({ subjectKey, calls: [], forTheReviewer: ['look here'], producedAt: 't' });
+
+  it('puts the current subject\'s memo on the menu and nothing on a forced menu [REQ-26]', () => {
+    const e = engagement({ scope: [scopeItem('A')], rcm: [row('A')], memos: { scope: memo('scope') } });
+    expect(menu(e).memo?.subjectKey).toBe('scope');
+    // Waiting for field work is a forced menu: no memo.
+    const f = engagement({ scope: [scopeItem('A')], rcm: [row('A')], memos: { scope: memo('scope') } });
+    f.testPlans = { A: plan(f.rcm[0]) };
+    const waiting = menu(f, { gates: [gate(f, 'scope', 'approved'), gate(f, 'rcm', 'approved')], qa: [qa(f, 'test_plans')] });
+    expect(waiting.stage).toBe('awaiting_tests');
+    expect(waiting.memo).toBeNull();
+    // A subject with no memo of its own shows none.
+    expect(menu(engagement({ scope: [scopeItem('A')] })).memo).toBeNull();
+  });
+
+  it('takes a finding\'s memo from the finding [REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'draft', { memo: memo(findingKey('A')) })];
+    const m = menu(e, { gates, qa: reviews });
+    expect(m.stage).toBe('findings');
+    expect(m.memo?.subjectKey).toBe(findingKey('A'));
+  });
+});

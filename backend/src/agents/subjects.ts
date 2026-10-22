@@ -1,5 +1,5 @@
 import { canonicalJson, sha256 } from '../engine/trail';
-import type { Engagement, RcmRow } from '../engine/types';
+import type { Engagement, JudgmentMemo, RcmRow } from '../engine/types';
 import { contextBasis } from '../judgment/context';
 import { findingContentHash, workpaperContentHash } from '../signing/content-hash';
 import type { GateKind } from './types';
@@ -67,4 +67,12 @@ export function subjectInfo(e: Engagement, key: string): SubjectInfo | null {
   const f = rowId ? e.findings.find((x) => x.rowId === rowId) : undefined;
   if (!rowId || !f) return null;
   return { key, gateKind: 'finding', subjectId: f.id, hash: findingContentHash(f), basis: rowBasis(e, rowId), present: true };
+}
+
+/** The judgment memo behind a subject: its own entry, else (for a finding) the memo on the finding. */
+export function menuMemo(e: Engagement, subjectKey: string | undefined): JudgmentMemo | null {
+  if (!subjectKey) return null;
+  if (Object.hasOwn(e.memos ?? {}, subjectKey)) return e.memos[subjectKey];
+  const rowId = rowOfKey(subjectKey);
+  return (rowId && e.findings.find((f) => f.rowId === rowId)?.memo) || null;
 }
