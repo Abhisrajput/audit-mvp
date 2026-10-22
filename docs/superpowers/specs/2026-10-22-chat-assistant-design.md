@@ -147,7 +147,7 @@ When `svc.llm` is null (or `ASSISTANT_ENABLED=false` is not the case but the pro
 | `(search|find) (standards?|clauses?|requirements?)( (about|for|on))? (.+)` | `search_standards {query}` |
 | `(list|show) packs` | `list_packs` |
 | `(start|run) (the )?(agent|run|audit)( (for|on) (ENG-…))?` | `start_run` (context default) |
-| anything containing `sign`, `approve` or `reject` | reply: signing happens on the gate card or the finding dialog |
+| anything with the whole word `sign`, `approve` or `reject` (not `signed`, `approval`) | reply: signing happens on the gate card or the finding dialog |
 | anything else | reply: "I am offline and understand a few fixed phrases: …" listing the shapes above |
 
 The rules planner is also the fallback the model planner ends in, so an offline phrase works even when the model is down. The settings endpoint tells the panel which planner is active (`planner: 'llm' | 'rules'`), and the panel says so under the composer.
