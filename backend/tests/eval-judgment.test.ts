@@ -34,4 +34,15 @@ describe('the judgment eval kind (spec §8)', () => {
     };
     expect(runJudgmentCase(wholeEntity).passed).toBe(true);
   });
+
+  it('a missing cases file is one failed row, not a thrown error', () => {
+    const rows = runJudgmentCases('/nonexistent/judgment-cases.json');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'judgment:cases-missing', packId: 'judgment', kind: 'judgment', passed: false, detail: expect.stringContaining('/nonexistent/judgment-cases.json') });
+  });
+
+  it('an unknown check is a failed row naming the value', () => {
+    const row = runJudgmentCase({ id: 'y', status: 'draft', check: 'nope' as JudgmentCase['check'], description: '', input: {}, expected: {} });
+    expect(row).toMatchObject({ passed: false, detail: 'unknown check: nope' });
+  });
 });

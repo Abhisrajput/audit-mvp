@@ -336,7 +336,7 @@ Agreed management actions are tracked, validated and closed on time.
 ```bash
 cd backend
 npm test              # needs Docker: tests run against a real Postgres (Testcontainers)
-npm run eval          # 39/39 eval cases (offline), on a throwaway in-process database;
+npm run eval          # 41/41 eval cases (offline), on a throwaway in-process database;
                       # needs ALLOW_UNVERIFIED_CITATIONS=true until the packs are verified (the report header records it)
 npm run packs:compile # compile the OKF bundles into the knowledge graph (a release step)
 npm run traceability  # requirements traceability matrix -> validation-output/traceability.md

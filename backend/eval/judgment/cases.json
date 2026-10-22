@@ -20,10 +20,10 @@
     "id": "judgment-ra-incident-on-area",
     "status": "draft",
     "check": "risk-assessment",
-    "description": "An incident on the control's area steps a Medium control up one step to High.",
+    "description": "An incident on the control's area steps a Low control up exactly one step, to Medium.",
     "input": {
       "processArea": "Procurement",
-      "riskRating": "Medium",
+      "riskRating": "Low",
       "context": {
         "factors": [
           {
@@ -38,7 +38,7 @@
       }
     },
     "expected": {
-      "assessedRisk": "High"
+      "assessedRisk": "Medium"
     }
   },
   {
@@ -122,12 +122,39 @@
     }
   },
   {
+    "id": "judgment-ra-null-context",
+    "status": "draft",
+    "check": "risk-assessment",
+    "description": "A control with no context object at all (null) keeps the library rating.",
+    "input": {
+      "processArea": "Procurement",
+      "riskRating": "Medium",
+      "context": null
+    },
+    "expected": {
+      "assessedRisk": "Medium"
+    }
+  },
+  {
     "id": "judgment-rating-rare-minor",
     "status": "draft",
     "check": "rating",
     "description": "The low corner of the rating matrix: rare and minor is Low.",
     "input": {
       "likelihood": "rare",
+      "impact": "minor"
+    },
+    "expected": {
+      "rating": "Low"
+    }
+  },
+  {
+    "id": "judgment-rating-likely-minor",
+    "status": "draft",
+    "check": "rating",
+    "description": "The likely-minor corner of the rating matrix is Low: a minor impact is Low at any likelihood.",
+    "input": {
+      "likelihood": "likely",
       "impact": "minor"
     },
     "expected": {
