@@ -146,4 +146,15 @@ describe('the model planner (spec §4.2–4.3)', () => {
     expect(u).toContain('Today is 2026-10-22.');
     expect(p.requests[0].system).toContain(DATA_RULES);
   });
+
+  it('carries the open engagement in a context block, null when none, and names the message as the request', async () => {
+    const p = new FakeProvider(() => ({ kind: 'reply', say: 'ok' }));
+    await planner(p).plan(input('list findings', { engagementId: 'ENG-1' }), 'auditor', data);
+    await planner(p).plan(input('list findings'), 'auditor', data);
+    expect(p.requests[0].user).toContain('<data source="context">\n{\n "engagementId": "ENG-1"\n}\n</data>');
+    expect(p.requests[1].user).toContain('<data source="context">\n{\n "engagementId": null\n}\n</data>');
+    expect(p.requests[0].user.indexOf('<data source="context">')).toBeLessThan(p.requests[0].user.indexOf('<data source="shown">'));
+    expect(p.requests[0].system).toContain('The block with source "message" is what the person typed');
+    expect(p.requests[0].system.indexOf('what the person typed')).toBeLessThan(p.requests[0].system.indexOf(DATA_RULES));
+  });
 });
