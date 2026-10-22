@@ -2,8 +2,9 @@ import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuI
 import { useState } from 'react';
 import { api } from '../../api';
 import { IMPACT_LABELS, IMPACTS, impactOfRating, LIKELIHOOD_LABELS, LIKELIHOODS, ratingOf } from '../../judgment';
-import type { Finding, Impact, Likelihood } from '../../types';
+import type { EvidenceLink, Finding, Impact, Likelihood } from '../../types';
 import { ActionButton, RiskChip } from '../common';
+import EvidencePicker from '../evidence/EvidencePicker';
 import type { CardContext } from './FindingsTab';
 
 export const FIELDS = ['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const;
@@ -14,7 +15,8 @@ export default function FindingEditDialog({ finding, ctx, onClose }: { finding: 
   const legacy = !finding.likelihood || !finding.impact;
   const [f, setF] = useState({
     ...finding,
-    evidence: finding.evidenceRefs.join(', '),
+    refs: finding.evidenceRefs.join(', '),
+    evidence: (finding.evidence ?? []) as EvidenceLink[],
     likelihood: (finding.likelihood ?? 'possible') as Likelihood,
     impact: (finding.impact ?? impactOfRating(finding.rating)) as Impact,
   });
@@ -53,7 +55,8 @@ export default function FindingEditDialog({ finding, ctx, onClose }: { finding: 
           {FIELDS.map((k) => (
             <TextField key={k} label={k[0].toUpperCase() + k.slice(1)} multiline minRows={2} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} />
           ))}
-          <TextField label="Evidence references" value={f.evidence} onChange={(e) => setF({ ...f, evidence: e.target.value })} />
+          <EvidencePicker engagementId={ctx.engagementId} value={f.evidence} onChange={(evidence) => setF({ ...f, evidence })} />
+          <TextField label="Other references" value={f.refs} onChange={(e) => setF({ ...f, refs: e.target.value })} />
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -68,7 +71,8 @@ export default function FindingEditDialog({ finding, ctx, onClose }: { finding: 
                 likelihood: f.likelihood,
                 impact: f.impact,
                 ...Object.fromEntries(FIELDS.map((k) => [k, f[k]])),
-                evidenceRefs: f.evidence.split(',').map((s) => s.trim()).filter(Boolean),
+                evidence: f.evidence,
+                evidenceRefs: f.refs.split(',').map((s) => s.trim()).filter(Boolean),
               },
             });
             await ctx.reload();

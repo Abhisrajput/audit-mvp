@@ -4,22 +4,24 @@ import { useState } from 'react';
 import { api } from '../../api';
 import { SEVERITY_LABELS } from '../../judgment';
 import type { TabProps } from '../../pages/EngagementPage';
-import type { Engagement, RcmRow, TestInput, TestPlan, TestResult } from '../../types';
+import type { Engagement, EvidenceLink, RcmRow, TestInput, TestPlan, TestResult } from '../../types';
 import { ActionButton, ConclusionChip, RiskChip } from '../common';
+import EvidencePicker from '../evidence/EvidencePicker';
 
-type Draft = { designAdequate: string; observation: string; evidenceRefs: string; sampleTested: string; exceptions: string };
+type Draft = { designAdequate: string; observation: string; evidenceRefs: string; evidence: EvidenceLink[]; sampleTested: string; exceptions: string };
 
 const toDraft = (t?: TestInput): Draft => ({
   designAdequate: t ? (t.designAdequate === null ? 'na' : t.designAdequate ? 'yes' : 'no') : 'na',
   observation: t?.observation ?? '',
   evidenceRefs: t?.evidenceRefs.join(', ') ?? '',
+  evidence: t?.evidence ?? [],
   sampleTested: String(t?.sampleTested ?? 0),
   exceptions: String(t?.exceptions ?? 0),
 });
 
 function RowCard({ row, plan, input, result, engagementId, version, onSaved }: { row: RcmRow; plan?: TestPlan; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
   const [d, setD] = useState<Draft>(toDraft(input));
-  const set = (k: keyof Draft) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
+  const set = (k: Exclude<keyof Draft, 'evidence'>) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
   const dirty = JSON.stringify(d) !== JSON.stringify(toDraft(input));
 
   return (
@@ -77,7 +79,10 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved }: {
             <TextField fullWidth size="small" type="number" label="Exceptions" value={d.exceptions} onChange={set('exceptions')} />
           </Grid>
           <Grid item xs={12} md={7}>
-            <TextField fullWidth size="small" label="Evidence references (comma separated)" placeholder={row.evidenceExpected.join(', ')} value={d.evidenceRefs} onChange={set('evidenceRefs')} />
+            <Stack spacing={1}>
+              <EvidencePicker engagementId={engagementId} value={d.evidence} onChange={(evidence) => setD({ ...d, evidence })} />
+              <TextField fullWidth size="small" label="Other references (comma separated)" placeholder={row.evidenceExpected.join(', ')} value={d.evidenceRefs} onChange={set('evidenceRefs')} />
+            </Stack>
           </Grid>
           <Grid item xs={12}>
             <TextField fullWidth size="small" multiline minRows={2} label="Observation" value={d.observation} onChange={set('observation')} />
@@ -96,6 +101,7 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved }: {
                   body: {
                     designAdequate: d.designAdequate === 'na' ? null : d.designAdequate === 'yes',
                     observation: d.observation,
+                    evidence: d.evidence,
                     evidenceRefs: d.evidenceRefs.split(',').map((s) => s.trim()).filter(Boolean),
                     sampleTested: Number(d.sampleTested) || 0,
                     exceptions: Number(d.exceptions) || 0,

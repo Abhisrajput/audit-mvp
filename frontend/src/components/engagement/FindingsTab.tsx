@@ -3,6 +3,8 @@ import { ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, Card, CardContent, Chip, Divider, Grid, Stack, TextField, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
+import { linkLabel, listAllDocuments } from '../../evidence';
+import type { DocumentRecord } from '../../evidence';
 import { findingContentHash, openFindingGate, reviewIsCurrent } from '../../agents';
 import { IMPACT_LABELS, LIKELIHOOD_LABELS, memoFor, responsesLocked } from '../../judgment';
 import type { TabProps } from '../../pages/EngagementPage';
@@ -36,6 +38,8 @@ export interface CardContext {
   /** The engagement's finding memos and responses, and whether the report gate has closed responses. */
   engagement: Engagement;
   responsesLocked: boolean;
+  /** The engagement's and the library's documents, to name evidence links. */
+  documents: Array<{ id: string; filename: string }>;
 }
 
 function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardContext; gate: Gate | null; qaThreshold: number | null }) {
@@ -151,8 +155,16 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
           <Typography variant="subtitle2">Triple citation:</Typography>
           <Citations citations={f.citations} />
           <Typography variant="body2">
-            control <b>{f.controlId}</b> · evidence <b>{f.evidenceRefs.join(', ') || '—'}</b>
+            control <b>{f.controlId}</b> · evidence
           </Typography>
+          {f.evidence?.map((l) => (
+            <Chip key={`${l.documentId}:${l.page ?? ''}`} size="small" variant="outlined" label={linkLabel(l, ctx.documents)} />
+          ))}
+          {(f.evidenceRefs.length > 0 || !f.evidence?.length) && (
+            <Typography variant="body2">
+              <b>{f.evidenceRefs.join(', ') || '—'}</b>
+            </Typography>
+          )}
         </Stack>
         {f.signOffs.length > 0 && (
           <Stack sx={{ mt: 1.5 }}>
@@ -241,6 +253,14 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
 }
 
 export default function FindingsTab({ engagement: e, setEngagement, run, gates, refreshGates, qaThreshold }: TabProps) {
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  useEffect(() => {
+    let live = true;
+    listAllDocuments(e.id).then((d) => live && setDocuments(d), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [e.id]);
   const ctx: CardContext = {
     engagementId: e.id,
     version: e.version,
@@ -250,6 +270,7 @@ export default function FindingsTab({ engagement: e, setEngagement, run, gates, 
     },
     engagement: e,
     responsesLocked: responsesLocked(gates),
+    documents,
   };
   return (
     <Stack spacing={2}>

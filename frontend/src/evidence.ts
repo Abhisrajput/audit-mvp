@@ -1,6 +1,6 @@
 import { api, upload } from './api';
 import { plainSnippet } from './assistant';
-import type { Classification, DocumentExtraction, DocumentKind, DocumentRecord } from './types';
+import type { Classification, DocumentExtraction, DocumentKind, DocumentRecord, EvidenceLink } from './types';
 
 // access.ts is pure (type-only imports), so these values are safe in the browser bundle.
 export { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS } from '../../backend/src/knowledge/access';
@@ -10,7 +10,7 @@ import type { Role } from './types';
 /** Roles that may upload and retry (auditor, audit manager). roles.ts is pure, so it is safe in the bundle. */
 export const isPreparer = (role: Role | null | undefined): boolean => !!role && PREPARER_ROLES.includes(role);
 
-export type { Classification, DocumentExtraction, DocumentKind, DocumentRecord };
+export type { Classification, DocumentExtraction, DocumentKind, DocumentRecord, EvidenceLink };
 
 export interface StatusLabel { label: string; color: 'default' | 'success' | 'warning' | 'error'; retry: boolean }
 
@@ -71,4 +71,28 @@ export async function searchEvidence(engagementId: string | undefined, q: string
   return hits.flatMap((h) => (h.kind === 'chunk' && h.citation.documentId
     ? [{ documentId: h.citation.documentId, filename: h.citation.filename ?? h.citation.documentId, page: h.citation.page ?? null, snippet: plainSnippet(h.snippet) }]
     : []));
+}
+
+/** Add a link, or remove it when the same document and page is already linked. Returns a new array. */
+export function toggleLink(links: EvidenceLink[], link: EvidenceLink): EvidenceLink[] {
+  const same = (l: EvidenceLink) => l.documentId === link.documentId && l.page === link.page;
+  return links.some(same) ? links.filter((l) => !same(l)) : [...links, link];
+}
+
+/** "BMR-2026-0142.pdf p.7"; the bare id when the document is not in the list. */
+export function linkLabel(link: EvidenceLink, documents: Array<{ id: string; filename: string }>): string {
+  const name = documents.find((d) => d.id === link.documentId)?.filename ?? link.documentId;
+  return link.page ? `${name} p.${link.page}` : name;
+}
+
+/** Concatenate lists, dropping later rows whose id an earlier list already has. */
+export function mergeDocuments<T extends { id: string }>(...lists: T[][]): T[] {
+  const seen = new Set<string>();
+  return lists.flat().filter((d) => !seen.has(d.id) && !!seen.add(d.id));
+}
+
+/** The engagement's documents first, then the global library's. Unfiltered: expired rows are still needed to name existing links. */
+export async function listAllDocuments(engagementId: string): Promise<DocumentRecord[]> {
+  const [mine, global] = await Promise.all([listDocuments(engagementId), listDocuments()]);
+  return mergeDocuments(mine, global);
 }
