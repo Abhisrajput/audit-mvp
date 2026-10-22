@@ -10,11 +10,14 @@ export interface DelegateRecord {
   action: Extract<Action, { type: 'delegate' | 'rework' }>;
   basis: string;
   sinceGateId: string | null;
-  bundleId: string;
+  /** Absent when the specialist saved nothing (the evidence specialist found no draft to keep). */
+  bundleId?: string;
   /** For a Gap Writer run: the basis each targeted row's finding was drafted from. */
   rowBases?: Record<string, string>;
   /** A model was configured but failed, so the specialist drafted on its offline rules (spec §6.3). QA tells the signer. */
   withoutModel?: true;
+  /** Rows the evidence specialist refused to draft, with why. */
+  noDraft?: { rowId: string; reason: string }[];
 }
 
 /** Supersedes each open gate whose subject changed, vanished or was rebuilt on a new basis since it opened. Returns how many. */

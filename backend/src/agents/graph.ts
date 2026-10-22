@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { Engagement } from '../engine/types';
 import { parseOpinionDirective } from '../judgment/opinion';
+import { rowsToDraft } from './specialists/evidence';
 import { findingKey, menuMemo, rowBasis, subjectInfo } from './subjects';
 import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type GraphInput, type Menu, type QaReport, type Specialist, type Stage } from './types';
 
@@ -28,9 +29,11 @@ export const latestGateId = (gates: readonly GateRecord[], key: string): string 
 export const untestedRows = (e: Engagement) => e.rcm.filter((r) => e.testInputs[r.id] && !e.testResults[r.id]).map((r) => r.id);
 
 /** What a redraft of this subject is built from. The graph never repeats a redraft from the same basis. */
-export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[]): string {
+export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[], evidenceDocIds: readonly string[] = []): string {
   const s = subjectInfo(e, subjectKey);
   if (s) return s.basis;
+  // Evidence drafting is built from the rows still untested and the evidence documents with text.
+  if (subjectKey === 'evidence') return sha256(canonicalJson({ rows: rowsToDraft(e).map((r) => r.id).sort(), documents: [...evidenceDocIds].sort() }));
   if (subjectKey === 'testing') return sha256(canonicalJson(untestedRows(e).map((id) => [id, e.testInputs[id]])));
   return sha256(canonicalJson({ subjectKey, rows: (rows ?? []).map((id) => [id, rowBasis(e, id)]) }));
 }

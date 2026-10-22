@@ -35,7 +35,7 @@ export async function readDocument(db: Kysely<DB>, user: User, engagementId: str
   if (!first) throw notFound();
   let wanted: (number | undefined)[];
   let truncated = false;
-  if (args.pages) wanted = args.pages;
+  if (args.pages) wanted = [...new Set(args.pages)];
   else if (!first.pages) wanted = [undefined];
   else {
     wanted = Array.from({ length: Math.min(MAX_PAGES, first.pages) }, (_, i) => i + 1);

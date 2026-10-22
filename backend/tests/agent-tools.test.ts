@@ -171,8 +171,10 @@ describe('knowledge tools for agents', () => {
     expect(steps[0]).toMatchObject({ kind: 'tool_call', agent: 'evidence', decision: { tool: 'read_document', args: { documentId: d.id, pages: [2, 3] }, resultIds: [d.id] } });
     expect(JSON.stringify(steps[0].decision)).not.toContain('Page two');
     expect((await readTrail(svc.db.kysely, e.id)).find((b) => b.id === steps[0].trailBundleId)).toMatchObject({ moduleId: 'agent:tool', actor: 'agent:evidence' });
-    const [lookup] = await box.lookups([{ tool: 'read_document', args: { documentId: d.id, pages: [1] } }, { tool: 'read_document', args: { documentId: d.id, pages: [] , extra: 1 } }]);
+    const [lookup, empty] = await box.lookups([{ tool: 'read_document', args: { documentId: d.id, pages: [1] } }, { tool: 'read_document', args: { documentId: d.id, pages: [] } }]);
     expect(lookup.result).toMatchObject({ pages: [{ page: 1 }] });
+    expect(empty.result).toEqual({ documentId: d.id, filename: d.filename, pages: [], truncated: false });
+    expect(((await box.call('read_document', { documentId: d.id, pages: [2, 2, 1, 2] })) as { pages: { page: number }[] }).pages.map((p) => p.page)).toEqual([2, 1]);
     expect((await box.lookups([{ tool: 'read_document', args: { documentId: d.id, extra: 1 } }]))[0].refused).toMatch(/not valid/);
   });
 
@@ -186,6 +188,9 @@ describe('knowledge tools for agents', () => {
       unreadable: await doc({ engagementId: e.id, classification: 'restricted' }),
       expired: await doc({ engagementId: e.id }),
       notEvidence: await doc({ engagementId: e.id, kind: 'sop' }),
+      noText: await insertDocument(svc.db.kysely, {
+        sha256: 'f'.repeat(64), filename: 'scan.pdf', mime: 'application/pdf', size: 10, kind: 'evidence', classification: 'internal', engagementId: e.id, uploadedBy: 'auditor',
+      }),
     };
     await sql`UPDATE documents SET retention_expired = true WHERE id = ${cases.expired.id}`.execute(svc.db.kysely);
     const bodies: string[] = [];
@@ -222,11 +227,17 @@ describe('knowledge tools for agents', () => {
     await doc({ engagementId: e.id, text: 'Zebrafish quarantine log for the allergen room.' });
     await doc({ engagementId: e.id, kind: 'sop', text: 'Zebrafish quarantine procedure for the allergen room.' });
     await expect(box.call('node_neighbourhood', { conceptId: 'FD-HACCP-03' })).rejects.toMatchObject({ status: 403, code: 'AGENT_FORBIDDEN' });
+    // A model cannot widen the scope: `kinds` is not an argument, and a global evidence document is not this engagement's.
+    await expect(box.call('search_knowledge', { query: 'zebrafish', kinds: ['sop'] })).rejects.toThrow();
+    expect((await box.lookups([{ tool: 'search_knowledge', args: { query: 'zebrafish', kinds: ['sop'] } }]))[0].refused).toMatch(/not valid/);
+    await doc({ engagementId: null, text: 'Zebrafish quarantine log held centrally.' });
     const hits = (await box.call('search_knowledge', { query: 'zebrafish quarantine' })) as { kind: string; snippet: string; documentId?: string }[];
     expect(hits).toHaveLength(1);
     expect(hits[0].snippet).toContain('log');
+    expect(hits[0].snippet).not.toContain('centrally');
     expect(hits[0].documentId).toEqual(expect.any(String));
-    expect(await listSteps(svc.db.kysely, run.id)).toHaveLength(1);
+    // the refused lookup is logged as well as the search
+    expect(await listSteps(svc.db.kysely, run.id)).toHaveLength(2);
     const planner = await toolbox('test-plan');
     await doc({ engagementId: planner.e.id, kind: 'sop', text: 'Zebrafish quarantine procedure for the allergen room.' });
     const planHits = (await planner.box.call('search_knowledge', { query: 'zebrafish quarantine' })) as { snippet: string }[];

@@ -3,6 +3,8 @@ import type { DB } from '../../db/schema';
 import { appendTrail } from '../../db/trail-repo';
 import type { Engagement, User } from '../../engine/types';
 import { AppError } from '../../errors';
+import { CLASSIFICATIONS_BY_ROLE } from '../../knowledge/access';
+import { listDocuments } from '../../knowledge/document-repo';
 import type { AgentPort } from '../port';
 import { elapsedMs } from '../metrics';
 import { appendStep, assertLease, type AgentRun } from '../run-repo';
@@ -74,7 +76,12 @@ export class Toolbox {
       const a = SearchArgs.parse(args);
       parsed = a;
       // The evidence agent reads evidence only: the scope is the toolbox's, never the model's.
-      result = await searchKnowledge(db, starter, engagement.id, a, this.agent === 'evidence' ? { kinds: ['evidence'] } : undefined);
+      const hits = await searchKnowledge(db, starter, engagement.id, a, this.agent === 'evidence' ? { kinds: ['evidence'] } : undefined);
+      // ...and of this engagement: the search also covers global documents, which the evidence agent does not read.
+      if (this.agent === 'evidence') {
+        const own = new Set((await listDocuments(db, { engagementId: engagement.id, classifications: [...CLASSIFICATIONS_BY_ROLE[starter.role]] })).filter((d) => d.engagementId === engagement.id).map((d) => d.id));
+        result = hits.filter((h) => h.documentId !== undefined && own.has(h.documentId));
+      } else result = hits;
     } else if (tool === 'read_document') {
       const a = ReadDocumentArgs.parse(args);
       parsed = a;

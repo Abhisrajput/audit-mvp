@@ -59,7 +59,7 @@ export interface QaReport {
 }
 
 /** The specialists the supervisor can delegate to. Each wraps one existing module (or, for test plans, the drafter). */
-export const SPECIALISTS = ['scope', 'rcm', 'test-plan', 'testing', 'gaps', 'report'] as const;
+export const SPECIALISTS = ['scope', 'rcm', 'test-plan', 'evidence', 'testing', 'gaps', 'report'] as const;
 export type Specialist = (typeof SPECIALISTS)[number];
 
 const SpecialistSchema = z.enum(SPECIALISTS);
