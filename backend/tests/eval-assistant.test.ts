@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMAND_NAMES } from '../src/assistant/commands';
 import { ASSISTANT_CASES_FILE, loadAssistantCases, runAssistantCase, runAssistantCases, type AssistantCase } from '../src/eval/assistant';
@@ -51,6 +54,38 @@ describe('the assistant eval kind (spec 9)', () => {
     expect(modelRows).toHaveLength(6);
     expect(modelRows.every((r) => r.informational === true)).toBe(true);
     expect(rows.filter((r) => !modelRows.includes(r)).every((r) => !r.informational)).toBe(true);
+  });
+
+  it('a model row fails unless the model answered, and says which outcome it got', async () => {
+    const find: AssistantCase = { id: 'm', status: 'draft', description: '', message: 'find the HACCP SOP', needsModel: true, expect: { kind: 'command', name: 'find_documents' } };
+    const broken = new FakeProvider(() => { throw new Error('boom'); });
+    const failed = await runAssistantCase(find, broken, OPTS);
+    expect(failed.passed).toBe(false);
+    expect(failed.detail).toContain('outcome: fallback');
+    const good = new FakeProvider(() => ({ kind: 'command', name: 'find_documents', args: { query: 'HACCP SOP' }, say: 'Searching.' }));
+    const ok = await runAssistantCase(find, good, OPTS);
+    expect(ok.passed).toBe(true);
+    expect(ok.detail).toContain('outcome: command');
+    expect(good.requests[0].model).toBe('eval');
+  });
+
+  it('runAssistantCases gives the model the configured planner settings', async () => {
+    const llm = new FakeProvider(() => ({ kind: 'reply', say: 'ok' }));
+    await runAssistantCases(llm);
+    expect(llm.requests.length).toBeGreaterThan(0);
+    expect(llm.requests.every((r) => r.model === 'claude-sonnet-5-5' && r.timeoutMs === 20000)).toBe(true);
+  });
+
+  it('a null or non-object case is one failed row and the others still run', async () => {
+    const file = path.join(os.tmpdir(), `assistant-cases-${process.pid}.json`);
+    fs.writeFileSync(file, JSON.stringify([null, listPacks, 7]));
+    try {
+      const rows = await runAssistantCases(null, file);
+      expect(rows).toHaveLength(3);
+      expect(rows[0]).toMatchObject({ id: 'assistant:bad-case-0', passed: false });
+      expect(rows[1].passed).toBe(true);
+      expect(rows[2]).toMatchObject({ id: 'assistant:bad-case-2', passed: false });
+    } finally { fs.rmSync(file, { force: true }); }
   });
 
   it('an offline eval run reports exactly 12 assistant cases', async () => {

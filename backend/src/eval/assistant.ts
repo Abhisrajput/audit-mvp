@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CommandName } from '../assistant/commands';
+import { loadAssistantConfig } from '../assistant/config';
 import { ModelPlanner, boundInput, rulesPlan, type Plan, type PlannerData, type TurnContext } from '../assistant/planner';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { Role } from '../engine/types';
@@ -39,16 +40,27 @@ export async function runAssistantCase(c: AssistantCase, llm: LlmProvider | null
   try {
     const role = c.role ?? 'auditor';
     const input = boundInput({ message: c.message, context: c.context });
-    const plan = llm ? (await new ModelPlanner(llm, opts).plan(input, role, EVAL_DATA)).plan : rulesPlan(input, role);
+    let plan: Plan;
+    let outcome = 'rules';
+    let plannerDetail = '';
+    if (llm) {
+      const planned = await new ModelPlanner(llm, opts).plan(input, role, EVAL_DATA);
+      ({ plan, outcome } = planned);
+      plannerDetail = planned.detail;
+    } else {
+      plan = rulesPlan(input, role);
+    }
+    const tag = `outcome: ${outcome}`;
+    if (c.needsModel && outcome !== 'command' && outcome !== 'reply') return { ...base, passed: false, detail: `the model did not answer (${tag}): ${plannerDetail}` };
     const expected = c.expect.kind === 'reply' ? 'reply' : c.expect.name;
     const got = planName(plan);
-    if (got !== expected) return { ...base, passed: false, detail: `expected ${expected} got ${got}` };
+    if (got !== expected) return { ...base, passed: false, detail: `expected ${expected} got ${got}; ${tag}` };
     if (c.expect.kind === 'command' && plan.kind === 'command') {
       const planned = (plan.args ?? {}) as Record<string, unknown>;
       const wrong = Object.entries(c.expect.args ?? {}).filter(([key, value]) => JSON.stringify(planned[key]) !== JSON.stringify(value));
-      if (wrong.length) return { ...base, passed: false, detail: wrong.map(([key, value]) => `${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(planned[key])}`).join('; ') };
+      if (wrong.length) return { ...base, passed: false, detail: `${wrong.map(([key, value]) => `${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(planned[key])}`).join('; ')}; ${tag}` };
     }
-    return { ...base, passed: true, detail: `matches: ${expected}` };
+    return { ...base, passed: true, detail: `matches: ${expected}; ${tag}` };
   } catch (err) {
     return { ...base, passed: false, detail: `error: ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -64,9 +76,16 @@ export async function runAssistantCases(llm: LlmProvider | null, file: string = 
     return [{ id: 'assistant:cases-missing', packId: 'assistant', kind: 'assistant', description: 'The assistant cases file could not be read', passed: false, detail: `${file}: ${err instanceof Error ? err.message : String(err)}` }];
   }
   const rows: EvalCaseResult[] = [];
-  for (const c of cases) {
-    if (c.needsModel && !llm) continue;
-    rows.push(await runAssistantCase(c, llm, { model: 'eval', timeoutMs: 20000 }));
+  // The model rows measure the live assistant's own planner settings.
+  const { model, timeoutMs } = loadAssistantConfig();
+  for (const [index, c] of (cases as unknown[]).entries()) {
+    if (c === null || typeof c !== 'object' || Array.isArray(c)) {
+      rows.push({ id: `assistant:bad-case-${index}`, packId: 'assistant', kind: 'assistant', description: 'A case in the assistant cases file is not an object', passed: false, detail: `case ${index} is ${c === null ? 'null' : Array.isArray(c) ? 'a list' : typeof c}` });
+      continue;
+    }
+    const one = c as AssistantCase;
+    if (one.needsModel && !llm) continue;
+    rows.push(await runAssistantCase(one, llm, { model, timeoutMs }));
   }
   return rows;
 }
