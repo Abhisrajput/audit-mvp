@@ -122,31 +122,35 @@ export function createApp(
     res.status(201).json(await svc.createEngagement(body, actorOf(req)));
   }));
   app.get('/api/engagements/:id', readers, wrap(async (req, res) => {
-    const e = await svc.engagementWithSignatureStatus(param(req, 'id'));
+    const e = await svc.servedTo(await svc.engagementWithSignatureStatus(param(req, 'id')), actorOf(req));
     res.set('ETag', `"${e.version}"`).json(e);
   }));
 
   app.post('/api/engagements/:id/modules/:moduleId/run', readers, wrap(async (req, res) => {
     const { bundle, engagement } = await svc.runModule(param(req, 'id'), param(req, 'moduleId'), actorOf(req), req.body ?? {}, ifMatch(req));
-    res.json({ bundle, engagement });
+    res.json({ bundle, engagement: await svc.servedTo(engagement, actorOf(req)) });
   }));
 
   app.put('/api/engagements/:id/scope', readers, wrap(async (req, res) => {
     const items = z.array(z.object({ controlId: z.string(), included: z.boolean() })).parse(req.body.items);
-    res.json(await svc.setScope(param(req, 'id'), items, actorOf(req), ifMatch(req)));
+    res.json(await svc.servedTo(await svc.setScope(param(req, 'id'), items, actorOf(req), ifMatch(req)), actorOf(req)));
   }));
 
   app.put('/api/engagements/:id/context', readers, wrap(async (req, res) => {
-    res.json(await svc.setEngagementContext(param(req, 'id'), EngagementContextInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
+    res.json(await svc.servedTo(await svc.setEngagementContext(param(req, 'id'), EngagementContextInputSchema.parse(req.body), actorOf(req), ifMatch(req)), actorOf(req)));
   }));
 
   app.put('/api/engagements/:id/tests/:rowId', readers, wrap(async (req, res) => {
-    res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
+    res.json(await svc.servedTo(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), ifMatch(req)), actorOf(req)));
+  }));
+
+  app.post('/api/engagements/:id/tests/:rowId/draft/discard', readers, wrap(async (req, res) => {
+    res.json(await svc.servedTo(await svc.discardTestDraft(param(req, 'id'), param(req, 'rowId'), actorOf(req), ifMatch(req)), actorOf(req)));
   }));
 
   app.put('/api/engagements/:id/tolerances/:controlId', readers, wrap(async (req, res) => {
     const { rate } = ToleranceSchema.parse(req.body);
-    res.json(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)));
+    res.json(await svc.servedTo(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)), actorOf(req)));
   }));
 
   app.post('/api/engagements/:id/findings/:fid/responses', readers, wrap(async (req, res) => {

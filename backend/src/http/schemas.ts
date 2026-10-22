@@ -33,6 +33,7 @@ export const TestInputSchema = z.object({
   evidence: z.array(EvidenceLinkSchema).max(50).optional(),
   sampleTested: z.number().int().min(0),
   exceptions: z.number().int().min(0),
+  fromDraft: z.object({ runId: z.string().min(1), at: z.string().min(1) }).strict().optional(),
 });
 
 export const FindingPatchSchema = z

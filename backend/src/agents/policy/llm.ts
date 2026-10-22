@@ -25,6 +25,7 @@ ${DATA_RULES}`;
  */
 function describe(a: Action): string {
   if (a.type === 'rework') return JSON.stringify({ type: a.type, specialist: a.specialist, subjectKey: a.subjectKey, ...(a.rows ? { rows: a.rows } : {}) });
+  if (a.type === 'delegate' && a.specialist === 'evidence') return JSON.stringify({ type: a.type, specialist: a.specialist, subjectKey: a.subjectKey, note: 'propose test results from the uploaded evidence; a person confirms each', rows: a.rows });
   return JSON.stringify(a);
 }
 

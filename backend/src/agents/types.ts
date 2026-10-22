@@ -59,7 +59,7 @@ export interface QaReport {
 }
 
 /** The specialists the supervisor can delegate to. Each wraps one existing module (or, for test plans, the drafter). */
-export const SPECIALISTS = ['scope', 'rcm', 'test-plan', 'testing', 'gaps', 'report'] as const;
+export const SPECIALISTS = ['scope', 'rcm', 'test-plan', 'evidence', 'testing', 'gaps', 'report'] as const;
 export type Specialist = (typeof SPECIALISTS)[number];
 
 const SpecialistSchema = z.enum(SPECIALISTS);
@@ -132,6 +132,8 @@ export interface GraphInput {
   qa: QaReport[];
   redrafts: RedraftRecord[];
   qaThreshold: number;
+  /** The engagement's evidence documents with text that the run's starter may read, sorted. */
+  evidence: { documentIds: readonly string[] };
 }
 
 /** The legal next actions, and the QA report they were derived from (if any). */

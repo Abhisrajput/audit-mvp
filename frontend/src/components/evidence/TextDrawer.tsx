@@ -2,23 +2,23 @@ import { Alert, Box, Button, Drawer, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { documentText, type DocumentText } from '../../evidence';
 
-interface Props { documentId: string | null; filename: string; onClose: () => void }
+interface Props { documentId: string | null; filename: string; onClose: () => void; /** Page to open first, e.g. the page a quote was cited from. */ initialPage?: number }
 
-export default function TextDrawer({ documentId, filename, onClose }: Props) {
-  const [page, setPage] = useState<number | undefined>(undefined);
+export default function TextDrawer({ documentId, filename, onClose, initialPage }: Props) {
+  const [page, setPage] = useState<number | undefined>(initialPage);
   const [data, setData] = useState<DocumentText | null>(null);
   const [pages, setPages] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { setPage(undefined); setData(null); setPages(null); setError(null); }, [documentId]);
+  useEffect(() => { setPage(initialPage); setData(null); setPages(null); setError(null); }, [documentId, initialPage]);
   useEffect(() => {
     if (!documentId) return;
     let live = true;
     setError(null);
     setData(null);
-    documentText(documentId, page).then((d) => live && (setData(d), setPages(d.pages)), (e: Error) => live && setError(e.message));
+    documentText(documentId, page ?? initialPage).then((d) => live && (setData(d), setPages(d.pages)), (e: Error) => live && setError(e.message));
     return () => { live = false; };
-  }, [documentId, page]);
+  }, [documentId, page, initialPage]);
 
   const loading = !!documentId && !data && !error;
   const current = page ?? data?.page ?? 1;

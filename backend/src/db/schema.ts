@@ -1,7 +1,7 @@
 import type { ColumnType, Generated } from 'kysely';
 import type { Budget, GateKind, GateState, QaReport, RunStatus, SignableWorkpaper, Spent, StepKind, WorkpaperKind } from '../agents/types';
 import type { EvalReport } from '../eval/harness';
-import type { AuditReport, Coverage, ResponseKind, EngagementContext, JudgmentMemo, Role, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestInput, TestPlan, TestResult } from '../engine/types';
+import type { AuditReport, Coverage, ResponseKind, EngagementContext, JudgmentMemo, Role, EngagementStage, Finding, FindingStatus, RcmRow, RiskRating, ScopeItem, TestDraft, TestInput, TestPlan, TestResult } from '../engine/types';
 
 // JSONB columns are read as parsed values and written as JSON strings.
 type Json<T> = ColumnType<T, string, string>;
@@ -36,6 +36,7 @@ export interface EngagementWorkTable {
   context: ColumnType<EngagementContext | null, string | null, string | null>;
   coverage: ColumnType<Coverage | null, string | null, string | null>;
   memos: ColumnType<Record<string, JudgmentMemo>, string | undefined, string>;
+  test_drafts: ColumnType<Record<string, TestDraft>, string | undefined, string>;
 }
 
 export interface FindingsTable {

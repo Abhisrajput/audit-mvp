@@ -1,0 +1,11 @@
+Deviation register extract, January to June 2026.
+
+Each deviation is recorded with a number, a description, a classification, the root cause and a batch impact assessment. Critical and major deviations are investigated within 30 days and approved by the QA manager.
+
+DEV-2026-011 (major): temperature excursion in the tablet coating room. Root cause identified, batch impact assessment extended to the two adjacent batches. Closed in 24 days.
+
+DEV-2026-019 (minor): label reconciliation difference of one label. Closed in 5 days.
+
+DEV-2026-023 (major): missed environmental monitoring sample. Investigation opened 40 days ago and is still open; no impact assessment has been made for other batches.
+
+Summary: 3 deviations sampled. 1 major deviation not investigated or extended to other batches within the time limit.

@@ -56,7 +56,7 @@ export async function insertEngagement(db: Executor, e: Engagement): Promise<voi
     .values({
       engagement_id: e.id, scope: json(e.scope), rcm: json(e.rcm), test_inputs: json(e.testInputs),
       test_results: json(e.testResults), test_plans: json(e.testPlans ?? {}), report: e.report ? json(e.report) : null,
-      context: e.context ? json(e.context) : null, coverage: e.coverage ? json(e.coverage) : null, memos: json(e.memos ?? {}),
+      context: e.context ? json(e.context) : null, coverage: e.coverage ? json(e.coverage) : null, memos: json(e.memos ?? {}), test_drafts: json(e.testDrafts ?? {}),
     })
     .execute();
   for (const f of e.findings) await insertFinding(db, e.id, f);
@@ -86,7 +86,7 @@ export async function loadEngagement(db: Executor, id: string, opts: { forUpdate
     auditType: h.audit_type, scopeStatement: h.scope_statement, packIds: h.pack_ids, createdBy: h.created_by,
     createdAt: iso(h.created_at), stage: h.stage, scope: w.scope, rcm: w.rcm, testInputs: w.test_inputs,
     testResults: w.test_results, testPlans: w.test_plans ?? {}, findings, report: w.report,
-    context: w.context ?? null, coverage: w.coverage ?? null, memos: w.memos ?? {}, tolerances, responses, version: h.version,
+    context: w.context ?? null, coverage: w.coverage ?? null, memos: w.memos ?? {}, testDrafts: w.test_drafts ?? {}, tolerances, responses, version: h.version,
   };
   return { engagement, version: h.version, findingSnapshots: new Map(findings.map((f) => [f.id, canonicalJson(f)])) };
 }
@@ -115,7 +115,7 @@ export async function saveEngagement(db: Executor, loaded: LoadedEngagement): Pr
     .set({
       scope: json(e.scope), rcm: json(e.rcm), test_inputs: json(e.testInputs),
       test_results: json(e.testResults), test_plans: json(e.testPlans ?? {}), report: e.report ? json(e.report) : null,
-      context: e.context ? json(e.context) : null, coverage: e.coverage ? json(e.coverage) : null, memos: json(e.memos ?? {}),
+      context: e.context ? json(e.context) : null, coverage: e.coverage ? json(e.coverage) : null, memos: json(e.memos ?? {}), test_drafts: json(e.testDrafts ?? {}),
     })
     .where('engagement_id', '=', e.id)
     .execute();

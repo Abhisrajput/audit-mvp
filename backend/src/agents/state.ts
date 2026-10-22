@@ -1,7 +1,8 @@
 import type { Executor } from '../db/trail-repo';
-import type { Engagement } from '../engine/types';
+import type { Engagement, User } from '../engine/types';
 import { listGates, supersedeGate, type Gate } from './gate-repo';
 import { listSteps, type AgentRun } from './run-repo';
+import { evidenceDocumentIds } from './specialists/evidence';
 import { findingKey, subjectInfo } from './subjects';
 import type { Action, GraphInput, QaReport, RedraftRecord } from './types';
 
@@ -10,11 +11,14 @@ export interface DelegateRecord {
   action: Extract<Action, { type: 'delegate' | 'rework' }>;
   basis: string;
   sinceGateId: string | null;
-  bundleId: string;
+  /** Absent when the specialist saved nothing (the evidence specialist found no draft to keep). */
+  bundleId?: string;
   /** For a Gap Writer run: the basis each targeted row's finding was drafted from. */
   rowBases?: Record<string, string>;
   /** A model was configured but failed, so the specialist drafted on its offline rules (spec §6.3). QA tells the signer. */
   withoutModel?: true;
+  /** Rows the evidence specialist refused to draft, with why. */
+  noDraft?: { rowId: string; reason: string }[];
 }
 
 /** Supersedes each open gate whose subject changed, vanished or was rebuilt on a new basis since it opened. Returns how many. */
@@ -31,7 +35,7 @@ export async function reconcileGates(db: Executor, e: Engagement): Promise<numbe
 }
 
 /** The graph's input for one iteration: the engagement, its gates, and this run's QA reports and redrafts. */
-export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement, gates: Gate[], qaThreshold: number): Promise<GraphInput> {
+export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement, gates: Gate[], qaThreshold: number, starter: User): Promise<GraphInput> {
   const steps = await listSteps(db, run.id);
   const qa = steps.filter((s) => s.kind === 'qa').map((s) => s.decision as QaReport);
   const redrafts: RedraftRecord[] = steps
@@ -43,5 +47,6 @@ export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement,
       const findings = Object.entries(d.rowBases ?? {}).map(([rowId, basis]): RedraftRecord => ({ subjectKey: findingKey(rowId), kind: d.action.type, basis, sinceGateId: null }));
       return [own, ...findings];
     });
-  return { engagement: e, gates, qa, redrafts, qaThreshold };
+  const documentIds = [...await evidenceDocumentIds(db, e.id, starter)].sort();
+  return { engagement: e, gates, qa, redrafts, qaThreshold, evidence: { documentIds } };
 }

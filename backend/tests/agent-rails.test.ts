@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { assertWithinRails, keepScopeDecisions } from '../src/agents/rails';
-import type { Engagement, SignOff } from '../src/engine/types';
+import { assertDraftsWithinRails, assertWithinRails, keepScopeDecisions } from '../src/agents/rails';
+import type { Engagement, SignOff, TestDraft } from '../src/engine/types';
 import { engagement, finding, input, row, scopeItem } from './agent-fixtures';
 
 const signOff: SignOff = { userId: 'reviewer', userName: 'R', role: 'reviewer', meaning: 'Reviewed', comment: '', at: 't' };
@@ -48,6 +48,37 @@ describe('assertWithinRails', () => {
     for (const after of [added, changed, dropped]) expect(() => assertWithinRails(before, after)).toThrow(expect.objectContaining({ status: 403, code: 'AGENT_FORBIDDEN' }));
     const carried = engagement({ scope: [scopeItem('A', false), scopeItem('B', false, { decidedBy: 'auditor' })] });
     expect(() => assertWithinRails(before, carried)).not.toThrow();
+  });
+});
+
+const draft = (rowId: string, over: Partial<TestDraft> = {}): TestDraft => ({
+  rowId, evidence: [], couldNotVerify: [], confidence: 'low', qa: { blocking: [], advisory: [] }, draftedBy: { runId: 'RUN-1', at: 't', model: 'm' }, ...over,
+});
+
+describe('assertWithinRails: drafts', () => {
+  it('allows a draft for an untested row, refuses one for a tested row, a person-edited draft, or a deleted draft [REQ-41]', () => {
+    const before = base();
+    const added = base();
+    added.testDrafts.R2 = draft('R2');
+    expect(() => assertWithinRails(before, added)).not.toThrow();
+    const tested = base();
+    tested.testDrafts.R1 = draft('R1');
+    expect(() => assertWithinRails(before, tested)).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN', message: expect.stringContaining('R1') }));
+    const edited = engagement({ testDrafts: { R2: draft('R2', { personEdited: true }) } });
+    const redraft = engagement({ testDrafts: { R2: draft('R2', { confidence: 'high' }) } });
+    expect(() => assertDraftsWithinRails(edited, redraft)).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
+    const agentOwned = engagement({ testDrafts: { R2: draft('R2') } });
+    expect(() => assertDraftsWithinRails(agentOwned, engagement())).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
+    expect(() => assertDraftsWithinRails(agentOwned, redraft)).not.toThrow();
+  });
+});
+
+describe('assertDraftsWithinRails: person-edited', () => {
+  it('refuses an agent marking a new draft personEdited, and passes an untouched personEdited draft [REQ-41]', () => {
+    const marked = engagement({ testDrafts: { R2: draft('R2', { personEdited: true }) } });
+    expect(() => assertDraftsWithinRails(engagement(), marked)).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
+    const a = engagement({ rcm: [row('R2')], testDrafts: { R2: draft('R2', { personEdited: true }) } });
+    expect(() => assertWithinRails(a, structuredClone(a))).not.toThrow();
   });
 });
 

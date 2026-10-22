@@ -61,6 +61,24 @@ export function assertPlanAttribution(before: Record<string, TestPlan>, after: R
   }
 }
 
+/**
+ * A draft is the agent's proposal and lives beside the workpapers (spec §9.2). It may be added or replaced only for a row
+ * with no test record and no draft a person has already edited or discarded; only Accept and Discard (a person) remove or
+ * change a draft otherwise.
+ */
+export function assertDraftsWithinRails(before: Engagement, after: Engagement): void {
+  const rows = new Set([...Object.keys(before.testDrafts ?? {}), ...Object.keys(after.testDrafts ?? {})]);
+  for (const id of rows) {
+    const was = before.testDrafts?.[id];
+    const now = after.testDrafts?.[id];
+    if (canonicalJson(was) === canonicalJson(now)) continue;
+    if (!now) throw forbidden(`An agent may not remove a draft (${id})`);
+    if (before.testInputs[id]) throw forbidden(`An agent may not draft a row that already has a test record (${id})`);
+    if (was?.personEdited) throw forbidden(`An agent may not redraft a draft a person edited or discarded (${id})`);
+    if (now.personEdited && !was?.personEdited) throw forbidden(`An agent may not mark a draft as person-edited (${id})`);
+  }
+}
+
 /** The engagement after an agent's change, checked against the engagement before it. */
 export function assertWithinRails(before: Engagement, after: Engagement): void {
   if (canonicalJson(before.testInputs) !== canonicalJson(after.testInputs)) throw forbidden('An agent may not record or change test results');
@@ -76,4 +94,5 @@ export function assertWithinRails(before: Engagement, after: Engagement): void {
   for (const f of after.findings) if (f.signOffs.length > (signed.get(f.id) ?? 0)) throw forbidden('An agent may not sign');
   assertJustificationsUnchanged(before.testPlans, after.testPlans, after.rcm.map((r) => r.id));
   assertScopeAttribution(before.scope, after.scope);
+  assertDraftsWithinRails(before, after);
 }

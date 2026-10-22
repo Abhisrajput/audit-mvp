@@ -1,0 +1,9 @@
+Executed batch record review log, Oral Solid Dosage plant, March 2026.
+
+Batch BR-2026-0412 (paracetamol 500 mg tablets): executed batch record complete, all steps initialled and dated. QA release review signed by the QA reviewer on 11 March 2026 before release.
+
+Batch BR-2026-0415 (paracetamol 500 mg tablets): executed batch record complete. QA release review signed on 14 March 2026 before release.
+
+Batch BR-2026-0417 (ibuprofen 200 mg tablets): executed batch record complete, but the in-process weight check on page 4 is not initialled. The batch was released on 18 March 2026 and the QA release review signature is dated 19 March 2026, after release.
+
+Summary: 3 executed batch records reviewed. 1 batch released before the QA release review was signed.

@@ -31,6 +31,6 @@ export function engagement(over: Partial<Engagement> = {}): Engagement {
   return {
     id: 'ENG-1', name: 'n', entity: 'e', site: 's', periodFrom: '2026-01-01', periodTo: '2026-06-30', auditType: 't', scopeStatement: 'stmt',
     packIds: ['p'], createdBy: 'auditor', createdAt: '2026-01-01T00:00:00.000Z', stage: 'planning', scope: [], rcm: [], testInputs: {},
-    testResults: {}, testPlans: {}, findings: [], report: null, context: null, coverage: null, memos: {}, tolerances: {}, responses: {}, ...over,
+    testResults: {}, testPlans: {}, findings: [], report: null, context: null, coverage: null, memos: {}, testDrafts: {}, tolerances: {}, responses: {}, ...over,
   };
 }

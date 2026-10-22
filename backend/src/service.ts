@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
-import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
+import { assertDraftsWithinRails, assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
 import { closeFindingGate, closeGate, getGate, hasApprovedGate, type Gate } from './agents/gate-repo';
 import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
+import { mayRead } from './knowledge/access';
+import { classificationsOf } from './knowledge/document-repo';
 import type { Db } from './db';
 import type { DB } from './db/schema';
 import { insertSignature, listSignatures } from './db/signature-repo';
@@ -28,7 +30,7 @@ import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/tr
 import { verifyChain } from './engine/trail';
 import { changedLinks, normaliseEvidence, tidyLinks } from './engine/evidence';
 import { documentNamesFor, resolveEvidence } from './evidence/links';
-import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestDraft, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
@@ -131,6 +133,9 @@ export interface ServiceOptions {
   citationPolicy?: CitationPolicy;
 }
 
+/** Thrown inside a mutation to roll it back when there is nothing to write. */
+class NothingToSave {}
+
 /** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
 class NoChange {
   constructor(readonly finding: Finding) {}
@@ -166,6 +171,19 @@ export class AuditService {
   async engagementWithSignatureStatus(id: string): Promise<Engagement> {
     const e = await this.engagement(id);
     return withSignatureStatus(e, await listSignatures(this.db.kysely, id), await lastRevisionTimes(this.db.kysely, id));
+  }
+
+  /**
+   * The engagement as one reader may see it. A draft goes only to a preparer who may read every document it cites;
+   * everyone else gets none, since a draft holds verbatim quotes. Every route that returns an engagement uses this.
+   */
+  async servedTo(e: Engagement, reader: User): Promise<Engagement> {
+    const drafts = Object.entries(e.testDrafts ?? {});
+    if (!drafts.length) return e;
+    if (!PREPARER_ROLES.includes(reader.role)) return { ...e, testDrafts: {} };
+    const classes = await classificationsOf(this.db.kysely, drafts.flatMap(([, d]) => d.evidence.map((x) => x.documentId)));
+    const readable = drafts.filter(([, d]) => d.evidence.every((x) => { const c = classes.get(x.documentId); return c !== undefined && mayRead(reader.role, c); }));
+    return { ...e, testDrafts: Object.fromEntries(readable) };
   }
 
   listEngagements(): Promise<EngagementSummary[]> {
@@ -228,6 +246,7 @@ export class AuditService {
       context: input.context ? { ...input.context, updatedBy: actor.id, updatedAt: new Date().toISOString() } : null,
       coverage: null,
       memos: {},
+      testDrafts: {},
       tolerances: {},
       responses: {},
     };
@@ -370,6 +389,59 @@ export class AuditService {
     return { bundle: sealed[0], engagement };
   }
 
+  /**
+   * Saves evidence-based test drafts for an agent. A draft is a proposal beside the workpapers; it never becomes a test
+   * record by itself. The drafts were made from an engagement read some time ago, so no version is expected: against the
+   * engagement as it is now, a row a person has since tested or taken over is dropped (and returned), the rest are
+   * saved. A human write that lands after this read is still caught by the engagement save's own version check.
+   */
+  async saveTestDraftsAsAgent(engagementId: string, drafts: Record<string, TestDraft>, acting: AgentActing, opts: Partial<Pick<AgentWriteOptions, 'expectedVersion'>> = {}) {
+    this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
+    for (const [rowId, draft] of Object.entries(drafts)) if (draft.rowId !== rowId) throw new AppError(400, `The draft under ${rowId} is for ${draft.rowId}`);
+    if (!Object.keys(drafts).length) return { bundle: undefined, engagement: await this.engagement(engagementId), dropped: [] as string[] };
+    const dropped: string[] = [];
+    try {
+      const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
+        await assertLease(trx, acting.runId, acting.leaseOwner);
+        const before = structuredClone(e);
+        const kept: string[] = [];
+        for (const [rowId, draft] of Object.entries(drafts)) {
+          if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
+          if (e.testInputs[rowId] || e.testDrafts[rowId]?.personEdited) { dropped.push(rowId); continue; }
+          e.testDrafts = { ...e.testDrafts, [rowId]: draft };
+          kept.push(rowId);
+        }
+        // Nothing left to save: roll back rather than bump the version for no change.
+        if (!kept.length) throw new NothingToSave();
+        assertDraftsWithinRails(before, e);
+        emit(this.agentBundle(e, {
+          moduleId: 'agent:test-drafts', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
+          inputs: { rows: kept },
+          output: { drafts: kept.map((rowId) => ({ rowId, proposal: Boolean(drafts[rowId].proposal), quotes: drafts[rowId].evidence.length, blocking: drafts[rowId].qa.blocking })) },
+        }));
+        return e;
+      });
+      return { bundle: sealed[0], engagement, dropped };
+    } catch (err) {
+      if (err instanceof NothingToSave) return { bundle: undefined, engagement: await this.engagement(engagementId), dropped };
+      throw err;
+    }
+  }
+
+  /** A person throws away the agent's proposal for a row. The row keeps a person-edited marker, so the agent does not redraft it. */
+  async discardTestDraft(engagementId: string, rowId: string, actor: User, opts: MutationOptions = {}): Promise<Engagement> {
+    this.require(actor, PREPARER_ROLES, 'discard a draft');
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      const draft = e.testDrafts[rowId];
+      if (!draft) throw new AppError(404, `There is no draft for ${rowId}`);
+      const { proposal: _dropped, ...rest } = draft;
+      e.testDrafts = { ...e.testDrafts, [rowId]: { ...rest, personEdited: true } };
+      emit(this.humanBundle(e, 'human:draft-discard', actor, { rowId }, { rowId, personEdited: true }));
+      return e;
+    });
+    return result;
+  }
+
   /** A person edits one row's test plan, including the decision not to test it (an empty reason clears that decision). */
   async editTestPlan(engagementId: string, rowId: string, patch: TestPlanPatch, actor: User, opts: MutationOptions = {}): Promise<TestPlan> {
     this.require(actor, PREPARER_ROLES, 'edit test plans');
@@ -430,20 +502,24 @@ export class AuditService {
     return result;
   }
 
-  async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'>, actor: User, opts: MutationOptions = {}) {
+  async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'> & { fromDraft?: { runId: string; at: string } }, actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'record test work');
     if (input.exceptions > input.sampleTested) throw new AppError(400, 'Exceptions cannot exceed the sample tested');
     const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
       // Only links that are new to this record are checked, so a record whose document has since expired can be saved again.
-      const { evidence, ...rest } = input;
+      const { evidence, fromDraft, ...rest } = input;
       const links = normaliseEvidence(evidence && tidyLinks(evidence));
       if (links) await resolveEvidence(trx, changedLinks(e.testInputs[rowId]?.evidence, links), { engagementId, actor });
       const clean = { ...rest, ...(links ? { evidence: links } : {}) };
       const record: TestInput = { ...clean, updatedBy: actor.id, updatedAt: new Date().toISOString() };
+      // The record names the draft it came from only when that is the draft on file; a stale name is ignored.
+      const drafted = e.testDrafts[rowId]?.draftedBy;
+      const accepted = fromDraft && drafted && fromDraft.runId === drafted.runId && fromDraft.at === drafted.at ? { runId: fromDraft.runId, at: fromDraft.at } : null;
       e.testInputs[rowId] = record;
       delete e.testResults[rowId];
-      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean }, record));
+      if (accepted) delete e.testDrafts[rowId];
+      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean, ...(accepted ? { fromDraft: accepted } : {}) }, record));
       return e;
     });
     return result;

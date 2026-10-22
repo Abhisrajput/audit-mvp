@@ -11,6 +11,7 @@ import type { AgentPort } from './port';
 import { reviewWithAgent } from './qa/agent';
 import type { QaChecks } from './qa/deterministic';
 import { appendStep, assertLease, listSteps, type AgentRun, type AgentStep } from './run-repo';
+import { draftEvidenceWithModel, evidenceDocumentIds } from './specialists/evidence';
 import { draftTestPlansWithModel } from './specialists/test-plan';
 import type { DelegateRecord } from './state';
 import { elapsedMs } from './metrics';
@@ -66,7 +67,8 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
   switch (a.type) {
     case 'delegate':
     case 'rework': {
-      const basis = redraftBasis(e, a.subjectKey, a.rows);
+      const evidenceDocs = a.specialist === 'evidence' ? [...await evidenceDocumentIds(db, e.id, starter)] : [];
+      const basis = redraftBasis(e, a.subjectKey, a.rows, evidenceDocs);
       const sinceGateId = latestGateId(ctx.gates, a.subjectKey);
       const acting = { runId: run.id, agent: a.specialist, startedBy: starter, leaseOwner: run.leaseOwner! };
       // Refuse before drafting anything if this worker has already lost the run.
@@ -77,9 +79,24 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       const instruction = a.type === 'rework' ? a.instruction : undefined;
       // The rejection's signature, when the graph put one on the rework: the service checks it before the module sees it.
       const instructionBy = a.type === 'rework' ? a.directiveBy : undefined;
-      let bundle: TrailBundle;
+      let bundle: TrailBundle | undefined;
       let withoutModel: boolean;
-      if (a.specialist === 'test-plan') {
+      let noDraft: { rowId: string; reason: string }[] | undefined;
+      if (a.specialist === 'evidence') {
+        // The evidence agent searches the engagement's evidence and reads cited pages; it proposes drafts, never test inputs.
+        const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'evidence') : undefined;
+        const result = await draftEvidenceWithModel(e, { models: ctx.models, toolbox, db, user: starter, runId: run.id });
+        // No version is passed: the drafts took a while and a person may have worked meanwhile. The write drops the rows
+        // that changed and the engagement save still guards the rest.
+        const noDraftRows = [...result.noDraft];
+        if (Object.keys(result.drafts).length) {
+          const saved = await port.saveTestDrafts(e.id, result.drafts, acting);
+          bundle = saved.bundle;
+          for (const rowId of saved.dropped) noDraftRows.push({ rowId, reason: 'row changed during drafting' });
+        }
+        withoutModel = result.withoutModel;
+        if (noDraftRows.length) noDraft = noDraftRows;
+      } else if (a.specialist === 'test-plan') {
         // The test-plan agent looks each fresh row up in the knowledge base (its allow-list), then drafts with its model.
         const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'test-plan') : undefined;
         const draft = await draftTestPlansWithModel(e, { models: ctx.models, toolbox });
@@ -92,14 +109,15 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       const used = ctx.models?.take();
       const rowBases = a.subjectKey === 'gaps' && a.rows ? Object.fromEntries(a.rows.map((id) => [id, rowBasis(e, id)])) : undefined;
       const record: DelegateRecord = {
-        action: a, basis, sinceGateId, bundleId: bundle.id, ...(rowBases ? { rowBases } : {}), ...(withoutModel ? { withoutModel: true as const } : {}),
+        action: a, basis, sinceGateId, ...(bundle ? { bundleId: bundle.id } : {}), ...(rowBases ? { rowBases } : {}), ...(withoutModel ? { withoutModel: true as const } : {}),
+        ...(noDraft ? { noDraft } : {}),
       };
       await db.transaction().execute(async (trx) => {
         await assertLease(trx, run.id, run.leaseOwner!);
         await appendStep(trx, run.id, {
-          kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: used?.model ?? bundle.provider.model,
+          kind: 'delegate', agent: `specialist:${a.specialist}`, decision: record, model: used?.model ?? bundle?.provider.model ?? 'rules',
           tokensIn: used?.tokensIn ?? 0, tokensOut: used?.tokensOut ?? 0, costUsd: used?.costUsd ?? 0,
-          durationMs: elapsedMs(started), trailBundleId: bundle.id,
+          durationMs: elapsedMs(started), trailBundleId: bundle?.id,
         });
       });
       return { next: 'continue' };

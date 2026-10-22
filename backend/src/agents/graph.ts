@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { Engagement } from '../engine/types';
 import { parseOpinionDirective } from '../judgment/opinion';
+import { rowsToDraft } from './specialists/evidence';
 import { findingKey, menuMemo, rowBasis, subjectInfo } from './subjects';
 import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type GraphInput, type Menu, type QaReport, type Specialist, type Stage } from './types';
 
@@ -28,15 +29,20 @@ export const latestGateId = (gates: readonly GateRecord[], key: string): string 
 export const untestedRows = (e: Engagement) => e.rcm.filter((r) => e.testInputs[r.id] && !e.testResults[r.id]).map((r) => r.id);
 
 /** What a redraft of this subject is built from. The graph never repeats a redraft from the same basis. */
-export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[]): string {
+export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[], evidenceDocIds?: readonly string[]): string {
   const s = subjectInfo(e, subjectKey);
   if (s) return s.basis;
+  // Evidence drafting is built from the rows still untested and the evidence documents with text.
+  if (subjectKey === 'evidence') {
+    if (!evidenceDocIds) throw new Error('evidence basis needs document ids');
+    return sha256(canonicalJson({ rows: rowsToDraft(e).map((r) => r.id).sort(), documents: [...evidenceDocIds].sort() }));
+  }
   if (subjectKey === 'testing') return sha256(canonicalJson(untestedRows(e).map((id) => [id, e.testInputs[id]])));
   return sha256(canonicalJson({ subjectKey, rows: (rows ?? []).map((id) => [id, rowBasis(e, id)]) }));
 }
 
-function delegate(input: GraphInput, specialist: Specialist, subjectKey: string, rows?: string[]): Action {
-  const basis = redraftBasis(input.engagement, subjectKey, rows);
+function delegate(input: GraphInput, specialist: Specialist, subjectKey: string, rows?: string[], evidenceDocIds?: readonly string[]): Action {
+  const basis = redraftBasis(input.engagement, subjectKey, rows, evidenceDocIds);
   const since = latestGateId(input.gates, subjectKey);
   const repeated = input.redrafts.some((r) => r.kind === 'delegate' && r.subjectKey === subjectKey && r.basis === basis && r.sinceGateId === since);
   if (repeated) return { type: 'escalate', reason: `The ${specialist} specialist already ran for ${subjectKey} and it is still not ready; check it by hand, then resume` };
@@ -156,7 +162,16 @@ export function allowedActions(input: GraphInput): Menu {
 
   // Field work is done by people: wait until every row has a recorded test, or a person's reason for not testing it.
   const awaiting = e.rcm.filter((r) => !e.testInputs[r.id] && !e.testPlans[r.id]?.notTestedJustification?.trim());
-  if (awaiting.length) return only('awaiting_tests', { type: 'wait', reason: `awaiting test results for ${awaiting.length} control(s)` });
+  if (awaiting.length) {
+    const wait: Action = { type: 'wait', reason: `awaiting test results for ${awaiting.length} control(s)` };
+    // Evidence drafting is offered once per run, ahead of waiting; a repeat is omitted rather than escalated.
+    const rowIds = rowsToDraft(e).map((r) => r.id);
+    const offered = input.redrafts.some((r) => r.kind === 'delegate' && r.subjectKey === 'evidence');
+    if (input.evidence.documentIds.length && rowIds.length && !offered) {
+      return { ...only('awaiting_tests', wait), actions: [delegate(input, 'evidence', 'evidence', rowIds, input.evidence.documentIds), wait] };
+    }
+    return only('awaiting_tests', wait);
+  }
   if (untestedRows(e).length) return only('testing', delegate(input, 'testing', 'testing'));
 
   // A failed row needs a finding; a finding on a row that no longer fails must go, unless it is approved (locked).
