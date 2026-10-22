@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { setCsrfToken, uploadHeaders } from './api';
-import { formatSize, statusLabel } from './evidence';
+import { formatSize, isPreparer, statusLabel } from './evidence';
 import type { DocumentExtraction } from './evidence';
 
 const ex = (status: DocumentExtraction['status'], pages: number | null = null): DocumentExtraction =>
@@ -37,5 +37,12 @@ describe('uploadHeaders', () => {
     setCsrfToken('tok');
     expect(uploadHeaders()).toEqual({ 'x-csrf-token': 'tok' });
     setCsrfToken(null);
+  });
+});
+
+describe('isPreparer', () => {
+  it('allows auditors and audit managers only', () => {
+    expect(['auditor', 'audit_manager', 'cae', 'admin', 'viewer'].map((r) => isPreparer(r as never))).toEqual([true, true, false, false, false]);
+    expect(isPreparer(undefined)).toBe(false);
   });
 });

@@ -85,21 +85,24 @@ export function upload<T>(path: string, file: File, fields: Record<string, strin
     xhr.withCredentials = true;
     for (const [name, value] of Object.entries(uploadHeaders())) xhr.setRequestHeader(name, value);
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+      if (e.lengthComputable && e.total > 0 && onProgress) onProgress(e.loaded / e.total);
     };
     xhr.onerror = () => reject(new ApiError('The upload could not reach the server. Check your connection and try again.', 0, null));
     xhr.onabort = () => reject(new ApiError('The upload was cancelled.', 0, null));
     xhr.onload = () => {
       let data: unknown = xhr.responseText;
+      let parsed = false;
       if (xhr.responseText && (xhr.getResponseHeader('content-type') ?? '').includes('json')) {
         try {
           data = JSON.parse(xhr.responseText);
+          parsed = true;
         } catch {
           data = {};
         }
       }
       if (xhr.status === 401) onUnauthenticated();
       if (xhr.status < 200 || xhr.status >= 300) return reject(errorFrom(xhr.status, data));
+      if (!parsed) return reject(new ApiError('Unexpected response from the server.', xhr.status, null));
       onProgress?.(1);
       resolve(data as T);
     };

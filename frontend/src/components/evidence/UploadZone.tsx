@@ -2,11 +2,9 @@ import { CloudUpload } from '@mui/icons-material';
 import { Alert, Box, Button, LinearProgress, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { useRef, useState } from 'react';
 import { notifyChanged } from '../../assistant';
-import { CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, uploadEvidence, uploadGlobal, type Classification, type DocumentKind, type UploadResult } from '../../evidence';
+import { CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, isPreparer, uploadEvidence, uploadGlobal, type Classification, type DocumentKind, type UploadResult } from '../../evidence';
 import { ApiError } from '../../api';
 import { useSession } from '../../session';
-
-const PREPARER_ROLES = ['auditor', 'audit_manager'];
 
 interface Props {
   /** Absent for the Library's global documents, which cannot be kind "evidence". */
@@ -16,7 +14,7 @@ interface Props {
 
 export default function UploadZone({ engagementId, onUploaded }: Props) {
   const { user } = useSession();
-  const kinds: readonly DocumentKind[] = engagementId ? DOCUMENT_KINDS : DOCUMENT_KINDS.filter((k) => k !== 'evidence');
+  const kinds: readonly DocumentKind[] = engagementId ? DOCUMENT_KINDS.filter((k) => k !== 'okf_concept') : DOCUMENT_KINDS.filter((k) => k !== 'evidence' && k !== 'okf_concept');
   const [kind, setKind] = useState<DocumentKind>(engagementId ? 'evidence' : 'sop');
   const [classification, setClassification] = useState<Classification>('internal');
   const [note, setNote] = useState('');
@@ -28,13 +26,12 @@ export default function UploadZone({ engagementId, onUploaded }: Props) {
   const input = useRef<HTMLInputElement>(null);
 
   // Viewers and admins cannot upload: no zone at all.
-  if (!user || !PREPARER_ROLES.includes(user.role)) return null;
+  if (!user || !isPreparer(user.role)) return null;
   const allowed = CLASSIFICATIONS_BY_ROLE[user.role];
   const busy = progress !== null;
 
   const send = async (file: File) => {
     setError(null);
-    setInfo(null);
     setProgress(0);
     try {
       const fields = { kind, classification, retainUntil: retainUntil || undefined, note };
@@ -55,7 +52,10 @@ export default function UploadZone({ engagementId, onUploaded }: Props) {
 
   const pick = (files: FileList | null) => {
     const file = files?.[0];
-    if (file && !busy) void send(file);
+    if (!file) return;
+    if (busy) { setInfo('An upload is already in progress. Wait for it to finish, then drop the file again.'); return; }
+    setInfo(files.length > 1 ? 'Only the first file is uploaded; add the others one at a time.' : null);
+    void send(file);
   };
 
   return (
@@ -67,7 +67,7 @@ export default function UploadZone({ engagementId, onUploaded }: Props) {
         <TextField select size="small" label="Classification" value={classification} onChange={(e) => setClassification(e.target.value as Classification)} sx={{ minWidth: 150 }}>
           {allowed.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
         </TextField>
-        <TextField size="small" type="date" label="Retain until" InputLabelProps={{ shrink: true }} value={retainUntil} onChange={(e) => setRetainUntil(e.target.value)} />
+        <TextField size="small" type="date" label="Retain until" InputLabelProps={{ shrink: true }} inputProps={{ min: new Date().toISOString().slice(0, 10) }} value={retainUntil} onChange={(e) => setRetainUntil(e.target.value)} />
         <TextField size="small" label="Note" value={note} onChange={(e) => setNote(e.target.value)} inputProps={{ maxLength: 500 }} fullWidth />
       </Stack>
       <Box

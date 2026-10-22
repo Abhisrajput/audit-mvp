@@ -1,8 +1,8 @@
 import { Search as SearchIcon } from '@mui/icons-material';
 import { Alert, Card, InputAdornment, List, ListItem, ListItemText, Stack, TextField, Typography } from '@mui/material';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { notifyChanged } from '../../assistant';
-import { listDocuments, retryExtraction, searchEvidence, type DocumentRecord, type SearchRow, type UploadResult } from '../../evidence';
+import { isPreparer, listDocuments, retryExtraction, searchEvidence, type DocumentRecord, type SearchRow, type UploadResult } from '../../evidence';
 import { useSession } from '../../session';
 import DocumentList from './DocumentList';
 import TextDrawer from './TextDrawer';
@@ -11,9 +11,11 @@ import UploadZone from './UploadZone';
 /** The Evidence tab of an engagement; with no engagementId it is the Library's global documents section. */
 export default function EvidenceTab({ engagementId }: { engagementId?: string }) {
   const { user } = useSession();
-  const preparer = user?.role === 'auditor' || user?.role === 'audit_manager';
+  const preparer = isPreparer(user?.role);
   const [docs, setDocs] = useState<DocumentRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const listSeq = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [reading, setReading] = useState<DocumentRecord | null>(null);
@@ -21,25 +23,33 @@ export default function EvidenceTab({ engagementId }: { engagementId?: string })
   const [hits, setHits] = useState<SearchRow[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  const refresh = useCallback(() => listDocuments(engagementId).then((d) => { setDocs(d); setError(null); }, (e: Error) => setError(e.message)), [engagementId]);
+  const refresh = useCallback(() => {
+    const seq = ++listSeq.current;
+    return listDocuments(engagementId).then(
+      (d) => { if (seq === listSeq.current) { setDocs(d); setError(null); } },
+      (e: Error) => { if (seq === listSeq.current) setError(e.message); },
+    );
+  }, [engagementId]);
   useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
     if (!q.trim()) { setHits([]); setSearchError(null); return; }
+    let live = true;
     const t = setTimeout(() => {
-      searchEvidence(engagementId, q.trim()).then((r) => { setHits(r); setSearchError(null); }, (e: Error) => setSearchError(e.message));
+      searchEvidence(engagementId, q.trim()).then((r) => { if (live) { setHits(r); setSearchError(null); } }, (e: Error) => { if (live) setSearchError(e.message); });
     }, 300);
-    return () => clearTimeout(t);
+    return () => { live = false; clearTimeout(t); };
   }, [q, engagementId]);
 
   const uploaded = (doc: UploadResult) => { setSelected(doc.id); void refresh(); };
   const retry = async (id: string) => {
     setRetrying(id);
+    setActionError(null);
     try {
       await retryExtraction(id);
       if (engagementId) notifyChanged(engagementId);
     } catch (e) {
-      setError((e as Error).message);
+      setActionError((e as Error).message);
     } finally {
       setRetrying(null);
       void refresh();
@@ -76,6 +86,7 @@ export default function EvidenceTab({ engagementId }: { engagementId?: string })
         </Stack>
       </Card>
       {error && <Alert severity="error">{error}</Alert>}
+      {actionError && <Alert severity="error" onClose={() => setActionError(null)}>{actionError}</Alert>}
       <Card variant="outlined">
         <DocumentList documents={docs} selectedId={selected} canRetry={preparer} retrying={retrying} onRetry={(id) => void retry(id)} onText={setReading} />
       </Card>

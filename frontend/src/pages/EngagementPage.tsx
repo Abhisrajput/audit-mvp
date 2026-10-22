@@ -88,6 +88,7 @@ export default function EngagementPage() {
 
   if (!engagement) return null;
   const e = engagement;
+  // The Evidence step (index 3) has no completion state, so it is never marked done.
   const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testPlans).length > 0, false, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
   const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, refreshGates: agent.refresh, qaThreshold: agent.settings?.qaThreshold ?? null };
 

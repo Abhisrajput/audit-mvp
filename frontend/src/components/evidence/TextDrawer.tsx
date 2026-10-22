@@ -7,18 +7,21 @@ interface Props { documentId: string | null; filename: string; onClose: () => vo
 export default function TextDrawer({ documentId, filename, onClose }: Props) {
   const [page, setPage] = useState<number | undefined>(undefined);
   const [data, setData] = useState<DocumentText | null>(null);
+  const [pages, setPages] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { setPage(undefined); setData(null); setError(null); }, [documentId]);
+  useEffect(() => { setPage(undefined); setData(null); setPages(null); setError(null); }, [documentId]);
   useEffect(() => {
     if (!documentId) return;
     let live = true;
     setError(null);
-    documentText(documentId, page).then((d) => live && setData(d), (e: Error) => live && setError(e.message));
+    setData(null);
+    documentText(documentId, page).then((d) => live && (setData(d), setPages(d.pages)), (e: Error) => live && setError(e.message));
     return () => { live = false; };
   }, [documentId, page]);
 
-  const current = data?.page ?? page ?? 1;
+  const loading = !!documentId && !data && !error;
+  const current = page ?? data?.page ?? 1;
   return (
     <Drawer anchor="right" open={!!documentId} onClose={onClose}>
       <Box sx={{ width: { xs: '100vw', sm: 480 }, p: 2 }}>
@@ -26,11 +29,11 @@ export default function TextDrawer({ documentId, filename, onClose }: Props) {
           <Typography variant="h6" noWrap title={filename}>{filename}</Typography>
           <Button onClick={onClose}>Close</Button>
         </Stack>
-        {data?.pages != null && (
+        {pages != null && (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ my: 1 }}>
-            <Button size="small" disabled={current <= 1} onClick={() => setPage(current - 1)}>Prev</Button>
-            <Typography variant="body2">p. {current} of {data.pages}</Typography>
-            <Button size="small" disabled={current >= data.pages} onClick={() => setPage(current + 1)}>Next</Button>
+            <Button size="small" disabled={loading || current <= 1} onClick={() => setPage(current - 1)}>Prev</Button>
+            <Typography variant="body2">p. {current} of {pages}</Typography>
+            <Button size="small" disabled={loading || current >= pages} onClick={() => setPage(current + 1)}>Next</Button>
           </Stack>
         )}
         {error && <Alert severity="error" sx={{ my: 1 }}>{error}</Alert>}

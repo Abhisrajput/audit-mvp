@@ -4,6 +4,12 @@ import type { Classification, DocumentExtraction, DocumentKind, DocumentRecord }
 
 // access.ts is pure (type-only imports), so these values are safe in the browser bundle.
 export { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS } from '../../backend/src/knowledge/access';
+import { PREPARER_ROLES } from '../../backend/src/auth/roles';
+import type { Role } from './types';
+
+/** Roles that may upload and retry (auditor, audit manager). roles.ts is pure, so it is safe in the bundle. */
+export const isPreparer = (role: Role | null | undefined): boolean => !!role && PREPARER_ROLES.includes(role);
+
 export type { Classification, DocumentExtraction, DocumentKind, DocumentRecord };
 
 export interface StatusLabel { label: string; color: 'default' | 'success' | 'warning' | 'error'; retry: boolean }
