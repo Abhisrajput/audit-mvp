@@ -22,6 +22,12 @@ describe('the engagement opinion (spec §5.6) [REQ-32]', () => {
     expect(parseOpinionDirective('OPINION: Unsatisfactory, see the CAPA backlog')).toEqual({ opinion: 'unsatisfactory' });
     expect(parseOpinionDirective('opinion: good')).toMatchObject({ problem: expect.stringContaining('good') });
     expect(parseOpinionDirective('Bring the allergen controls into scope')).toBeNull();
+    // A space or hyphen in the value reads as the underscore; trailing words and punctuation are not part of it.
+    expect(parseOpinionDirective('opinion: needs improvement')).toEqual({ opinion: 'needs_improvement' });
+    expect(parseOpinionDirective('opinion: Needs-Improvement.')).toEqual({ opinion: 'needs_improvement' });
+    expect(parseOpinionDirective('opinion: satisfactory, thanks')).toEqual({ opinion: 'satisfactory' });
+    expect(parseOpinionDirective('opinion: unsatisfactory given the backlog')).toEqual({ opinion: 'unsatisfactory' });
+    expect(parseOpinionDirective('opinion: needs')).toMatchObject({ problem: expect.stringContaining('"needs"') });
   });
   it('writes the fixed basis paragraph with counts, coverage and rows tested', () => {
     const text = opinionBasisText({

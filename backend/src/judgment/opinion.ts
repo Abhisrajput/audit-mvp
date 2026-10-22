@@ -33,14 +33,21 @@ export function opinionBasisText(input: { approved: Pick<Finding, 'rating'>[]; c
   return parts.join(' ');
 }
 
-const DIRECTIVE = /\bopinion\s*:\s*([A-Za-z_]+)/i;
+const DIRECTIVE = /\bopinion\s*:\s*([A-Za-z_]+(?:[ -][A-Za-z_]+)?)/i;
 
-/** An opinion named in a rejection comment ("opinion: needs_improvement"); a problem when the value is unknown; null when the comment names none. */
+const asOpinion = (value: string): Opinion | undefined => {
+  const normal = value.replace(/[ -]/g, '_').toLowerCase();
+  return OPINIONS.find((o) => o === normal);
+};
+
+/**
+ * An opinion named in a rejection comment ("opinion: needs_improvement"; a space or hyphen reads as the underscore, and a
+ * trailing word is ignored); a problem when the value is unknown; null when the comment names none.
+ */
 export function parseOpinionDirective(comment: string): { opinion: Opinion } | { problem: string } | null {
   const match = DIRECTIVE.exec(comment);
   if (!match) return null;
-  const value = match[1].toLowerCase();
-  const opinion = OPINIONS.find((o) => o === value);
+  const opinion = asOpinion(match[1]) ?? asOpinion(match[1].split(/[ -]/)[0]);
   if (opinion) return { opinion };
   return { problem: `The rejection names an opinion "${match[1]}" that is not one of ${OPINIONS.join(', ')}; the rule's opinion applies.` };
 }
