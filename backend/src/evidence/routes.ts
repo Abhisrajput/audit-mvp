@@ -17,6 +17,7 @@ import { runExtraction } from './extraction';
 import { documentUsage } from './links';
 import { latestExtraction } from './extraction-repo';
 import { ContentMismatch, sniff } from './sniff';
+import { documentPageText } from './text';
 
 export const EVIDENCE_UPLOAD_PATH = '/api/engagements/:id/evidence';
 export const DOCUMENT_UPLOAD_PATH = '/api/documents/upload';
@@ -203,14 +204,9 @@ export function evidenceRoutes(svc: AuditService, storage: StorageDeps): Router 
     const doc = await readableDocument(db, String(req.params.id), actorOf(req).role);
     // Only after the read check, so a 410 never reveals a document the reader may not see.
     if (doc.retentionExpired) throw new AppError(410, 'This document is past its retention date', 'RETENTION_EXPIRED');
-    const row = await db.selectFrom('document_text').select(['text', 'pages']).where('document_id', '=', doc.id).executeTakeFirst();
-    if (!row) throw new AppError(404, 'This document has no extracted text', 'NOT_FOUND');
-    const starts = row.pages ?? [];
-    const pages = starts.length || null;
-    if (page === undefined) return res.json({ page: null, pages, text: row.text });
-    if (!pages) throw new AppError(400, 'This document has no page breaks');
-    if (page < 1 || page > pages) throw new AppError(400, `Page must be between 1 and ${pages}`);
-    res.json({ page, pages, text: row.text.slice(starts[page - 1], starts[page] ?? row.text.length) });
+    const result = await documentPageText(db, doc.id, page);
+    if (!result) throw new AppError(404, 'This document has no extracted text', 'NOT_FOUND');
+    res.json(result);
   }));
 
   // Where a document is cited: the tests and live findings that link it. Unreadable and missing documents answer alike.

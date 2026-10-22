@@ -163,6 +163,21 @@ export type TestConclusion = 'Effective' | 'Ineffective' | 'Design deficient' | 
 /** A link from a test record or finding to a registered document, optionally to one page of it. */
 export interface EvidenceLink { documentId: string; page?: number; note?: string }
 
+/** An evidence link in a draft, with the passage that supports it. */
+export interface DraftEvidence extends EvidenceLink { quote: string }
+
+/** An agent's proposed test result for one RCM row, kept apart from the workpapers (spec §9.1); never in any hash. */
+export interface TestDraft {
+  rowId: string;
+  proposal?: { designAdequate: boolean | null; sampleTested: number; exceptions: number; observation: string };
+  evidence: DraftEvidence[];
+  couldNotVerify: string[];
+  confidence: 'low' | 'medium' | 'high';
+  qa: { blocking: string[]; advisory: string[] };
+  draftedBy: { runId: string; at: string; model: string };
+  personEdited?: boolean;
+}
+
 /** What the auditor records in the field. */
 export interface TestInput {
   designAdequate: boolean | null;
@@ -339,6 +354,8 @@ export interface Engagement {
   coverage: Coverage | null;
   /** Judgment memos by subject key (spec §3.4). */
   memos: Record<string, JudgmentMemo>;
+  /** Agent-drafted test results by RCM row id (spec §9.1); {} when none. Not part of any workpaper hash. */
+  testDrafts: Record<string, TestDraft>;
   /** The tolerance in force per control id, set by a person and kept outside the workpapers (spec §3.3). */
   tolerances: Record<string, Tolerance>;
   /** The latest management response per finding id, kept outside the signed findings (spec §3.3). */

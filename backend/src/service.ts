@@ -228,6 +228,7 @@ export class AuditService {
       context: input.context ? { ...input.context, updatedBy: actor.id, updatedAt: new Date().toISOString() } : null,
       coverage: null,
       memos: {},
+      testDrafts: {},
       tolerances: {},
       responses: {},
     };
