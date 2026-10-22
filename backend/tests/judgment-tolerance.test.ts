@@ -111,4 +111,22 @@ describe('tolerance set by a person (spec §3.3, §5.4) [REQ-33]', () => {
     await bare.runModule(b.id, 'testing', auditor);
     expect((await bare.engagement(b.id)).testResults[control]).toMatchObject({ conclusion: 'Not tested', severity: 'isolated', toleranceApplied: 0.05 });
   });
+
+  it('keeps a design deficient result\'s systemic severity when the model moves the conclusion to Ineffective, and records the refusal (final review I3)', async () => {
+    const control = 'FD-HACCP-03';
+    const llm = new FakeProvider((req) => {
+      if (!req.user.includes('Conclude on each control test')) throw new Error('rules only');
+      return { results: [{ rowId: control, conclusion: 'Ineffective', rationale: 'The design is adequate in practice.' }] };
+    });
+    const svc = await newService(llm);
+    await ensureDevUsers(svc.db.kysely);
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    await svc.runModule(e.id, 'scope', auditor);
+    await svc.setScope(e.id, [{ controlId: control, included: true }], auditor);
+    await svc.runModule(e.id, 'rcm', auditor);
+    await svc.recordTest(e.id, control, { designAdequate: false, observation: 'No second check exists.', evidenceRefs: ['CCP-LOG-MAR'], sampleTested: 20, exceptions: 0 }, auditor);
+    const { bundle } = await svc.runModule(e.id, 'testing', auditor);
+    expect((await svc.engagement(e.id)).testResults[control]).toMatchObject({ conclusion: 'Ineffective', severity: 'systemic' });
+    expect(bundle.qaActions).toContainEqual(expect.objectContaining({ gate: 'judgment-bounds', outcome: 'fail', target: control }));
+  });
 });

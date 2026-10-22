@@ -81,9 +81,17 @@ export const testingModule: AuditModule<Record<string, TestResult>> = {
         if (!results[d.rowId] || !e.testInputs[d.rowId]) continue;
         const row = rows.find((r) => r.id === d.rowId)!;
         const applied = { ...results[d.rowId], conclusion: d.conclusion, rationale: d.rationale };
-        // The rule's severity follows the conclusion; a model may only make it worse.
-        const rule = severityOf(applied, e.testInputs[d.rowId]);
+        // The model may only make severity worse, and it may not relax it by moving the conclusion: the bound is the worse of the
+        // severity the rule gave for its own conclusion and the severity that follows the model's conclusion.
+        const ruleOwn = results[d.rowId].severity ?? 'none';
+        const ruleConclusion = results[d.rowId].conclusion;
+        const followed = severityOf(applied, e.testInputs[d.rowId]);
+        const keepsRule = worsens(followed.severity, ruleOwn);
+        const rule = keepsRule ? { severity: ruleOwn, rationale: results[d.rowId].severityRationale ?? followed.rationale } : followed;
         results[d.rowId] = { ...applied, severity: rule.severity, severityRationale: rule.rationale };
+        if (keepsRule) {
+          ctx.gate({ gate: 'judgment-bounds', outcome: 'fail', target: row.id, detail: `Model concluded ${d.conclusion} where the rule concluded ${ruleConclusion}, which would lower the severity from ${ruleOwn} to ${followed.severity}; the rule severity ${ruleOwn} stands`, action: 'blocked' });
+        }
         if (d.severity !== undefined && d.severity !== rule.severity) {
           if (worsens(rule.severity, d.severity)) {
             results[d.rowId] = { ...results[d.rowId], severity: d.severity, severityRationale: `${rule.rationale} Raised to ${d.severity} by the model: ${d.rationale}` };
