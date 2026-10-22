@@ -1,10 +1,10 @@
 import { negativeSignals } from '../../engine/qa';
-import type { TestDraft, TestPlan } from '../../engine/types';
+import type { TestDraft } from '../../engine/types';
 
 // The checks on an agent's draft test result (spec §9.1). Blocking flags keep a draft from offering a proposal; advisory
 // ones ride along for the person. `unsupported-quote` is added by the specialist, which has the document text.
 
-export function draftIssues(draft: TestDraft, _plan: TestPlan): { blocking: string[]; advisory: string[] } {
+export function draftIssues(draft: TestDraft): { blocking: string[]; advisory: string[] } {
   const blocking: string[] = [];
   const advisory: string[] = [];
   const p = draft.proposal;

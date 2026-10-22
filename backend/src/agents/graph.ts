@@ -29,11 +29,14 @@ export const latestGateId = (gates: readonly GateRecord[], key: string): string 
 export const untestedRows = (e: Engagement) => e.rcm.filter((r) => e.testInputs[r.id] && !e.testResults[r.id]).map((r) => r.id);
 
 /** What a redraft of this subject is built from. The graph never repeats a redraft from the same basis. */
-export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[], evidenceDocIds: readonly string[] = []): string {
+export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[], evidenceDocIds?: readonly string[]): string {
   const s = subjectInfo(e, subjectKey);
   if (s) return s.basis;
   // Evidence drafting is built from the rows still untested and the evidence documents with text.
-  if (subjectKey === 'evidence') return sha256(canonicalJson({ rows: rowsToDraft(e).map((r) => r.id).sort(), documents: [...evidenceDocIds].sort() }));
+  if (subjectKey === 'evidence') {
+    if (!evidenceDocIds) throw new Error('evidence basis needs document ids');
+    return sha256(canonicalJson({ rows: rowsToDraft(e).map((r) => r.id).sort(), documents: [...evidenceDocIds].sort() }));
+  }
   if (subjectKey === 'testing') return sha256(canonicalJson(untestedRows(e).map((id) => [id, e.testInputs[id]])));
   return sha256(canonicalJson({ subjectKey, rows: (rows ?? []).map((id) => [id, rowBasis(e, id)]) }));
 }

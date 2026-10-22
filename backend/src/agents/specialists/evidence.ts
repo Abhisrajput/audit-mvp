@@ -111,8 +111,8 @@ function firstSentence(text: string): string {
 }
 
 /** The draft's flags: the quote check, then the draft's own. A draft with a blocking flag offers no proposal. */
-function seal(base: TestDraft, plan: TestPlan, unsupported: boolean): TestDraft {
-  const issues = draftIssues(base, plan);
+function seal(base: TestDraft, unsupported: boolean): TestDraft {
+  const issues = draftIssues(base);
   const blocking = [...(unsupported ? ['unsupported-quote'] : []), ...issues.blocking];
   const { proposal: _p, ...rest } = base;
   return { ...(blocking.length ? rest : base), qa: { blocking, advisory: issues.advisory } };
@@ -133,7 +133,7 @@ function rulesDraft(row: RcmRow, plan: TestPlan, found: FoundPassage[], runId: s
     rowId: row.id, evidence,
     couldNotVerify: [found.length ? `Found ${found.length} passage${found.length === 1 ? '' : 's'} in ${docs} document${docs === 1 ? '' : 's'} for: ${terms}` : `Found no passages for: ${terms}`],
     confidence: 'low', qa: { blocking: [], advisory: [] }, draftedBy: { runId, at: now, model: 'rules' },
-  }, plan, false);
+  }, false);
 }
 
 /** The offline draft for every row to draft: what was found, quoted from the chunk text, and no proposal. */
@@ -209,28 +209,45 @@ export async function draftEvidenceWithModel(e: Engagement, o: DraftOptions): Pr
   const rows = rowsToDraft(e);
   if (!rows.length) return out;
   const docIds = await evidenceDocumentIds(o.db, e.id, o.user);
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     const plan = e.testPlans[row.id];
-    const found = await retrieve(o, e, row, plan, docIds);
+    const texts = new Map<string, PageTexts>();
+    const shown: { documentId: string; page: number | null; text: string }[] = [];
+    let found: FoundPassage[];
+    try {
+      found = await retrieve(o, e, row, plan, docIds);
+      if (o.models?.available) {
+        let budget = MAX_SHOWN_CHARS;
+        const keys = [...new Map(found.map((f) => [`${f.documentId}#${f.page ?? ''}`, f])).values()].slice(0, MAX_READ_PAGES);
+        for (const f of keys) {
+          await loadPage(o.db, texts, f.documentId, f.page);
+          const text = texts.get(f.documentId)?.byPage.get(f.page) ?? '';
+          shown.push({ documentId: f.documentId, page: f.page, text: text.slice(0, Math.max(budget, 0)) });
+          budget -= text.length;
+        }
+      }
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      if (err.code === 'BUDGET_EXHAUSTED') {
+        for (const r of rows.slice(i)) out.noDraft.push({ rowId: r.id, reason: 'budget exhausted' });
+        break;
+      }
+      out.noDraft.push({ rowId: row.id, reason: err.message });
+      continue;
+    }
     if (!o.models?.available) {
       out.drafts[row.id] = rulesDraft(row, plan, found, o.runId, now);
       continue;
-    }
-    const texts = new Map<string, PageTexts>();
-    const shown: { documentId: string; page: number | null; text: string }[] = [];
-    let budget = MAX_SHOWN_CHARS;
-    const keys = [...new Map(found.map((f) => [`${f.documentId}#${f.page ?? ''}`, f])).values()].slice(0, MAX_READ_PAGES);
-    for (const f of keys) {
-      await loadPage(o.db, texts, f.documentId, f.page);
-      const text = texts.get(f.documentId)?.byPage.get(f.page) ?? '';
-      shown.push({ documentId: f.documentId, page: f.page, text: text.slice(0, Math.max(budget, 0)) });
-      budget -= text.length;
     }
     let model: { output: ModelDraft; servedModel: string };
     try {
       model = await o.models.generate('specialist', { system: EVIDENCE_SYSTEM, user: evidencePrompt(row, plan, found, shown), schema: ModelDraftSchema });
     } catch (err) {
-      if (err instanceof AppError && err.code === 'BUDGET_EXHAUSTED') break;
+      if (err instanceof AppError && err.code === 'BUDGET_EXHAUSTED') {
+        for (const r of rows.slice(i)) out.noDraft.push({ rowId: r.id, reason: 'budget exhausted' });
+        break;
+      }
       if (err instanceof ModelUnavailableError || err instanceof MalformedOutputError) {
         out.drafts[row.id] = rulesDraft(row, plan, found, o.runId, now);
         out.withoutModel = true;
@@ -253,7 +270,7 @@ export async function draftEvidenceWithModel(e: Engagement, o: DraftOptions): Pr
       evidence: d.evidence.map((x) => ({ documentId: x.documentId, ...(x.page === undefined ? {} : { page: x.page }), quote: x.quote })),
       couldNotVerify: d.couldNotVerify, confidence: d.confidence, qa: { blocking: [], advisory: [] },
       draftedBy: { runId: o.runId, at: now, model: model.servedModel },
-    }, plan, checkQuotes(d, texts).length > 0);
+    }, checkQuotes(d, texts).length > 0);
   }
   return out;
 }
