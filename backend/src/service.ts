@@ -322,9 +322,11 @@ export class AuditService {
     if (opts.instructionBy && !(signedBy && signedBy.workpaper === 'report' && signedBy.meaning === 'Rejected' && APPROVER_ROLES.includes(signedBy.role as Role))) {
       throw new AppError(409, 'The redraft instruction names a signature that is not a rejection of this engagement\'s report gate', 'DIRECTIVE_SIGNATURE_INVALID');
     }
+    // With a verified signature the directive text is the signed comment itself, so a real rejection id is never paired with other text.
+    const instruction = signedBy ? signedBy.comment.trim().slice(0, 2000) : opts.instruction;
     // keepDecisions: the scope module pins the in/out decisions people made (decidedBy) before it builds coverage and the memo.
     const input = {
-      keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}),
+      keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(instruction ? { reworkInstruction: instruction } : {}),
       ...(opts.instructionBy ? { reworkSignatureId: opts.instructionBy } : {}),
     };
     const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting, opts.llm ?? null);

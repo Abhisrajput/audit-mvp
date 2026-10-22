@@ -9,7 +9,7 @@ import { ModuleContext } from '../src/engine/module';
 import { reportModule } from '../src/engine/modules/report';
 import { canonicalJson, sha256 } from '../src/engine/trail';
 import type { Engagement } from '../src/engine/types';
-import { listSignatures } from '../src/db/signature-repo';
+import { insertSignature, listSignatures } from '../src/db/signature-repo';
 import { workpaperContentHash } from '../src/signing/content-hash';
 import { AuditService } from '../src/service';
 import { approver, auditor, engagementWithFailedControl, FakeProvider, leasedRun, LENIENT, NEW_ENGAGEMENT, newService, registry, reviewer, unattended } from './helpers';
@@ -349,5 +349,24 @@ describe('who may name a signature on the report module input [REQ-26, REQ-32]',
         .rejects.toMatchObject({ status: 409, code: 'DIRECTIVE_SIGNATURE_INVALID' });
     }
     expect((await svc.engagement(id)).report).toBeFalsy();
+  });
+
+  it('a verified signature supplies the directive text: other instruction text paired with it is not used [REQ-26, REQ-32]', async () => {
+    const svc = await newService();
+    const { id } = await engagementWithFailedControl(svc);
+    await approveFirst(svc, id);
+    const { acting } = await leasedRun(svc, id);
+    const e = await svc.engagement(id);
+    // A CAE's rejection of the report gate whose comment sets satisfactory (the rule gives unsatisfactory).
+    const cae = (await listSignatures(svc.db.kysely, id)).find((s) => s.meaning === 'Approved')!;
+    const rejection = {
+      ...cae, id: 'SIG-REPORT-REJECT', findingId: null, subjectKind: 'workpaper' as const, workpaper: 'report' as const, gateId: 'GATE-R',
+      meaning: 'Rejected' as const, comment: '  Too harsh. opinion: satisfactory  ', signedAt: new Date().toISOString(),
+    };
+    await insertSignature(svc.db.kysely, rejection);
+    await svc.runModuleAsAgent(id, 'report', acting('report'), { expectedVersion: e.version!, instruction: 'opinion: needs_improvement', instructionBy: rejection.id, llm: null });
+    const after = await svc.engagement(id);
+    expect(after.report!.opinion).toMatchObject({ rating: 'satisfactory', setBy: rejection.id });
+    expect(after.report!.opinion!.basis).toContain('"Too harsh. opinion: satisfactory"');
   });
 });
