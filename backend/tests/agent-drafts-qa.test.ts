@@ -4,7 +4,7 @@ import type { TestDraft } from '../src/engine/types';
 
 const draft = (over: Partial<TestDraft> = {}): TestDraft => ({
   rowId: 'A', proposal: { designAdequate: true, sampleTested: 2, exceptions: 0, observation: 'Both logs are signed.' },
-  evidence: [{ documentId: 'DOC-1', page: 1, quote: 'signed' }], couldNotVerify: [], confidence: 'medium',
+  evidence: [{ documentId: 'DOC-1', page: 1, quote: 'Both logs are signed by QA.' }], couldNotVerify: [], confidence: 'medium',
   qa: { blocking: [], advisory: [] }, draftedBy: { runId: 'RUN-1', at: 't', model: 'm' }, ...over,
 });
 
@@ -29,5 +29,13 @@ describe('draft QA flags', () => {
     expect(issues).toEqual({ blocking: [], advisory: ['draft.negative-signal'] });
     expect(draftIssues(draft({ proposal: { designAdequate: true, sampleTested: 2, exceptions: 1, observation: 'Two logs were unsigned.' } })).advisory).toEqual([]);
     expect(draftIssues(draft({ proposal: { designAdequate: false, sampleTested: 2, exceptions: 0, observation: 'Two logs were unsigned.' } })).advisory).toEqual([]);
+  });
+
+  it('a quote under 20 characters is draft.short-quote, advisory only', () => {
+    const short = draftIssues(draft({ evidence: [{ documentId: 'DOC-1', page: 1, quote: 'the' }] }));
+    expect(short).toEqual({ blocking: [], advisory: ['draft.short-quote'] });
+    // Whitespace is collapsed before counting, and 20 characters is long enough.
+    expect(draftIssues(draft({ evidence: [{ documentId: 'DOC-1', quote: 'a      b\n\n c' }] })).advisory).toEqual(['draft.short-quote']);
+    expect(draftIssues(draft({ evidence: [{ documentId: 'DOC-1', quote: 'x'.repeat(20) }] })).advisory).toEqual([]);
   });
 });
