@@ -1,5 +1,6 @@
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { Engagement, RcmRow } from '../engine/types';
+import { contextBasis } from '../judgment/context';
 import { findingContentHash, workpaperContentHash } from '../signing/content-hash';
 import type { GateKind } from './types';
 
@@ -12,7 +13,7 @@ export const findingKey = (rowId: string) => `${FINDING_PREFIX}${rowId}`;
 export const rowOfKey = (key: string): string | null => (key.startsWith(FINDING_PREFIX) ? key.slice(FINDING_PREFIX.length) : null);
 
 /** The scope is built from the scope statement and the packs. */
-export const rootBasis = (e: Engagement) => sha256(canonicalJson({ scopeStatement: e.scopeStatement, packIds: e.packIds }));
+export const rootBasis = (e: Engagement) => sha256(canonicalJson({ scopeStatement: e.scopeStatement, packIds: e.packIds, ...(contextBasis(e.context) ? { context: contextBasis(e.context) } : {}) }));
 
 /** A finding is built from its row's recorded test and conclusion. */
 export const rowBasis = (e: Engagement, rowId: string) => sha256(canonicalJson({ input: e.testInputs[rowId] ?? null, result: e.testResults[rowId] ?? null }));

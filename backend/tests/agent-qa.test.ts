@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RULES_VERSION, RulesPolicy, rulesChoice } from '../src/agents/policy/rules';
 import { reviewSubject } from '../src/agents/qa/deterministic';
+import { subjectContent } from '../src/agents/qa/rubric';
 import { draftTestPlans } from '../src/agents/specialists/test-plan';
 import { findingKey, rcmRowHash, subjectInfo } from '../src/agents/subjects';
 import type { Action, Menu, QaIssue, QaReport } from '../src/agents/types';
@@ -13,6 +14,26 @@ describe('the offline QA reviewer', () => {
     const r = reviewSubject(engagement({ scope: [scopeItem('A', false, { inherentRisk: 'High' }), scopeItem('B', false)] }), 'scope');
     expect(issues(r)).toEqual([['blocking', 'scope.included'], ['advisory', 'scope.high-risk-excluded']]);
     expect(r.score).toBe(65);
+  });
+
+  it('blocks an assessed risk below the library, and a touched High area left out; flags unknown areas and a thin statement [REQ-30]', () => {
+    const ctxt = { factors: [{ kind: 'incident' as const, processAreas: ['Lab', 'Warehouse'], description: 'OOS' }], background: '', updatedBy: 'u', updatedAt: 't' };
+    const e = engagement({
+      context: ctxt,
+      scope: [scopeItem('A', false, { processArea: 'Lab', inherentRisk: 'Medium', assessedRisk: 'High' }), scopeItem('B', true, { processArea: 'QA', inherentRisk: 'High', assessedRisk: 'Medium' })],
+      coverage: { excluded: [{ processArea: 'Lab', reason: 'below relevance threshold' }], statement: 'All good.' },
+    });
+    const r = reviewSubject(e, 'scope', undefined, new Set(['Lab', 'QA']));
+    expect(issues(r)).toEqual(expect.arrayContaining([
+      ['blocking', 'scope.assessed-below-library'], ['blocking', 'scope.touched-high-excluded'],
+      ['advisory', 'scope.factor-unknown-area'], ['advisory', 'scope.coverage-statement'],
+    ]));
+    expect(issues(r)).not.toContainEqual(['blocking', 'scope.high-risk-excluded']);   // today's check stays advisory
+  });
+
+  it('raises nothing new for a scope with no context, so the golden-trace engagements are unchanged', () => {
+    const r = reviewSubject(engagement({ scope: [scopeItem('A', true), scopeItem('B', false, { inherentRisk: 'High' })] }), 'scope');
+    expect(issues(r)).toEqual([['advisory', 'scope.high-risk-excluded']]);
   });
 
   it('blocks RCM rows that cite no clause', () => {
@@ -109,5 +130,17 @@ describe('the test-plan drafter', () => {
     expect(plans.A).toBe(edited);
     expect(plans.B).toMatchObject({ rowHash: rcmRowHash(b), notTestedJustification: 'Retired in March', editedBy: 'auditor' });
     expect(Object.keys(plans)).toEqual(['A', 'B']);
+  });
+});
+
+describe('scope items stored before the risk assessment existed', () => {
+  it('are reviewed without error, and their missing assessed risk is not read as below the library', () => {
+    const old = scopeItem('OLD', true, { inherentRisk: 'High' }) as Partial<ReturnType<typeof scopeItem>>;
+    delete old.assessedRisk;
+    delete old.riskFactors;
+    const e = engagement({ scope: [old as ReturnType<typeof scopeItem>] });
+    const report = reviewSubject(e, 'scope');
+    expect(report.issues.map((i) => i.criterion)).not.toContain('scope.assessed-below-library');
+    expect(() => JSON.stringify(subjectContent(e, 'scope'))).not.toThrow();
   });
 });

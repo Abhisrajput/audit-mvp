@@ -15,6 +15,7 @@ const FRIENDLY: Record<string, string> = {
   RUN_ACTIVE: 'This engagement already has an agent run. Reload the page to see it.',
   GATE_STALE: 'The workpaper changed after this gate opened. The agent reviews it again and opens a new gate.',
   RUN_NOT_ACTIVE: 'The agent run behind this gate has ended, so the gate can no longer be signed.',
+  CONTEXT_LOCKED: 'The scope and RCM are approved, so the engagement context can no longer change. Record late matters in the relevant finding, or start a new engagement.',
   PENDING_ACCESS: 'Your account is waiting for an administrator to assign a role.',
 };
 

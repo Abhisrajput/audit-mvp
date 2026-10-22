@@ -10,6 +10,7 @@ export type ErrorCode =
   | 'VERSION_CONFLICT'
   | 'FINDING_BLOCKED'
   | 'FINDING_LOCKED'
+  | 'CONTEXT_LOCKED'
   | 'SOD_VIOLATION'
   | 'RUN_NOT_ACTIVE'
   | 'CSRF_FAILED'

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
 import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
-import { closeFindingGate, closeGate, getGate, type Gate } from './agents/gate-repo';
+import { closeFindingGate, closeGate, getGate, hasApprovedGate, type Gate } from './agents/gate-repo';
 import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
@@ -28,6 +28,10 @@ import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/tr
 import { verifyChain } from './engine/trail';
 import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
+import type { EngagementContextInput } from './judgment/context';
+import { recomputedCoverage } from './judgment/coverage';
+import { markEditedByHand } from './judgment/memo';
+import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
 export { AppError } from './errors';
@@ -43,6 +47,8 @@ export interface NewEngagement {
   auditType: string;
   scopeStatement: string;
   packIds: string[];
+  /** What the auditor knows about the business (spec §3.1); the server adds who and when. */
+  context?: EngagementContextInput;
 }
 
 /** One agent action for the trail. */
@@ -190,6 +196,8 @@ export class AuditService {
     this.require(actor, PREPARER_ROLES, 'create engagements');
     if (!input.packIds.length) throw new AppError(400, 'Select at least one content pack');
     input.packIds.forEach((id) => {
+      // The IIA pack holds the standards the judgments cite; it is never loaded into an engagement.
+      if (id === METHODOLOGY_PACK_ID) throw new AppError(400, 'The IIA methodology pack is not an engagement pack');
       if (!this.registry.packs.has(id)) throw new AppError(400, `Unknown pack ${id}`);
     });
     const e: Engagement = {
@@ -205,6 +213,9 @@ export class AuditService {
       testPlans: {},
       findings: [],
       report: null,
+      context: input.context ? { ...input.context, updatedBy: actor.id, updatedAt: new Date().toISOString() } : null,
+      coverage: null,
+      memos: {},
     };
     await this.db.kysely.transaction().execute(async (trx) => {
       await insertEngagement(trx, e);
@@ -290,7 +301,8 @@ export class AuditService {
     const view = mod.id === 'report'
       ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
       : snapshot;
-    const input = { ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
+    // keepDecisions: the scope module pins the in/out decisions people made (decidedBy) before it builds coverage and the memo.
+    const input = { keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
     const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting, opts.llm ?? null);
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
       // Lock order is engagement (taken by mutate), then run: a worker that lost the run, or a cancelled run, saves nothing.
@@ -346,12 +358,40 @@ export class AuditService {
   async setScope(engagementId: string, items: { controlId: string; included: boolean }[], actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'change scope');
     const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      let changed = false;
       for (const it of items) {
         const s = e.scope.find((x) => x.controlId === it.controlId);
         if (!s) throw new AppError(400, `Control ${it.controlId} is not a scope candidate`);
+        // The screen sends every item; only a flag that moves is this person's decision, and a redraft keeps it.
+        if (s.included === it.included) continue;
         s.included = it.included;
+        s.decidedBy = actor.id;
+        changed = true;
       }
+      // The coverage and the memo are inside the hash the signer approves, so they must describe the edited scope.
+      if (changed && e.coverage) {
+        const candidates = e.scope.map((s) => ({ controlId: s.controlId, processArea: s.processArea, inherentRisk: s.inherentRisk, assessedRisk: s.assessedRisk, relevance: s.relevance }));
+        e.coverage = recomputedCoverage(candidates, new Set(e.scope.filter((s) => s.included).map((s) => s.controlId)), e.scopeStatement, e.coverage);
+      }
+      if (changed && e.memos?.scope) e.memos = { ...e.memos, scope: markEditedByHand(e.memos.scope) };
       emit(this.humanBundle(e, 'human:scope-decision', actor, items, { included: e.scope.filter((s) => s.included).map((s) => s.controlId) }));
+      return e;
+    });
+    return result;
+  }
+
+  /**
+   * Set the engagement context (spec §3.1). It feeds the scope's risk assessment, so it is locked once the RCM gate is
+   * approved: after that, late matters belong in the relevant finding or a new engagement.
+   */
+  async setEngagementContext(engagementId: string, input: EngagementContextInput, actor: User, opts: MutationOptions = {}) {
+    this.require(actor, PREPARER_ROLES, 'set the engagement context');
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
+      if (await hasApprovedGate(trx, engagementId, 'rcm')) {
+        throw new AppError(409, 'The scope and RCM are approved; record late matters in the relevant finding, or start a new engagement', 'CONTEXT_LOCKED');
+      }
+      e.context = { ...input, updatedBy: actor.id, updatedAt: new Date().toISOString() };
+      emit(this.humanBundle(e, 'human:set-context', actor, input, { factors: input.factors.length, background: input.background.length }));
       return e;
     });
     return result;

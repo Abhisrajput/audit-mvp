@@ -138,3 +138,4 @@ Exit 1 means escalate as a data-integrity incident. Do not edit data to make it 
 - **A run that waits** for test results or a gate signature moves on by itself when the test is recorded, when a reason not to test is given in Test plans, or when the gate is signed.
 - **A worker that stops mid-step.** Another worker takes the run once its 60-second lease expires. The abandoned step counts as a failed one, and three in a row hand the run to a person.
 - **Scaling.** Run more worker replicas, or raise `AGENT_WORKER_CONCURRENCY`. Each worker needs `AGENT_WORKER_CONCURRENCY × 2 + 2` database connections.
+- **Engagement context.** A change to the context after the scope gate is approved reopens the scope gate for a new signature. After the RCM gate is approved the API refuses the change with `CONTEXT_LOCKED` (HTTP 409); there is nothing to fix, as late matters go in the relevant finding or a new engagement.

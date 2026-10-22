@@ -51,7 +51,7 @@ export function reviewPrompt(subjectKey: string, criteria: readonly RubricCriter
   return [
     `Workpaper: ${subjectKey}.`,
     'Criteria:',
-    ...criteria.map((c) => `- ${c.id}: ${c.question}`),
+    ...criteria.map((c) => `- ${c.id}: ${c.question}${c.standard ? ` (${c.standard})` : ''}`),
     '',
     'The automatic checks already found these issues. They stand whatever you find:',
     asData('automatic-checks', automatic),

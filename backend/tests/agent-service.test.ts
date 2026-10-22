@@ -77,6 +77,23 @@ describe('the agent path into the service', () => {
     for (const f of flipped) expect(after.find((s) => s.controlId === f.controlId)!.included).toBe(f.included);
   });
 
+  it('records who decided each scope item a person changed, and keeps it through an agent redraft [REQ-27]', async () => {
+    const svc = await newService();
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const { acting } = await leasedRun(svc, e.id);
+    await svc.runModule(e.id, 'scope', auditor);
+    const drafted = (await svc.engagement(e.id)).scope;
+    const [x, y] = drafted;
+    // The screen sends every item; only the one whose flag moved is the person's decision.
+    const edited = await svc.setScope(e.id, drafted.map((s) => ({ controlId: s.controlId, included: s.controlId === x.controlId ? !s.included : s.included })), auditor);
+    expect(edited.scope.find((s) => s.controlId === x.controlId)).toMatchObject({ included: !x.included, decidedBy: 'auditor' });
+    expect(edited.scope.find((s) => s.controlId === y.controlId)!.decidedBy).toBeUndefined();
+    await svc.runModuleAsAgent(e.id, 'scope', acting(), { expectedVersion: edited.version! });
+    const after = (await svc.engagement(e.id)).scope;
+    expect(after.find((s) => s.controlId === x.controlId)).toMatchObject({ included: !x.included, decidedBy: 'auditor' });
+    expect(after.filter((s) => s.decidedBy)).toHaveLength(1);
+  });
+
   it('redrafts only the targeted findings; every other finding stays exactly as it was', async () => {
     const svc = await newService();
     const { id, a, b } = await twoFindings(svc);

@@ -4,6 +4,7 @@ import { actorOf, requireRole } from '../auth/http';
 import { READ_ROLES } from '../auth/roles';
 import { AppError } from '../errors';
 import { ifMatch, wrap } from '../http-util';
+import { renderMemo } from '../judgment/memo';
 import type { AuditService } from '../service';
 import type { AgentConfig } from './config';
 import { listGates } from './gate-repo';
@@ -64,6 +65,16 @@ export function agentRoutes(svc: AuditService, cfg: AgentConfig) {
   r.get('/api/engagements/:id/gates', readers, wrap(async (req, res) => {
     await svc.engagement(param(req, 'id'));
     res.json(await listGates(svc.db.kysely, param(req, 'id')));
+  }));
+
+  // The judgment memo for a subject (e.g. 'scope'), as data and as the markdown the panel shows.
+  r.get('/api/engagements/:id/memos/:subjectKey', readers, wrap(async (req, res) => {
+    const key = param(req, 'subjectKey');
+    const memos = (await svc.engagement(param(req, 'id'))).memos;
+    // Own keys only: a key such as `constructor` must be a 404, not an inherited object.
+    const memo = Object.hasOwn(memos, key) ? memos[key] : undefined;
+    if (!memo) throw new AppError(404, `No memo for ${key}`);
+    res.json({ memo, markdown: renderMemo(memo) });
   }));
 
   r.get('/api/engagements/:id/test-plans', readers, wrap(async (req, res) => res.json((await svc.engagement(param(req, 'id'))).testPlans)));

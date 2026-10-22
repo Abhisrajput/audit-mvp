@@ -28,5 +28,7 @@
   { "id": "REQ-27", "risk": "High", "text": "Gates are closed only by a human Part 11 signature bound to the subject's content; the agent never signs, records test results or edits reviewed findings.", "evalKinds": [] },
   { "id": "REQ-28", "risk": "High", "text": "Every agent decision is typed, attributed to the agent on behalf of its starter, and recorded in the hash-chained trail.", "evalKinds": [] },
   { "id": "REQ-29", "risk": "Medium", "text": "Runs stop at their budget, and the kill switch prevents new agent work.", "evalKinds": [] },
-  { "id": "REQ-30", "risk": "Medium", "text": "Every workpaper is reviewed by the QA agent before its gate opens, and the review is shown to the signer.", "evalKinds": [] }
+  { "id": "REQ-30", "risk": "Medium", "text": "Every workpaper is reviewed by the QA agent before its gate opens, and the review is shown to the signer.", "evalKinds": [] },
+  { "id": "REQ-31", "risk": "High", "text": "Every judgment the agent makes is recorded with its basis and rationale in a memo that is part of the subject the signer approves.", "evalKinds": [] },
+  { "id": "REQ-35", "risk": "Medium", "text": "The engagement context is written only by people, and a change to it after the scope gate reopens the scope.", "evalKinds": [] }
 ]

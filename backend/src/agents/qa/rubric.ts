@@ -1,4 +1,5 @@
 import type { Engagement } from '../../engine/types';
+import { IIA } from '../../judgment/standards';
 import { rowOfKey } from '../subjects';
 
 // The QA agent's rubrics (spec §5.5): the judgement criteria a model scores 0–4 for each workpaper type, and the
@@ -8,15 +9,17 @@ import { rowOfKey } from '../subjects';
 export interface RubricCriterion {
   id: string;
   question: string;
+  /** The IIA Standards clause id this criterion rests on. */
+  standard?: string;
 }
 
 export type RubricKind = 'scope' | 'rcm' | 'test_plans' | 'finding' | 'report';
 
 export const RUBRICS: Readonly<Record<RubricKind, readonly RubricCriterion[]>> = {
   scope: [
-    { id: 'scope.risk-coverage', question: 'Do the controls in scope address the risks the scope statement names?' },
-    { id: 'scope.rationale', question: 'Is each in or out decision explained by its rationale?' },
-    { id: 'scope.proportionality', question: 'Is the scope proportionate: no material area left out, nothing irrelevant in?' },
+    { id: 'scope.risk-coverage', question: 'Do the controls in scope address the risks the scope statement names?', standard: IIA.riskAssessment },
+    { id: 'scope.rationale', question: 'Is each in or out decision explained by its rationale?', standard: IIA.communication },
+    { id: 'scope.proportionality', question: 'Is the scope proportionate: no material area left out, nothing irrelevant in?', standard: IIA.scope },
   ],
   rcm: [
     { id: 'rcm.risk-control-link', question: 'Does each control plausibly mitigate the risk it is paired with?' },
@@ -62,7 +65,8 @@ export function subjectContent(e: Engagement, subjectKey: string): unknown {
     case 'scope':
       return {
         scopeStatement: e.scopeStatement,
-        items: e.scope.map((s) => ({ controlId: s.controlId, risk: s.risk, inherentRisk: s.inherentRisk, included: s.included, rationale: s.rationale, citations: labels(s.citations) })),
+        items: e.scope.map((s) => ({ controlId: s.controlId, risk: s.risk, inherentRisk: s.inherentRisk, assessedRisk: s.assessedRisk, riskFactors: s.riskFactors, included: s.included, rationale: s.rationale, citations: labels(s.citations) })),
+        coverage: e.coverage,
       };
     case 'rcm':
       return e.rcm.map((r) => ({

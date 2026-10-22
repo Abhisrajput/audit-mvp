@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { agentApi, BUDGET_LABEL, budgetProblem, explainStatus, hasEnded, spendRows, STATUS_CHIP } from '../../agents';
 import { canPrepare } from '../../roles';
 import { useSession } from '../../session';
-import type { Budget } from '../../types';
+import type { Budget, Engagement } from '../../types';
 import { ActionButton } from '../common';
 import GateList from './GateList';
 import StepTimeline from './StepTimeline';
@@ -66,7 +66,7 @@ function BudgetDialog(props: {
 }
 
 export interface RunPanelProps {
-  engagementId: string;
+  engagement: Engagement;
   agent: AgentRunState;
   /** Reloads the engagement after a signature, so the page shows what the server recorded. */
   onSigned: () => Promise<void>;
@@ -75,7 +75,7 @@ export interface RunPanelProps {
 }
 
 /** The engagement's agent run (agent spec §7.2): status and reason, spend against budget, controls, steps. */
-export default function RunPanel({ engagementId, agent, onSigned, showFindings }: RunPanelProps) {
+export default function RunPanel({ engagement, agent, onSigned, showFindings }: RunPanelProps) {
   const { user } = useSession();
   const [dialog, setDialog] = useState<'start' | 'budget' | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -189,7 +189,7 @@ export default function RunPanel({ engagementId, agent, onSigned, showFindings }
             Could not refresh the agent run: {error}
           </Alert>
         )}
-        <GateList agent={agent} onSigned={onSigned} showFindings={showFindings} />
+        <GateList engagement={engagement} agent={agent} onSigned={onSigned} showFindings={showFindings} />
         {run && (
           <Box sx={{ mt: 1.5 }}>
             <Link component="button" variant="body2" onClick={() => setShowSteps(!showSteps)}>
@@ -222,7 +222,7 @@ export default function RunPanel({ engagementId, agent, onSigned, showFindings }
             </>
           }
           onSubmit={async (budget) => {
-            const started = await agentApi.start(engagementId, budget);
+            const started = await agentApi.start(engagement.id, budget);
             setWarnings(started.warnings);
             await refresh();
           }}
