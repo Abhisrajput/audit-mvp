@@ -1,5 +1,5 @@
 import { ExpandMore as ExpandMoreIcon, PlayArrow as PlayArrowIcon } from '@mui/icons-material';
-import { Accordion, AccordionDetails, AccordionSummary, Box, Chip, Grid, Stack, Typography } from '@mui/material';
+import { Accordion, AccordionDetails, AccordionSummary, Box, Chip, Grid, Stack, Tooltip, Typography } from '@mui/material';
 import type { TabProps } from '../../pages/EngagementPage';
 import { ActionButton, Citations, RiskChip } from '../common';
 
@@ -38,6 +38,11 @@ export default function RcmTab({ engagement: e, run }: TabProps) {
                 </Typography>
                 <Chip size="small" label={r.processArea} />
                 <RiskChip rating={r.riskRating} />
+                {r.assessedRisk && (
+                  <Tooltip title="Assessed risk, after the engagement context">
+                    <Chip size="small" variant="outlined" label={`Assessed ${r.assessedRisk}`} />
+                  </Tooltip>
+                )}
                 <Chip size="small" variant="outlined" label={`${r.frequency} · sample ${r.sampleSize}`} />
               </Stack>
             </AccordionSummary>
@@ -54,6 +59,11 @@ export default function RcmTab({ engagement: e, run }: TabProps) {
                     <Typography variant="body2">
                       <b>Type:</b> {r.type} · {r.nature}
                     </Typography>
+                    {r.samplingRationale && (
+                      <Typography variant="body2">
+                        <b>Sampling:</b> {r.samplingRationale}
+                      </Typography>
+                    )}
                     <Citations citations={r.citations} />
                     <List title="Evidence expected" items={r.evidenceExpected} />
                   </Stack>

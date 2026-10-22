@@ -1,22 +1,70 @@
 import { Alert, Card, CardContent, Chip, Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { useState } from 'react';
+import { toleranceEditable, toleranceProblems } from '../../judgment';
 import { api } from '../../api';
 import { agentApi, formatUtc, planDraft, planPatch, REASON_MAX, rowsAwaitingTests, type PlanDraft } from '../../agents';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
 import { useSession } from '../../session';
-import type { Engagement, RcmRow, TestPlan } from '../../types';
+import type { Engagement, RcmRow, TestPlan, Tolerance } from '../../types';
 import { ActionButton, RiskChip } from '../common';
 
 const METHODS: TestPlan['selectionMethod'][] = ['random', 'all', 'judgemental'];
 
-function PlanCard({ row, plan, engagementId, version, canEdit, onSaved }: {
+const pct = (rate: number) => `${Math.round(rate * 1000) / 10}%`;
+
+/** The tolerance for one control: the plan's recommendation beside a percent field, editable until a test is recorded. */
+function ToleranceField({ row, plan, tolerance, engagementId, version, canEdit, editable, onSaved }: {
+  row: RcmRow;
+  plan?: TestPlan;
+  tolerance?: Tolerance;
+  engagementId: string;
+  version?: number;
+  canEdit: boolean;
+  editable: boolean;
+  onSaved: (e: Engagement) => void;
+}) {
+  const [text, setText] = useState(tolerance ? String(Math.round(tolerance.rate * 1000) / 10) : '');
+  const rate = text.trim() === '' ? NaN : Number(text) / 100;
+  const problems = text.trim() === '' ? [] : toleranceProblems(rate);
+  const unchanged = tolerance ? Math.abs(tolerance.rate - rate) < 1e-9 : false;
+  return (
+    <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1.5 }} useFlexGap flexWrap="wrap">
+      {plan?.recommendedToleranceRate !== undefined && <Chip size="small" variant="outlined" label={`Recommended tolerance ${pct(plan.recommendedToleranceRate)}`} />}
+      <TextField
+        size="small"
+        type="number"
+        label="Tolerance (%)"
+        value={text}
+        onChange={(ev) => setText(ev.target.value)}
+        disabled={!canEdit || !editable}
+        error={problems.length > 0}
+        helperText={problems[0] ?? (editable ? undefined : 'A test is recorded, so the tolerance is fixed.')}
+        inputProps={{ min: 0, max: 25, step: 0.1 }}
+        sx={{ width: 160 }}
+      />
+      {canEdit && editable && (
+        <ActionButton variant="outlined" size="small" disabled={text.trim() === '' || problems.length > 0 || unchanged} action={async () => onSaved(await agentApi.setTolerance(engagementId, row.controlId, rate, version))}>
+          Set tolerance
+        </ActionButton>
+      )}
+      {tolerance && (
+        <Typography variant="caption" color="text.secondary">
+          Set by {tolerance.recordedBy} at {formatUtc(tolerance.recordedAt)}
+        </Typography>
+      )}
+    </Stack>
+  );
+}
+
+function PlanCard({ row, plan, engagementId, version, canEdit, onSaved, tolerance }: {
   row: RcmRow;
   plan?: TestPlan;
   engagementId: string;
   version?: number;
   canEdit: boolean;
   onSaved: () => Promise<void>;
+  tolerance: React.ReactNode;
 }) {
   const [d, setD] = useState<PlanDraft | null>(plan ? planDraft(plan) : null);
   const set = (k: keyof PlanDraft) => (ev: React.ChangeEvent<HTMLInputElement>) => d && setD({ ...d, [k]: ev.target.value });
@@ -37,6 +85,7 @@ function PlanCard({ row, plan, engagementId, version, canEdit, onSaved }: {
           <Chip size="small" variant="outlined" label={`RCM sample ${row.sampleSize}`} />
           {plan?.notTestedJustification && <Chip size="small" color="warning" label="Not to be tested" />}
         </Stack>
+        {tolerance}
         {!plan || !d ? (
           <Typography variant="body2" color="text.secondary">
             No plan yet. An agent run drafts one for every RCM row, starting from the row's sample size and test steps.
@@ -137,6 +186,19 @@ export default function TestPlansTab({ engagement: e, setEngagement }: TabProps)
             version={e.version}
             canEdit={canPrepare(user?.role)}
             onSaved={reload}
+            tolerance={
+              <ToleranceField
+                key={e.tolerances?.[r.controlId]?.recordedAt ?? 'none'}
+                row={r}
+                plan={plan}
+                tolerance={e.tolerances?.[r.controlId]}
+                engagementId={e.id}
+                version={e.version}
+                canEdit={canPrepare(user?.role)}
+                editable={toleranceEditable(e, r.id)}
+                onSaved={setEngagement}
+              />
+            }
           />
         );
       })}

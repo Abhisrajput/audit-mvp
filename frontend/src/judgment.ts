@@ -1,4 +1,4 @@
-import type { ContextFactor, FactorKind, Gate, RiskRating, ScopeItem } from './types';
+import type { ContextFactor, Engagement, FactorKind, Gate, Impact, JudgmentMemo, Likelihood, RiskRating, ScopeItem, Severity } from './types';
 
 export const FACTOR_LABELS: Record<FactorKind, string> = {
   change: 'Process or system change',
@@ -55,4 +55,53 @@ export function raisedAreas(scope: ScopeItem[]): { processArea: string; library:
     byArea.set(s.processArea, row);
   }
   return [...byArea].map(([processArea, r]) => ({ processArea, ...r })).sort((a, b) => a.processArea.localeCompare(b.processArea));
+}
+
+export const SEVERITIES: Severity[] = ['none', 'isolated', 'systemic', 'pervasive'];
+export const LIKELIHOODS: Likelihood[] = ['rare', 'possible', 'likely'];
+export const IMPACTS: Impact[] = ['minor', 'moderate', 'major'];
+
+export const SEVERITY_LABELS: Record<Severity, string> = { none: 'No exceptions', isolated: 'Isolated', systemic: 'Systemic', pervasive: 'Pervasive' };
+export const LIKELIHOOD_LABELS: Record<Likelihood, string> = { rare: 'Rare', possible: 'Possible', likely: 'Likely' };
+export const IMPACT_LABELS: Record<Impact, string> = { minor: 'Minor', moderate: 'Moderate', major: 'Major' };
+
+// The server's rating matrix (backend judgment/finding.ts), repeated so the dialog shows the rating as the person chooses.
+const MATRIX: Record<Impact, Record<Likelihood, RiskRating>> = {
+  major: { rare: 'Medium', possible: 'High', likely: 'High' },
+  moderate: { rare: 'Medium', possible: 'Medium', likely: 'High' },
+  minor: { rare: 'Low', possible: 'Low', likely: 'Low' },
+};
+const TOLERANCE_MAX = 0.25;
+
+export function ratingOf(likelihood: Likelihood, impact: Impact): RiskRating {
+  return MATRIX[impact][likelihood];
+}
+
+/** The impact a stored rating implies, for findings saved before likelihood and impact existed. */
+export const impactOfRating = (r: RiskRating): Impact => (r === 'High' ? 'major' : r === 'Medium' ? 'moderate' : 'minor');
+
+/** A memo by subject key; a finding's memo lives on the finding, under `finding:<rowId>`. */
+export function memoFor(e: Pick<Engagement, 'memos' | 'findings'>, subjectKey: string): JudgmentMemo | undefined {
+  if (Object.hasOwn(e.memos ?? {}, subjectKey)) return e.memos[subjectKey];
+  if (!subjectKey.startsWith('finding:')) return undefined;
+  const rowId = subjectKey.slice('finding:'.length);
+  return e.findings.find((f) => f.rowId === rowId)?.memo;
+}
+
+/** A tolerance can be set until a test has been recorded for the row. */
+export function toleranceEditable(e: Pick<Engagement, 'testInputs'>, rowId: string): boolean {
+  return !Object.hasOwn(e.testInputs ?? {}, rowId);
+}
+
+/** True once the report gate is approved; management responses are then closed. */
+export function responsesLocked(gates: Gate[]): boolean {
+  return gates.some((g) => g.kind === 'report' && g.state === 'approved');
+}
+
+/** Problems with a tolerance rate (0 to 25%); [] when fine. */
+export function toleranceProblems(rate: number): string[] {
+  if (!Number.isFinite(rate)) return ['Enter a tolerance as a percentage'];
+  if (rate < 0) return ['Tolerance cannot be negative'];
+  if (rate > TOLERANCE_MAX) return [`Tolerance cannot be above ${TOLERANCE_MAX * 100}%`];
+  return [];
 }

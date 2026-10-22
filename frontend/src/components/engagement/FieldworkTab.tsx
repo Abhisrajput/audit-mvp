@@ -1,7 +1,8 @@
 import { PlayArrow as PlayArrowIcon } from '@mui/icons-material';
-import { Alert, Card, CardContent, Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Card, CardContent, Chip, Grid, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { useState } from 'react';
 import { api } from '../../api';
+import { SEVERITY_LABELS } from '../../judgment';
 import type { TabProps } from '../../pages/EngagementPage';
 import type { Engagement, RcmRow, TestInput, TestPlan, TestResult } from '../../types';
 import { ActionButton, ConclusionChip, RiskChip } from '../common';
@@ -30,6 +31,11 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved }: {
             {row.control}
           </Typography>
           <RiskChip rating={row.riskRating} />
+          {result?.severity && (
+            <Tooltip title={result.severityRationale ?? ''}>
+              <Chip size="small" variant="outlined" color={result.severity === 'none' ? 'default' : 'warning'} label={SEVERITY_LABELS[result.severity]} />
+            </Tooltip>
+          )}
           <ConclusionChip conclusion={result?.conclusion} />
         </Stack>
         {plan && (

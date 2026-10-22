@@ -2,6 +2,7 @@ import { Gavel as GavelIcon } from '@mui/icons-material';
 import { Alert, Box, Button, Card, CardContent, Chip, Collapse, Divider, Link, Stack, TextField, Typography } from '@mui/material';
 import { useState } from 'react';
 import { formatUtc, gateSigning, sortGates, subjectLabel } from '../../agents';
+import { memoFor } from '../../judgment';
 import { useSession } from '../../session';
 import { openSigningWindow, signGateWithReauth } from '../../signing';
 import type { Engagement, Gate, JudgmentMemo } from '../../types';
@@ -110,7 +111,7 @@ export default function GateList({ engagement, agent, onSigned, showFindings }: 
         Gates
       </Typography>
       {open.map((g) => (
-        <GateCard key={g.id} gate={g} memo={engagement.memos[g.subjectKey]} agent={agent} onSigned={onSigned} showFindings={showFindings} />
+        <GateCard key={g.id} gate={g} memo={memoFor(engagement, g.subjectKey)} agent={agent} onSigned={onSigned} showFindings={showFindings} />
       ))}
       {!open.length && (
         <Typography variant="body2" color="text.secondary">

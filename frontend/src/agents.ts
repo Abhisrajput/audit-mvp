@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { Action, AgentRun, AgentStep, Budget, Decision, DelegateRecord, Engagement, Finding, Gate, GateKind, QaReport, Role, RunStatus, TestPlan, User } from './types';
+import type { Action, FindingResponse, ResponseKind, AgentRun, AgentStep, Budget, Decision, DelegateRecord, Engagement, Finding, Gate, GateKind, QaReport, Role, RunStatus, TestPlan, User } from './types';
 
 // The agent run as the UI shows it (agent spec §7.2). Everything here is plain functions over the API's types, so it is
 // tested without a browser; the components only lay it out.
@@ -39,7 +39,19 @@ export const agentApi = {
   raiseBudget: (runId: string, budget: Budget) => api<AgentRun>(`/runs/${runId}/budget`, { method: 'POST', body: budget }),
   editTestPlan: (engagementId: string, rowId: string, patch: TestPlanPatch, version: number | undefined) =>
     api<TestPlan>(`/engagements/${engagementId}/test-plans/${rowId}`, { method: 'PUT', body: patch, ifMatch: version }),
+  setTolerance: (engagementId: string, controlId: string, rate: number, version: number | undefined) =>
+    api<Engagement>(`/engagements/${engagementId}/tolerances/${encodeURIComponent(controlId)}`, { method: 'PUT', body: { rate }, ifMatch: version }),
+  recordResponse: (engagementId: string, findingId: string, body: ResponseInput, version: number | undefined) =>
+    api<FindingResponse>(`/engagements/${engagementId}/findings/${findingId}/responses`, { method: 'POST', body, ifMatch: version }),
+  responses: (engagementId: string, findingId: string) => api<FindingResponse[]>(`/engagements/${engagementId}/findings/${findingId}/responses`),
 };
+
+export interface ResponseInput {
+  response: ResponseKind;
+  owner: string;
+  dueDate?: string | null;
+  actionPlan?: string;
+}
 
 /** 'YYYY-MM-DD HH:MM UTC', as elsewhere in the app. */
 export function formatUtc(iso: string): string {
