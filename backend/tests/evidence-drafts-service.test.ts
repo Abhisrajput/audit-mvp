@@ -153,7 +153,9 @@ describe('test drafts: agent write, accept and discard', () => {
     const v = await signIn(http, 'viewer');
     const url = `/api/engagements/${e.id}/tests/${rows[0]}/draft/discard`;
     await a.post(url).expect(404);
-    await save({ [rows[0]]: draftFor(rows[0]) });
+    // The draft cites a document the auditor may read; a draft citing one they cannot is not served (evidence-drafts-http).
+    const doc = await insertDocument(svc.db.kysely, { sha256: 'c'.repeat(64), filename: 'log.pdf', mime: 'application/pdf', size: 10, kind: 'evidence', classification: 'internal', engagementId: e.id, uploadedBy: 'auditor' });
+    await save({ [rows[0]]: draftFor(rows[0], { evidence: [{ documentId: doc.id, page: 1, quote: 'late by 3h' }] }) });
     await v.post(url).expect(403);
     await a.agent.post(url).set('x-csrf-token', a.csrf).set('If-Match', '"1"').send({}).expect(409);
     const ok = await a.post(url).expect(200);

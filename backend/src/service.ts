@@ -5,6 +5,8 @@ import { closeFindingGate, closeGate, getGate, hasApprovedGate, type Gate } from
 import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
 import { APPROVER_ROLES, PREPARER_ROLES, REVIEWER_ROLES } from './auth/roles';
+import { mayRead } from './knowledge/access';
+import { classificationsOf } from './knowledge/document-repo';
 import type { Db } from './db';
 import type { DB } from './db/schema';
 import { insertSignature, listSignatures } from './db/signature-repo';
@@ -166,6 +168,19 @@ export class AuditService {
   async engagementWithSignatureStatus(id: string): Promise<Engagement> {
     const e = await this.engagement(id);
     return withSignatureStatus(e, await listSignatures(this.db.kysely, id), await lastRevisionTimes(this.db.kysely, id));
+  }
+
+  /**
+   * The engagement as one reader may see it. A draft goes only to a preparer who may read every document it cites;
+   * everyone else gets none, since a draft holds verbatim quotes. Every route that returns an engagement uses this.
+   */
+  async servedTo(e: Engagement, reader: User): Promise<Engagement> {
+    const drafts = Object.entries(e.testDrafts ?? {});
+    if (!drafts.length) return e;
+    if (!PREPARER_ROLES.includes(reader.role)) return { ...e, testDrafts: {} };
+    const classes = await classificationsOf(this.db.kysely, drafts.flatMap(([, d]) => d.evidence.map((x) => x.documentId)));
+    const readable = drafts.filter(([, d]) => d.evidence.every((x) => { const c = classes.get(x.documentId); return c !== undefined && mayRead(reader.role, c); }));
+    return { ...e, testDrafts: Object.fromEntries(readable) };
   }
 
   listEngagements(): Promise<EngagementSummary[]> {

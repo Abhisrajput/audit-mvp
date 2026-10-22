@@ -73,6 +73,14 @@ export async function getDocument(db: Executor, id: string): Promise<DocumentRec
   return latest ? { ...doc, extraction: toExtraction(latest) } : doc;
 }
 
+/** The classification of each document id that exists, in one query. */
+export async function classificationsOf(db: Executor, ids: string[]): Promise<Map<string, Classification>> {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return new Map();
+  const rows = await db.selectFrom('documents').select(['id', 'classification']).where('id', 'in', unique).execute();
+  return new Map(rows.map((r) => [r.id, r.classification as Classification]));
+}
+
 /** Global documents, plus one engagement's when engagementId is given, that the reader's classifications allow. */
 export async function listDocuments(db: Executor, f: { engagementId: string | null; classifications: readonly Classification[] }): Promise<DocumentRecord[]> {
   if (!f.classifications.length) return [];
