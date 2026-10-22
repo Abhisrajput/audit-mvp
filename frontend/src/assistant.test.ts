@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { api } from './api';
-import { argRows, assistantApi, plainSnippet, engagementIdOf, notifyChanged, onChanged, shownFrom, trimHistory, type Turn } from './assistant';
+import { argRows, assistantApi, confirmFailed, confirmStarted, plainSnippet, engagementIdOf, notifyChanged, onChanged, shownFrom, trimHistory, type Turn } from './assistant';
 
 vi.mock('./api', () => ({ api: vi.fn(async () => ({})) }));
 
 const turn = (id: number, over: Partial<Turn> = {}): Turn => ({
-  id, message: `q${id}`, response: { say: `a${id}` }, error: null, done: null, cancelled: false, ...over,
+  id, message: `q${id}`, response: { say: `a${id}` }, error: null, done: null, cancelled: false, pending: false, ...over,
 });
 
 describe('trimHistory', () => {
@@ -89,5 +89,15 @@ describe('assistantApi.confirm', () => {
 describe('plainSnippet', () => {
   it('strips tags and collapses whitespace', () => {
     expect(plainSnippet('<b>allergen</b> and\n  physical <i>hazards</i>')).toBe('allergen and physical hazards');
+  });
+});
+
+describe('the in-flight confirm lives on the turn', () => {
+  it('is set when a confirm starts and cleared when it fails, leaving the rest of the turn alone', () => {
+    const t = turn(1, { done: null });
+    const started = confirmStarted(t);
+    expect(started).toMatchObject({ pending: true, done: null, cancelled: false, id: 1 });
+    expect(t.pending).toBe(false);
+    expect(confirmFailed(started).pending).toBe(false);
   });
 });

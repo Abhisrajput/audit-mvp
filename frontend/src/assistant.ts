@@ -29,7 +29,12 @@ export interface Turn {
   error: string | null;
   done: { summary: string } | null;
   cancelled: boolean;
+  /** A confirm request is in flight. Kept on the turn, not in the card, so a remount cannot offer Confirm again. */
+  pending: boolean;
 }
+
+export const confirmStarted = (t: Turn): Turn => ({ ...t, pending: true });
+export const confirmFailed = (t: Turn): Turn => ({ ...t, pending: false });
 
 /** The most history entries (person and assistant lines together) sent with a turn. */
 export const HISTORY_TURNS = 8;

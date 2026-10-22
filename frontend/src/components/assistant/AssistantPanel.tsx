@@ -3,7 +3,7 @@ import { Alert, Box, Drawer, IconButton, Stack, TextField, Typography, useMediaQ
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  assistantApi, engagementIdOf, notifyChanged, OFFLINE_HINT, shownFrom, trimHistory,
+  assistantApi, confirmFailed, confirmStarted, engagementIdOf, notifyChanged, OFFLINE_HINT, shownFrom, trimHistory,
   type AssistantSettings, type Turn,
 } from '../../assistant';
 import type { CommandName } from '../../types';
@@ -47,7 +47,7 @@ export default function AssistantPanel({ open, onClose }: { open: boolean; onClo
     const shown = last?.response?.command ? shownFrom(last.response.command.name, last.response.result) : [];
     const history = trimHistory(turns);
     const id = nextId.current++;
-    setTurns((ts) => [...ts, { id, message, response: null, error: null, done: null, cancelled: false }]);
+    setTurns((ts) => [...ts, { id, message, response: null, error: null, done: null, cancelled: false, pending: false }]);
     setComposer('');
     setBusy(true);
     try {
@@ -60,8 +60,10 @@ export default function AssistantPanel({ open, onClose }: { open: boolean; onClo
     }
   };
 
+  const update = (id: number, f: (t: Turn) => Turn) => setTurns((ts) => ts.map((t) => (t.id === id ? f(t) : t)));
+
   const onDone = (id: number) => (summary: string, name: CommandName, args: unknown, result: unknown) => {
-    patch(id, { done: { summary } });
+    patch(id, { done: { summary }, pending: false });
     if (name === 'create_engagement') navigate(`/engagements/${(result as { id: string }).id}`);
     const changed = engagementIdOf(name, args);
     if (changed) notifyChanged(changed);
@@ -99,6 +101,9 @@ export default function AssistantPanel({ open, onClose }: { open: boolean; onClo
                     proposal={t.response.proposal}
                     done={t.done}
                     cancelled={t.cancelled}
+                    pending={t.pending}
+                    onStart={() => update(t.id, confirmStarted)}
+                    onFail={() => update(t.id, confirmFailed)}
                     onDone={onDone(t.id)}
                     onCancel={() => patch(t.id, { cancelled: true })}
                   />

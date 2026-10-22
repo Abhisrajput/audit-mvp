@@ -25,6 +25,8 @@ function Grid({ head, children }: { head: string[]; children: ReactNode }) {
   );
 }
 
+const RESPONSE_LABELS: Record<string, string> = { agree: 'Agrees', partially_agree: 'Partially agrees', disagree: 'Disagrees' };
+
 function body(name: CommandName, result: unknown): ReactNode {
   switch (name) {
     case 'list_engagements': {
@@ -58,6 +60,12 @@ function body(name: CommandName, result: unknown): ReactNode {
             {e.openGate ? ` · Open gate: ${e.openGate}` : ''}
             {e.run ? ` · Run: ${e.run.status}` : ''}
           </Typography>
+          {e.packIds?.length > 0 && <Typography variant="caption" color="text.secondary" component="div">Packs: {e.packIds.join(', ')}</Typography>}
+          {counts?.findings && (
+            <Typography variant="caption" color="text.secondary" component="div">
+              Findings: {Object.entries(counts.findings).map(([status, n]) => `${n} ${status}`).join(' · ')}
+            </Typography>
+          )}
         </Box>
       );
     }
@@ -65,12 +73,13 @@ function body(name: CommandName, result: unknown): ReactNode {
       const list = rows<FindingRow>(result);
       if (!list.length) return null;
       return (
-        <Grid head={['Finding', 'Rating', 'Status']}>
+        <Grid head={['Finding', 'Rating', 'Status', 'Response']}>
           {list.map((f) => (
             <TableRow key={f.id}>
               <Cell>{f.title}</Cell>
               <Cell><RiskChip rating={f.rating} /></Cell>
               <Cell><StatusChip status={f.status} /></Cell>
+              <Cell>{f.response ? RESPONSE_LABELS[f.response] ?? f.response : ''}</Cell>
             </TableRow>
           ))}
         </Grid>

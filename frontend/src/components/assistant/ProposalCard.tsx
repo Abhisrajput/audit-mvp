@@ -6,10 +6,13 @@ import type { CommandName, TurnResponse } from '../../types';
 import { ActionButton } from '../common';
 
 type Proposal = NonNullable<TurnResponse['proposal']>;
-export default function ProposalCard({ proposal, done, cancelled, onDone, onCancel }: {
+export default function ProposalCard({ proposal, done, cancelled, pending, onStart, onFail, onDone, onCancel }: {
   proposal: Proposal;
   done: { summary: string } | null;
   cancelled: boolean;
+  pending: boolean;
+  onStart: () => void;
+  onFail: () => void;
   onDone: (summary: string, name: CommandName, args: unknown, result: unknown) => void;
   onCancel: () => void;
 }) {
@@ -21,10 +24,12 @@ export default function ProposalCard({ proposal, done, cancelled, onDone, onCanc
 
   const confirm = async () => {
     setError(null);
+    onStart();
     try {
       const res = await assistantApi.confirm(proposal);
       onDone(res.summary, proposal.name, proposal.args, res.result);
     } catch (e) {
+      onFail();
       if (e instanceof ApiError && e.code === 'VERSION_CONFLICT') {
         setConflict(true);
         setError('The engagement changed since this was proposed. Ask again.');
@@ -49,8 +54,8 @@ export default function ProposalCard({ proposal, done, cancelled, onDone, onCanc
       </Table>
       {error && <Alert severity={conflict ? 'warning' : 'error'} sx={{ mb: 1 }}>{error}</Alert>}
       <Stack direction="row" spacing={1}>
-        <ActionButton size="small" action={confirm} disabled={conflict}>Confirm</ActionButton>
-        <Button size="small" onClick={onCancel}>Cancel</Button>
+        <ActionButton size="small" action={confirm} disabled={conflict || pending}>Confirm</ActionButton>
+        <Button size="small" disabled={pending} onClick={onCancel}>Cancel</Button>
       </Stack>
     </Card>
   );
