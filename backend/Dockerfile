@@ -11,7 +11,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
 # The runtime runs only `node dist/...`; drop npm, npx and corepack (and their bundled dependencies) from the image.
-RUN npm ci --omit=dev && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+# The build stage keeps optional dependencies (TypeScript 7's native tsc is one); the runtime does not need
+# pdfjs-dist's optional canvas binding, which text extraction never uses.
+RUN npm ci --omit=dev --omit=optional && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
 COPY packs ./packs

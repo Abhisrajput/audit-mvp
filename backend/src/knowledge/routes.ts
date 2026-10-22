@@ -4,12 +4,17 @@ import express, { Router, type Response } from 'express';
 import { z } from 'zod';
 import { actorOf, requireRole } from '../auth/http';
 import { PREPARER_ROLES, READ_ROLES } from '../auth/roles';
+import type { Executor } from '../db/trail-repo';
+import type { Role } from '../engine/types';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { assertSha256, attachmentDisposition, BlobNotFound, type BlobStore } from '../storage/blob-store';
 import { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, mayRead } from './access';
+import { loadEvidenceConfig, MAX_TEXT_CHARS, type EvidenceConfig } from '../evidence/config';
+import { runExtraction } from '../evidence/extraction';
+import { insertExtraction } from '../evidence/extraction-repo';
 import { getDocument, insertDocument, listDocuments, setDocumentText, type DocumentRecord } from './document-repo';
 import { MAX_HITS, PgFtsRetriever } from './retriever';
 import { recordDocumentEvent } from './trail';
@@ -18,15 +23,16 @@ export interface StorageDeps {
   blobs: BlobStore | null;
   maxUploadBytes: number;
   presignDownloads: boolean;
+  /** Extraction limits; defaults apply when absent. */
+  evidence?: EvidenceConfig;
 }
 
 export const UPLOAD_PATH = '/api/blobs';
 
-const MAX_TEXT_CHARS = 900_000;
 const MAX_QUERY_CHARS = 500;
 
 /** A real calendar date in YYYY-MM-DD form (2026-02-30 is not). */
-const CalendarDate = z
+export const CalendarDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
   .refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s, 'Not a calendar date');
@@ -64,37 +70,46 @@ const SearchQuery = z.object({
 const ACTIVE_CONTENT = /html|xml|javascript/i;
 const servedType = (mime: string) => (ACTIVE_CONTENT.test(mime) ? 'application/octet-stream' : mime);
 
+/**
+ * Runs a storage call. A missing object (BlobNotFound) and our own validation errors pass through;
+ * anything else (missing bucket, denied credentials, network) is logged and answered 503.
+ */
+export async function storageCall<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof AppError || err instanceof BlobNotFound) throw err;
+    logger.error({ err, what }, 'File storage failed');
+    throw new AppError(503, 'File storage is unavailable', 'STORAGE_UNAVAILABLE');
+  }
+}
+
+/** The configured blob store, or 503 when file storage is not set up. */
+export function storeOf(storage: StorageDeps): BlobStore {
+  if (!storage.blobs) throw new AppError(503, 'File storage is not configured', 'STORAGE_UNAVAILABLE');
+  return storage.blobs;
+}
+
+/** Extraction limits: the configured ones, or the defaults sized to the upload cap. */
+export const evidenceConfigOf = (storage: StorageDeps): EvidenceConfig => storage.evidence ?? loadEvidenceConfig({}, { maxBytes: storage.maxUploadBytes });
+
+/** The document if this reader may see it; otherwise "not found", whether or not it exists. */
+export async function readableDocument(db: Executor, id: string, role: Role): Promise<DocumentRecord> {
+  const doc = await getDocument(db, id);
+  if (!doc || !mayRead(role, doc.classification)) throw new AppError(404, 'Document not found');
+  return doc;
+}
+
 /** Document upload, registry, download and search. All under /api, so session, CSRF and role gates apply. */
 export function documentRoutes(svc: AuditService, storage: StorageDeps): Router {
   const r = Router();
   const db = svc.db.kysely;
   const readers = requireRole(READ_ROLES);
   const preparers = requireRole(PREPARER_ROLES);
-  const blobs = () => {
-    if (!storage.blobs) throw new AppError(503, 'File storage is not configured', 'STORAGE_UNAVAILABLE');
-    return storage.blobs;
-  };
+  const evidence = evidenceConfigOf(storage);
+  const blobs = () => storeOf(storage);
 
-  /**
-   * Runs a storage call. A missing object (BlobNotFound) and our own validation errors pass through;
-   * anything else (missing bucket, denied credentials, network) is logged and answered 503.
-   */
-  const storageCall = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
-    try {
-      return await fn();
-    } catch (err) {
-      if (err instanceof AppError || err instanceof BlobNotFound) throw err;
-      logger.error({ err, what }, 'File storage failed');
-      throw new AppError(503, 'File storage is unavailable', 'STORAGE_UNAVAILABLE');
-    }
-  };
-
-  /** The document if this reader may see it; otherwise "not found", whether or not it exists. */
-  const readable = async (id: string, role: Parameters<typeof mayRead>[0]): Promise<DocumentRecord> => {
-    const doc = await getDocument(db, id);
-    if (!doc || !mayRead(role, doc.classification)) throw new AppError(404, 'Document not found');
-    return doc;
-  };
+  const readable = (id: string, role: Role) => readableDocument(db, id, role);
 
   r.put(UPLOAD_PATH, preparers, express.raw({ type: () => true, limit: storage.maxUploadBytes }), wrap(async (req, res) => {
     const store = blobs();
@@ -119,15 +134,31 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     const stored = uploaded ? await storageCall('head', () => store.head(sha256)) : null;
     if (!stored) throw new AppError(400, 'Upload the file first: no stored object has that SHA-256');
 
-    const result = await db.transaction().execute(async (trx) => {
+    const registered = await db.transaction().execute(async (trx) => {
       const doc = await insertDocument(trx, {
         sha256, filename: body.filename, mime: body.mime, size: stored.size, kind: body.kind, classification: body.classification,
         engagementId, uploadedBy: actor.id, retainUntil: body.retainUntil ?? null, metadata: body.metadata,
       });
       const chunks = body.text ? await setDocumentText(trx, doc, { extractor: 'client', extractorVersion: '1', text: body.text.content, pageStarts: body.text.pageStarts }) : 0;
+      if (body.text) {
+        await insertExtraction(trx, { documentId: doc.id, extractor: 'client', extractorVersion: '1', status: 'client', chars: body.text.content.length, pages: body.text.pageStarts?.length ?? null, error: null, by: actor.id });
+      }
       await recordDocumentEvent(trx, actor, doc, chunks);
-      return { ...doc, chunks };
+      return { doc, chunks };
     });
+    // No text supplied: the server reads the stored bytes itself, in its own transaction, so a slow or failing
+    // extractor never undoes the registration; its outcome is the document's extraction status.
+    // If it throws, the document still exists: answer 201 with extraction: null, which the retry route treats as retryable.
+    if (!body.text) {
+      try {
+        await runExtraction({ db, blobs: store, config: evidence }, registered.doc, actor);
+      } catch (err) {
+        logger.error({ err, documentId: registered.doc.id }, 'Extraction failed after registration');
+      }
+    }
+    const doc = (await getDocument(db, registered.doc.id))!;
+    const chunks = body.text ? registered.chunks : Number((await db.selectFrom('chunks').select((eb) => eb.fn.countAll().as('n')).where('document_id', '=', doc.id).executeTakeFirstOrThrow()).n);
+    const result = { ...doc, chunks };
     res.status(201).json(result);
   }));
 

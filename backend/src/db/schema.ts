@@ -176,6 +176,20 @@ export interface DocumentTextTable {
   extracted_at: Generated<Date>;
 }
 
+export interface DocumentExtractionsTable {
+  id: Generated<number>;
+  document_id: string;
+  attempt: number;
+  extractor: string;
+  extractor_version: string;
+  status: 'ok' | 'no_text' | 'failed' | 'too_large' | 'unsupported' | 'client';
+  chars: number;
+  pages: number | null;
+  error: string | null;
+  extracted_at: Generated<Date>;
+  extracted_by: string;
+}
+
 export interface ChunksTable {
   id: string;
   document_id: string | null;
@@ -353,6 +367,7 @@ export interface DB {
   sign_intents: SignIntentsTable;
   documents: DocumentsTable;
   document_text: DocumentTextTable;
+  document_extractions: DocumentExtractionsTable;
   chunks: ChunksTable;
   blob_uploads: BlobUploadsTable;
   kg_nodes: KgNodesTable;

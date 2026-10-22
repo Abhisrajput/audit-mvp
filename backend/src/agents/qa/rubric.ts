@@ -83,9 +83,9 @@ export function subjectContent(e: Engagement, subjectKey: string): unknown {
   const rowId = rowOfKey(subjectKey);
   const f = rowId ? e.findings.find((x) => x.rowId === rowId) : undefined;
   if (!rowId || !f) return null;
-  const { title, rating, likelihood, impact, rootCause, condition, criteria, cause, effect, recommendation, evidenceRefs } = f;
+  const { title, rating, likelihood, impact, rootCause, condition, criteria, cause, effect, recommendation, evidenceRefs, evidence } = f;
   return {
-    finding: { title, rating, likelihood: likelihood ?? null, impact: impact ?? null, rootCause: rootCause ?? null, severity: e.testResults[rowId]?.severity ?? null, condition, criteria, cause, effect, recommendation, evidenceRefs, citations: labels(f.citations) },
+    finding: { title, rating, likelihood: likelihood ?? null, impact: impact ?? null, rootCause: rootCause ?? null, severity: e.testResults[rowId]?.severity ?? null, condition, criteria, cause, effect, recommendation, evidenceRefs, ...(evidence ? { evidence } : {}), citations: labels(f.citations) },
     test: { input: e.testInputs[rowId] ?? null, result: e.testResults[rowId] ?? null },
   };
 }

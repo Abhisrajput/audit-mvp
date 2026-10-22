@@ -37,7 +37,7 @@ export function errorHandler(): ErrorRequestHandler {
     const requestId = req.requestId;
     if (err instanceof AppError) {
       httpErrors.inc({ code: err.code });
-      return res.status(err.status).json({ error: err.message, code: err.code, requestId });
+      return res.status(err.status).json({ ...err.extra, error: err.message, code: err.code, requestId });
     }
     if (err instanceof z.ZodError) {
       httpErrors.inc({ code: 'VALIDATION' });

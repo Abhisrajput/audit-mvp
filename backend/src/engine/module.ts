@@ -25,6 +25,8 @@ export class ModuleContext {
     readonly actor: User,
     readonly input: Record<string, unknown>,
     readonly policy: CitationPolicy,
+    /** File names for the documents a report cites, loaded by the service; kept off `input` so the trail records only what a caller asked for. */
+    readonly documentNames: ReadonlyMap<string, { filename: string }> = new Map(),
   ) {}
 
   step(step: string, detail: string) {

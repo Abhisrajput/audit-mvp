@@ -34,6 +34,13 @@ export type ErrorCode =
   | 'AGENT_FORBIDDEN'
   | 'LEASE_LOST'
   | 'BUDGET_EXHAUSTED'
+  | 'UPLOAD_TOO_LARGE'
+  | 'CONTENT_MISMATCH'
+  | 'EVIDENCE_NOT_FOUND'
+  | 'EVIDENCE_EXPIRED'
+  | 'EXTRACTION_EXISTS'
+  | 'UNSUPPORTED'
+  | 'DUPLICATE_DIFFERS'
   | 'INTERNAL';
 
 const DEFAULT_CODES: Record<number, ErrorCode> = {
@@ -47,7 +54,8 @@ const DEFAULT_CODES: Record<number, ErrorCode> = {
 /** An error the API returns to the client with a stable, machine-readable code. */
 export class AppError extends Error {
   readonly code: ErrorCode;
-  constructor(public status: number, message: string, code?: ErrorCode) {
+  /** Extra JSON fields for the error body (for example the id of the document a duplicate collides with). */
+  constructor(public status: number, message: string, code?: ErrorCode, readonly extra?: Record<string, unknown>) {
     super(message);
     this.code = code ?? DEFAULT_CODES[status] ?? 'INTERNAL';
   }

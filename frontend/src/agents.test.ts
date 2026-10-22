@@ -226,6 +226,20 @@ describe('finding review currency', () => {
 } as unknown as Finding;
     expect(await findingContentHash(withJudgment)).toBe('5150864893bd4a7a7753de9240e3a7a7671760dc03aab09b500b287a7d5ada3d');
   });
+  it('pins the pre-3A hash and the with-evidence hash, equal to the backend constants', async () => {
+    const fixed = {
+      id: 'F-FIXED-1', rowId: 'R-7', controlId: 'C-ACCESS-1', title: 'Access reviews are not performed quarterly', rating: 'Medium',
+      condition: 'Two of 25 reviews were missing.', criteria: 'Quarterly access reviews are required. Control objective: keep access appropriate.',
+      cause: 'Owner left; no delegate.', effect: 'Inappropriate access may persist.', recommendation: 'Assign a delegate and evidence each review.',
+      citations: [{ clauseId: 'CL-1', regulation: 'ISO 27001', ref: 'A.5.18', label: 'ISO 27001 A.5.18' }], evidenceRefs: ['EV-1', 'EV-2'],
+      status: 'draft', blockedReasons: [], signOffs: [], bundleId: 'RUN-abcd1234', likelihood: 'likely', impact: 'moderate',
+      rootCause: { category: 'process', analysis: 'No delegate when the owner left.', confirmed: false },
+      memo: { subjectKey: 'finding:R-7', calls: [], forTheReviewer: ['Check the sample'], producedAt: '2026-01-01T00:00:00.000Z' },
+      preparedBy: ['auditor'],
+    } as unknown as Finding;
+    expect(await findingContentHash(fixed)).toBe('ee5a15d4f3d790d33edfbb7eb28096944f39340368a900972991310d0163fe54');
+    expect(await findingContentHash({ ...fixed, evidence: [{ documentId: 'DOC-1', page: 2 }] })).toBe('f1d2b256f20cf74a6d55eeb9ccecf723fbf015750d2027fcb1cc51c3582e58d5');
+  });
   it('trusts a review only while its hash matches the finding', () => {
     expect(reviewIsCurrent(gate({ subjectHash: 'h' }), 'h')).toBe(true);
     expect(reviewIsCurrent(gate({ subjectHash: 'h' }), 'other')).toBe(false);

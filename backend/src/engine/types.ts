@@ -160,11 +160,16 @@ export interface RcmRow {
 
 export type TestConclusion = 'Effective' | 'Ineffective' | 'Design deficient' | 'Not tested';
 
+/** A link from a test record or finding to a registered document, optionally to one page of it. */
+export interface EvidenceLink { documentId: string; page?: number; note?: string }
+
 /** What the auditor records in the field. */
 export interface TestInput {
   designAdequate: boolean | null;
   observation: string;
   evidenceRefs: string[];
+  /** Links to registered documents; absent (never empty) when there are none. */
+  evidence?: EvidenceLink[];
   sampleTested: number;
   exceptions: number;
   updatedBy: string;
@@ -257,6 +262,8 @@ export interface Finding {
   recommendation: string;
   citations: Citation[];
   evidenceRefs: string[];
+  /** Links to registered documents, copied from the test record; absent (never empty) when there are none. */
+  evidence?: EvidenceLink[];
   status: FindingStatus;
   blockedReasons: string[];
   signOffs: SignOff[];

@@ -36,6 +36,7 @@ export function draftFinding(ctxRegistry: { clauses: Map<string, { regulation: s
     recommendation,
     citations: row.citations,
     evidenceRefs: [...input.evidenceRefs],
+    ...(input.evidence?.length ? { evidence: input.evidence.map((l) => ({ ...l })) } : {}),
     status: 'draft',
     blockedReasons: [],
     signOffs: [],

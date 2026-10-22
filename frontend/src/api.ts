@@ -71,3 +71,45 @@ export async function request<T>(url: string, init: ApiInit = {}): Promise<T> {
 }
 
 export const api = <T>(path: string, init?: ApiInit) => request<T>(`/api${path}`, init);
+
+/** Headers for a multipart upload: the CSRF token, and no Content-Type (the browser sets the multipart boundary). */
+export function uploadHeaders(): Record<string, string> {
+  return csrfToken ? { 'x-csrf-token': csrfToken } : {};
+}
+
+/** POST a file and text fields as multipart/form-data, reporting progress as a 0..1 fraction. */
+export function upload<T>(path: string, file: File, fields: Record<string, string>, onProgress?: (fraction: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api${path}`);
+    xhr.withCredentials = true;
+    for (const [name, value] of Object.entries(uploadHeaders())) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0 && onProgress) onProgress(e.loaded / e.total);
+    };
+    xhr.onerror = () => reject(new ApiError('The upload could not reach the server. Check your connection and try again.', 0, null));
+    xhr.onabort = () => reject(new ApiError('The upload was cancelled.', 0, null));
+    xhr.onload = () => {
+      let data: unknown = xhr.responseText;
+      let parsed = false;
+      if (xhr.responseText && (xhr.getResponseHeader('content-type') ?? '').includes('json')) {
+        try {
+          data = JSON.parse(xhr.responseText);
+          parsed = true;
+        } catch {
+          data = {};
+        }
+      }
+      if (xhr.status === 401) onUnauthenticated();
+      if (xhr.status < 200 || xhr.status >= 300) return reject(errorFrom(xhr.status, data));
+      if (!parsed) return reject(new ApiError('Unexpected response from the server.', xhr.status, null));
+      onProgress?.(1);
+      resolve(data as T);
+    };
+    const form = new FormData();
+    // Text fields first so the server sees them before the file part.
+    for (const [name, value] of Object.entries(fields)) form.append(name, value);
+    form.append('file', file);
+    xhr.send(form);
+  });
+}

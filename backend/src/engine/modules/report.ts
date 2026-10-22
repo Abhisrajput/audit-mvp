@@ -40,7 +40,13 @@ export function responseLine(r: FindingResponse | undefined): string {
 
 const OPINION_LABEL: Record<Opinion, string> = { satisfactory: 'Satisfactory', needs_improvement: 'Needs improvement', unsatisfactory: 'Unsatisfactory' };
 
-function findingMd(f: Finding, n: number, response: FindingResponse | undefined): string {
+/** Links as `filename (p. N)` (the id when the file is unknown), then the free-text references. */
+function evidenceText(f: Finding, names: ReadonlyMap<string, { filename: string }>): string {
+  const links = (f.evidence ?? []).map((l) => `${names.get(l.documentId)?.filename ?? l.documentId}${l.page !== undefined ? ` (p. ${l.page})` : ''}`);
+  return [...links, ...f.evidenceRefs].join(', ');
+}
+
+function findingMd(f: Finding, n: number, response: FindingResponse | undefined, names: ReadonlyMap<string, { filename: string }>): string {
   const signedBy = f.signOffs.map(signatureText).join('; ');
   return [
     `### ${n}. ${f.title}`,
@@ -55,7 +61,7 @@ function findingMd(f: Finding, n: number, response: FindingResponse | undefined)
     `- **Recommendation:** ${f.recommendation}`,
     responseLine(response),
     ``,
-    `_Citations:_ ${f.citations.map((c) => `${c.regulation} ${c.ref}`).join('; ')} &nbsp; _Evidence:_ ${f.evidenceRefs.join(', ')} &nbsp; _Trail:_ ${f.bundleId}`,
+    `_Citations:_ ${f.citations.map((c) => `${c.regulation} ${c.ref}`).join('; ')} &nbsp; _Evidence:_ ${evidenceText(f, names)} &nbsp; _Trail:_ ${f.bundleId}`,
     ``,
   ].join('\n');
 }
@@ -239,7 +245,7 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'> & { memo: J
       ...(e.coverage ? [e.coverage.statement, ``] : []),
       `## 4. Findings`,
       ``,
-      approved.length ? approved.map((f, i) => findingMd(f, i + 1, responses[f.id])).join('\n') : '_No approved findings._',
+      approved.length ? approved.map((f, i) => findingMd(f, i + 1, responses[f.id], ctx.documentNames)).join('\n') : '_No approved findings._',
       ``,
       `## 5. Controls tested`,
       ``,

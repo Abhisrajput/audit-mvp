@@ -155,6 +155,8 @@ async function checkAgentSteps(db: Kysely<DB>, chain: TrailBundle[], verified: C
   return { checked: steps.length, problems };
 }
 
+// document_extractions rows are not integrity-checked here: the text derives from the hashed bytes, which the check
+// below re-hashes, and every attempt is sealed by its own document:extract trail entry.
 /** Every document:register trail entry must still have its documents row, with the SHA-256 the trail sealed. */
 async function checkRegistrations(db: Kysely<DB>, trail: Awaited<ReturnType<typeof readTrail>>) {
   const problems: string[] = [];

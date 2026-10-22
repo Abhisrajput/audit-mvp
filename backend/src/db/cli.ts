@@ -1,7 +1,9 @@
 import { loadConfig, prepareEnv } from '../config';
+import { todayUtc } from '../engine/trust';
 import { verifyIntegrity } from '../ops/verify';
 import type { BlobStore } from '../storage/blob-store';
 import { createBlobStore, loadStorageConfig } from '../storage/config';
+import { runRetention } from '../evidence/retention';
 import { createApiLogin } from './api-login';
 import { importJson } from './import-json';
 import { connectPg } from './index';
@@ -12,13 +14,14 @@ import { migrate } from './migrate';
 //   import-json <file>   import an MVP data/db.json into an empty database
 //   create-api-login <name>  create or re-password the API's login (member of audit_api); password from API_DB_PASSWORD
 //   verify               check the trail chain, signatures, gates, agent steps and stored documents (exit 1 on any problem)
+//   retention            hide documents past their retain-until date, except those a test record or finding cites; deletes nothing
 
-const USAGE = 'Usage: cli <migrate | import-json <file> | create-api-login <name> | verify>';
+const USAGE = 'Usage: cli <migrate | import-json <file> | create-api-login <name> | verify | retention>';
 
 async function main() {
   prepareEnv();
   const [command, arg] = process.argv.slice(2);
-  if (!['migrate', 'import-json', 'create-api-login', 'verify'].includes(command)) throw new Error(USAGE);
+  if (!['migrate', 'import-json', 'create-api-login', 'verify', 'retention'].includes(command)) throw new Error(USAGE);
   const config = loadConfig();
   const db = connectPg(config.databaseUrl, { max: 2, ssl: config.databaseSsl });
   try {
@@ -34,6 +37,11 @@ async function main() {
       if (!arg || !password) throw new Error('Usage: cli create-api-login <name>, with API_DB_PASSWORD (or API_DB_PASSWORD_FILE) set');
       const result = await createApiLogin(db, arg, password);
       console.log(`${result === 'created' ? 'Created' : 'Updated'} login ${arg} (member of audit_api). Point the API's DATABASE_URL at it; keep the owner for migrate and packs:compile.`);
+    } else if (command === 'retention') {
+      const { expired, retainedByRecord } = await runRetention(db.kysely, todayUtc());
+      console.log(`Expired ${expired.length} document(s)`);
+      console.log(`Retained by record: ${retainedByRecord.length}`);
+      for (const id of retainedByRecord) console.log(`  ${id}`);
     } else {
       // verify: trail chain, signatures, gates, agent steps and stored documents (exit 1 on any problem)
       let blobs: BlobStore | null = null;

@@ -1,3 +1,4 @@
+import { evidenceCount, hasEvidence } from './evidence';
 import type { PackRegistry } from './packs';
 import { toleratedEffective } from '../judgment/evaluation';
 import { trustActions, type CitationPolicy } from './trust';
@@ -52,7 +53,7 @@ export function testEvidenceGate(row: RcmRow, input: TestInput, result: TestResu
     actions.push({ gate: 'evidence', outcome: 'fail', target: row.id, detail: `Conclusion "Effective" contradicts ${input.exceptions} recorded exception(s)`, action: 'downgraded' });
     r = { ...r, conclusion: 'Ineffective', rationale: `${r.rationale} [QA gate: overridden to Ineffective because exceptions were recorded.]` };
   }
-  if (r.conclusion === 'Effective' && input.evidenceRefs.length === 0) {
+  if (r.conclusion === 'Effective' && !hasEvidence(input)) {
     actions.push({ gate: 'evidence', outcome: 'fail', target: row.id, detail: 'No evidence reference recorded for an "Effective" conclusion', action: 'downgraded' });
     r = { ...r, conclusion: 'Not tested', rationale: `${r.rationale} [QA gate: no evidence reference, so the control cannot be concluded effective.]` };
     r.qaFlags.push('No evidence reference');
@@ -94,7 +95,7 @@ export function findingCitationGate(
   if (unknown.length) reasons.push(`Cites clauses not in the corpus: ${unknown.map((c) => c.clauseId).join(', ')}`);
   if (ungrounded.length) reasons.push(`Cites clauses outside the grounding set: ${ungrounded.map((c) => c.clauseId).join(', ')}`);
   if (!registry.controls.has(finding.controlId)) reasons.push(`Unknown control ${finding.controlId}`);
-  if (finding.evidenceRefs.length === 0) reasons.push('No evidence reference');
+  if (!hasEvidence(finding)) reasons.push('No evidence reference');
 
   const trust = trustActions(
     registry,
@@ -109,7 +110,7 @@ export function findingCitationGate(
     return { finding: { ...finding, status: 'blocked', blockedReasons: reasons }, actions: [...actions, ...trust] };
   }
 
-  actions.push({ gate: 'triple-citation', outcome: 'pass', target: finding.id, detail: `Clause(s) ${finding.citations.map((c) => c.ref).join(', ')} + control ${finding.controlId} + ${finding.evidenceRefs.length} evidence ref(s)`, action: 'none' });
+  actions.push({ gate: 'triple-citation', outcome: 'pass', target: finding.id, detail: `Clause(s) ${finding.citations.map((c) => c.ref).join(', ')} + control ${finding.controlId} + ${evidenceCount(finding)} evidence link(s) or ref(s)`, action: 'none' });
 
   const unmentioned = finding.citations.filter((c) => !finding.criteria.includes(c.ref));
   if (unmentioned.length) {

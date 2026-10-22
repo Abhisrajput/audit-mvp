@@ -1,3 +1,4 @@
+import { hasEvidence } from '../../engine/evidence';
 import type { Engagement, QaAction } from '../../engine/types';
 import type { PackRegistry } from '../../engine/packs';
 import { negativeSignals, rcmCitationGate } from '../../engine/qa';
@@ -88,7 +89,7 @@ function findingIssues(e: Engagement, rowId: string): QaIssue[] {
     ...(f.status === 'blocked' ? [blocking('finding.blocked', f.blockedReasons.join('; ') || 'Blocked by the QA gates')] : []),
     ...empty.map((k) => blocking('finding.five-cs', `${f.id} has no ${k}`)),
     ...(f.citations.length ? [] : [blocking('finding.citations', `${f.id} cites no regulatory clause`)]),
-    ...(f.evidenceRefs.length ? [] : [blocking('finding.evidence', `${f.id} cites no evidence`)]),
+    ...(hasEvidence(f) ? [] : [blocking('finding.evidence', `${f.id} cites no evidence`)]),
     ...(f.likelihood && f.impact && f.rating !== ratingOf(f.likelihood, f.impact)
       ? [blocking('finding.rating-matrix', `${f.id} is rated ${f.rating}, but ${f.likelihood} likelihood and ${f.impact} impact give ${ratingOf(f.likelihood, f.impact)}`)] : []),
     ...(f.rootCause?.confirmed && !causeSupported(observation, f.rootCause.analysis)

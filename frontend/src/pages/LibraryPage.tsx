@@ -3,6 +3,7 @@ import { Alert, Card, Chip, InputAdornment, Stack, Tab, Table, TableBody, TableC
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { RiskChip } from '../components/common';
+import EvidenceTab from '../components/evidence/EvidenceTab';
 import type { Clause, ConceptTrust, ContentPack } from '../types';
 
 function TrustCell({ trust }: { trust?: ConceptTrust }) {
@@ -73,6 +74,9 @@ export default function LibraryPage() {
           </Table>
         )}
       </Card>
+
+      <Typography variant="h6" fontWeight={600}>Documents</Typography>
+      <EvidenceTab />
 
       <Tabs value={packId} onChange={(_, v) => setPackId(v)}>
         {packs.map((p) => (

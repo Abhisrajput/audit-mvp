@@ -26,6 +26,8 @@ import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
+import { changedLinks, normaliseEvidence, tidyLinks } from './engine/evidence';
+import { documentNamesFor, resolveEvidence } from './evidence/links';
 import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
@@ -272,7 +274,8 @@ export class AuditService {
   /** Runs one module on `view` and builds its trail bundle. Work done for an agent run is recorded as the agent's. */
   private async executeModule(mod: AuditModule<unknown>, view: Engagement, actor: User, input: Record<string, unknown>, acting?: AgentActing, llm: LlmProvider | null = this.llm) {
     const startedAt = new Date().toISOString();
-    const ctx = new ModuleContext(view, this.registry, this.grounding, llm, actor, input, this.citationPolicy);
+    const names = mod.id === 'report' ? await documentNamesFor(this.db.kysely, view.findings.flatMap((f) => (f.evidence ?? []).map((l) => l.documentId))) : undefined;
+    const ctx = new ModuleContext(view, this.registry, this.grounding, llm, actor, input, this.citationPolicy, names);
     ctx.step('start', `${mod.name} v${mod.version} on ${view.id}`);
     const output = await mod.run(ctx);
     ctx.step('end', `${ctx.qa.filter((q) => q.outcome === 'fail').length} gate failure(s), ${ctx.qa.filter((q) => q.outcome === 'warn').length} warning(s)`);
@@ -430,12 +433,17 @@ export class AuditService {
   async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'>, actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'record test work');
     if (input.exceptions > input.sampleTested) throw new AppError(400, 'Exceptions cannot exceed the sample tested');
-    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
-      const record: TestInput = { ...input, updatedBy: actor.id, updatedAt: new Date().toISOString() };
+      // Only links that are new to this record are checked, so a record whose document has since expired can be saved again.
+      const { evidence, ...rest } = input;
+      const links = normaliseEvidence(evidence && tidyLinks(evidence));
+      if (links) await resolveEvidence(trx, changedLinks(e.testInputs[rowId]?.evidence, links), { engagementId, actor });
+      const clean = { ...rest, ...(links ? { evidence: links } : {}) };
+      const record: TestInput = { ...clean, updatedBy: actor.id, updatedAt: new Date().toISOString() };
       e.testInputs[rowId] = record;
       delete e.testResults[rowId];
-      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...input }, record));
+      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean }, record));
       return e;
     });
     return result;
@@ -502,7 +510,7 @@ export class AuditService {
   async editFinding(
     engagementId: string,
     findingId: string,
-    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs' | 'evidence'>>,
     actor: User,
     opts: MutationOptions = {},
   ) {
@@ -518,23 +526,31 @@ export class AuditService {
   private async applyFindingEdit(
     engagementId: string,
     findingId: string,
-    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    rawPatch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs' | 'evidence'>>,
     actor: User,
     opts: MutationOptions,
   ) {
-    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const idx = e.findings.findIndex((f) => f.id === findingId);
       if (idx < 0) throw new AppError(404, `Finding ${findingId} not found`);
       if (e.findings[idx].status === 'approved') throw new AppError(409, 'Approved findings are locked', 'FINDING_LOCKED');
 
       const previous = e.findings[idx];
+      // Links are tidied before anything is compared: an empty list means "remove them all" and is stored as absent.
+      const { evidence: patchedLinks, ...patchRest } = rawPatch;
+      const links = patchedLinks === undefined ? undefined : normaliseEvidence(tidyLinks(patchedLinks));
+      const patch: typeof rawPatch = { ...patchRest, ...(links ? { evidence: links } : {}) };
+      const removesLinks = patchedLinks !== undefined && !links && !!previous.evidence?.length;
       // A save that leaves the content as it was is not an edit: status, sign-offs and preparers stay, and nothing is
       // written (throwing rolls back this transaction, which has written nothing yet).
-      if (findingContentHash({ ...previous, ...patch }) === findingContentHash(previous)) throw new NoChange(previous);
+      const merged = { ...previous, ...patch };
+      if (removesLinks) delete merged.evidence;
+      if (findingContentHash(merged) === findingContentHash(previous)) throw new NoChange(previous);
+      if (links) await resolveEvidence(trx, changedLinks(previous.evidence, links), { engagementId, actor });
 
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
-      const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
+      const edited: Finding = { ...merged, status: 'draft', signOffs: [], preparedBy };
       const changes: string[] = [];
       if (patch.likelihood || patch.impact) {
         // A pre-8B finding has neither: fall back to possible and the impact its rating implies, and write both so the matrix check engages from now on.
@@ -551,6 +567,7 @@ export class AuditService {
       for (const key of ['title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'evidenceRefs'] as const) {
         if (patch[key] !== undefined && JSON.stringify(patch[key]) !== JSON.stringify(previous[key])) changes.push(key);
       }
+      if (patchedLinks !== undefined && JSON.stringify(links ?? null) !== JSON.stringify(previous.evidence ?? null)) changes.push('evidence');
       if (previous.memo && changes.length > 0) {
         let memo = previous.memo;
         // The memo is signed with the finding, so its calls must say what the finding now says.
@@ -562,7 +579,7 @@ export class AuditService {
       }
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed, this.citationPolicy);
       e.findings[idx] = finding;
-      emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));
+      emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch: removesLinks ? { ...patch, evidence: null } : patch }, { status: finding.status }, actions));
       return finding;
     });
     return result;
@@ -827,7 +844,7 @@ export class AuditService {
       [
         f.id, f.status, f.rating, f.controlId, f.title, f.condition, f.criteria, f.cause, f.effect, f.recommendation,
         f.citations.map((c) => `${c.regulation} ${c.ref}`).join('; '),
-        f.evidenceRefs.join('; '),
+        [...(f.evidence ?? []).map((l) => `${l.documentId}${l.page !== undefined ? ` p.${l.page}` : ''}`), ...f.evidenceRefs].join('; '),
         f.signOffs.map(signature).join('; '),
         (f.signatureIssues ?? []).join('; '),
         f.bundleId,

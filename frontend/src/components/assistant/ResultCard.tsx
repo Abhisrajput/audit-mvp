@@ -2,6 +2,7 @@ import { Box, Card, Link, List, ListItem, ListItemText, Table, TableBody, TableC
 import type { ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { plainSnippet } from '../../assistant';
+import { statusLabel } from '../../evidence';
 import type { ClauseResult, CommandName, DocumentResult, EngagementCard, FindingRow, PackRow } from '../../types';
 import { RiskChip, StatusChip } from '../common';
 
@@ -105,7 +106,7 @@ function body(name: CommandName, result: unknown): ReactNode {
             <ListItem key={d.kind === 'document' ? d.id : `${d.conceptId}-${i}`} sx={{ py: 0.25 }}>
               <ListItemText
                 primary={d.kind === 'document'
-                  ? <Link href={d.href} target="_blank" rel="noopener">{d.filename}</Link>
+                  ? <><Link href={d.href} target="_blank" rel="noopener">{d.filename}</Link>{d.extraction !== undefined && <Typography component="span" variant="caption" color="text.secondary"> {statusLabel(d.extraction ? { status: d.extraction } : null).label}</Typography>}</>
                   : <>{d.title} <Typography component="span" variant="caption" color="text.secondary">{d.conceptId}</Typography></>}
                 secondary={plainSnippet(d.snippet) || undefined}
                 primaryTypographyProps={{ variant: 'body2' }}
