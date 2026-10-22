@@ -2,6 +2,7 @@ import { Alert, Box, Card, Chip, Collapse, Link, Stack, Step, StepButton, Steppe
 import { useCallback, useEffect, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import { api } from '../api';
+import { onChanged } from '../assistant';
 import FieldworkTab from '../components/engagement/FieldworkTab';
 import FindingsTab from '../components/engagement/FindingsTab';
 import RcmTab from '../components/engagement/RcmTab';
@@ -70,6 +71,8 @@ export default function EngagementPage() {
   useEffect(() => {
     load();
   }, [load]);
+  // A write the assistant confirmed on this engagement reloads it.
+  useEffect(() => onChanged((changed) => { if (changed === id) void load(); }), [id, load]);
 
   // The agent run, its steps and gates; when the agent drafts something, the engagement is reloaded.
   const agent = useAgentRun(id!, load);
