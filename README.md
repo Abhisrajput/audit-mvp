@@ -280,8 +280,10 @@ The assistant is a chat drawer on the engagement pages. It turns a sentence into
 Examples, each of which is an `assistant` eval case:
 
 - "find the HACCP monitoring SOP" runs a document search and shows the hits.
-- "start an audit of supplier approval at Plant 2 for the first half of 2026" is answered by asking for the fields still missing (entity, site, packs), not by guessing them.
+- "start an audit of supplier approval at Plant 2 for the first half of 2026" is answered by asking for the fields still missing, such as the entity, site and packs, not by guessing them.
 - "record that management agrees with the cover-roster finding, owner the plant manager, due 15 December" comes back as a card with the response, owner and date.
+
+These three are the eval's model cases: they run only when a model provider is configured, while the offline eval runs the twelve rule cases.
 
 Reads run at once. A write comes back as a card that shows exactly what will be saved, and nothing happens until the person presses Confirm; if the engagement changed in the meantime the existing version conflict (HTTP 409) stops it. The assistant never signs: signing stays on the gate card and the finding dialog, and it answers a request to approve or reject by saying so.
 
@@ -302,6 +304,8 @@ Settings, all optional:
 - `ASSISTANT_MODEL_TIMEOUT_MS` (default `20000`, minimum 1000): the limit on that one call.
 
 Each client may send 30 turns or commands a minute (`assistantPerMinute`). Conversations are kept in the browser only.
+
+Roles are the forms' own. The auditor, audit manager, Chief Audit Executive and viewer roles can use the reads; the five writes (create engagement, set context, start run, set tolerance, record management response) only the auditor and audit manager, as on the forms. The admin role sees no audit content and gets no commands, so the assistant is not offered to it.
 
 ## Content packs and the knowledge graph
 
