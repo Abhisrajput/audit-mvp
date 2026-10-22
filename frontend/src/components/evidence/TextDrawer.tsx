@@ -16,9 +16,9 @@ export default function TextDrawer({ documentId, filename, onClose, initialPage 
     let live = true;
     setError(null);
     setData(null);
-    documentText(documentId, page).then((d) => live && (setData(d), setPages(d.pages)), (e: Error) => live && setError(e.message));
+    documentText(documentId, page ?? initialPage).then((d) => live && (setData(d), setPages(d.pages)), (e: Error) => live && setError(e.message));
     return () => { live = false; };
-  }, [documentId, page]);
+  }, [documentId, page, initialPage]);
 
   const loading = !!documentId && !data && !error;
   const current = page ?? data?.page ?? 1;

@@ -40,7 +40,7 @@ export default function DraftPanel({ draft, documents, canEdit, engagementId, ve
             {p.observation && <Typography variant="body2">{p.observation}</Typography>}
           </Box>
         ) : (
-          <Typography variant="body2">Found only: the agent located evidence but proposed no result.</Typography>
+          <Typography variant="body2">{draft.personEdited ? 'Proposal discarded; evidence found only.' : 'Found only: the agent located evidence but proposed no result.'}</Typography>
         )}
         {draft.evidence.length > 0 && (
           <Stack spacing={0.5}>
@@ -67,7 +67,7 @@ export default function DraftPanel({ draft, documents, canEdit, engagementId, ve
         {canEdit && (
           <Stack direction="row" spacing={1}>
             {acceptable(draft) && <Button size="small" variant="contained" onClick={onAccept}>Accept</Button>}
-            <ActionButton
+            {p && <ActionButton
               size="small"
               variant="outlined"
               action={async () => {
@@ -77,7 +77,7 @@ export default function DraftPanel({ draft, documents, canEdit, engagementId, ve
               }}
             >
               Discard
-            </ActionButton>
+            </ActionButton>}
           </Stack>
         )}
       </Stack>

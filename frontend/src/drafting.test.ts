@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptable, confidenceColor, draftToForm } from './drafting';
+import { acceptable, confidenceColor, draftToForm, fromDraftFor } from './drafting';
 import type { TestDraft } from './types';
 
 const base = (over: Partial<TestDraft> = {}): TestDraft => ({
@@ -57,5 +57,15 @@ describe('confidenceColor', () => {
     expect(confidenceColor('medium')).toBe('warning');
     expect(confidenceColor('low')).toBe('default');
     expect(confidenceColor('weird' as never)).toBe('default');
+  });
+});
+
+describe('fromDraftFor', () => {
+  const proposal = { designAdequate: true, sampleTested: 1, exceptions: 0, observation: 'x' };
+  it('names the draft only when accepted and it still has a proposal', () => {
+    expect(fromDraftFor(base({ proposal }), true)).toEqual({ runId: 'run1', at: '2026-10-22T00:00:00Z' });
+    expect(fromDraftFor(base({ proposal }), false)).toBeUndefined();
+    expect(fromDraftFor(base(), true)).toBeUndefined();
+    expect(fromDraftFor(undefined, true)).toBeUndefined();
   });
 });

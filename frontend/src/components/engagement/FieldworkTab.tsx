@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { api } from '../../api';
 import { SEVERITY_LABELS } from '../../judgment';
 import type { TabProps } from '../../pages/EngagementPage';
-import { draftToForm, type FormState } from '../../drafting';
+import { draftToForm, fromDraftFor, type FormState } from '../../drafting';
 import { isPreparer } from '../../evidence';
 import { useSession } from '../../session';
 import type { Engagement, RcmRow, TestDraft, TestInput, TestPlan, TestResult } from '../../types';
@@ -78,7 +78,7 @@ function RowCard({ row, plan, input, draft, result, engagementId, version, onSav
             engagementId={engagementId}
             version={version}
             onAccept={() => { setD({ ...d, ...draftToForm(draft) }); setAccepted(true); }}
-            onDiscarded={onSaved}
+            onDiscarded={(e) => { setAccepted(false); onSaved(e); }}
           />
         )}
         <Grid container spacing={2}>
@@ -122,7 +122,7 @@ function RowCard({ row, plan, input, draft, result, engagementId, version, onSav
                     evidenceRefs: d.evidenceRefs.split(',').map((s) => s.trim()).filter(Boolean),
                     sampleTested: Number(d.sampleTested) || 0,
                     exceptions: Number(d.exceptions) || 0,
-                    ...(accepted && draft ? { fromDraft: { runId: draft.draftedBy.runId, at: draft.draftedBy.at } } : {}),
+                    ...(fromDraftFor(draft, accepted) ? { fromDraft: fromDraftFor(draft, accepted) } : {}),
                   },
                 }),
               )

@@ -34,3 +34,8 @@ export function confidenceColor(c: TestDraft['confidence']): 'success' | 'warnin
 
 export const discardDraft = (engagementId: string, rowId: string, version?: number): Promise<Engagement> =>
   api<Engagement>(`/engagements/${engagementId}/tests/${rowId}/draft/discard`, { method: 'POST', ifMatch: version });
+
+/** The pair a human save sends to say it came from this draft; none unless Accept was pressed and a proposal remains. */
+export function fromDraftFor(draft: TestDraft | undefined, accepted: boolean): { runId: string; at: string } | undefined {
+  return accepted && draft?.proposal ? { runId: draft.draftedBy.runId, at: draft.draftedBy.at } : undefined;
+}
