@@ -540,7 +540,7 @@ export class AuditService {
       const { evidence: patchedLinks, ...patchRest } = rawPatch;
       const links = patchedLinks === undefined ? undefined : normaliseEvidence(tidyLinks(patchedLinks));
       const patch: typeof rawPatch = { ...patchRest, ...(links ? { evidence: links } : {}) };
-      const removesLinks = patchedLinks !== undefined && !links;
+      const removesLinks = patchedLinks !== undefined && !links && !!previous.evidence?.length;
       // A save that leaves the content as it was is not an edit: status, sign-offs and preparers stay, and nothing is
       // written (throwing rolls back this transaction, which has written nothing yet).
       const merged = { ...previous, ...patch };

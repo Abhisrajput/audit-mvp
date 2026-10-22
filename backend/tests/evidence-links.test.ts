@@ -12,6 +12,7 @@ import { reportModule } from '../src/engine/modules/report';
 import { testEvidenceGate } from '../src/engine/qa';
 import type { EvidenceLink } from '../src/engine/types';
 import { changedLinks, documentNamesFor, documentUsage, hasEvidence, linkedDocumentIds, normaliseEvidence } from '../src/evidence/links';
+import { runRetention } from '../src/evidence/retention';
 import { insertExtraction } from '../src/evidence/extraction-repo';
 import { insertDocument } from '../src/knowledge/document-repo';
 import { findingContentHash } from '../src/signing/content-hash';
@@ -249,6 +250,29 @@ describe('evidence links, review round 1', () => {
     expect(without).not.toContain('"evidence"');
     await record([{ documentId: d.id }]);
     expect(JSON.stringify((await readTrail(db)).at(-1))).toContain(`"evidence":[{"documentId":"${d.id}"}]`);
+  });
+  it('editing a finding with no links and evidence: [] trails no evidence key; removing real links trails evidence: null [REQ-39]', async () => {
+    const { svc, db, e, doc } = await setup();
+    const d = await doc();
+    const f = (await svc.engagement(e.id)).findings[0];
+    await svc.editFinding(e.id, f.id, { title: 'A quieter title', evidence: [] }, auditor);
+    const quiet = JSON.stringify((await readTrail(db)).at(-1));
+    expect(quiet).toContain('human:finding-edit');
+    expect(quiet).not.toContain('"evidence"');
+    await svc.editFinding(e.id, f.id, { evidence: [{ documentId: d.id }] }, auditor);
+    await svc.editFinding(e.id, f.id, { evidence: [] }, auditor);
+    expect(JSON.stringify((await readTrail(db)).at(-1))).toContain('"evidence":null');
+  });
+
+  it('retention keeps a document cited only by a superseded finding version [REQ-40]', async () => {
+    const { svc, db, e } = await setup();
+    const dated = (filename: string) => insertDocument(db, { sha256: 'b'.repeat(64), filename, mime: 'application/pdf', size: 10, kind: 'evidence', classification: 'internal', engagementId: e.id, uploadedBy: 'auditor', retainUntil: '2030-01-01' });
+    const d = await dated('cited.pdf');
+    const gone = await dated('free.pdf');
+    const f = (await svc.engagement(e.id)).findings[0];
+    await svc.editFinding(e.id, f.id, { evidence: [{ documentId: d.id }] }, auditor);
+    await sql`UPDATE findings SET superseded_at = now() WHERE engagement_id = ${e.id} AND id = ${f.id}`.execute(db);
+    expect(await runRetention(db, '2031-01-01')).toEqual({ expired: [gone.id], retainedByRecord: [d.id] });
   });
 });
 

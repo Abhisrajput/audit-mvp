@@ -1,6 +1,6 @@
 import { sql, type Kysely } from 'kysely';
 import type { DB } from '../db/schema';
-import { linkedDocumentIds } from './links';
+import { citedByRecord } from './links';
 
 export interface RetentionResult {
   /** documents hidden by this run */
@@ -16,10 +16,11 @@ export interface RetentionResult {
  */
 export async function runRetention(db: Kysely<DB>, today: string): Promise<RetentionResult> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error(`today must be YYYY-MM-DD, got ${today}`);
-  const rows = await db.selectFrom('documents').select('id').where(sql<boolean>`retain_until < ${today}::date`).where('retention_expired', '=', false).orderBy('id').execute();
-  const linked = await linkedDocumentIds(db);
-  const retainedByRecord = rows.map((r) => r.id).filter((id) => linked.has(id));
-  const expired = rows.map((r) => r.id).filter((id) => !linked.has(id));
-  if (expired.length) await db.updateTable('documents').set({ retention_expired: true }).where('id', 'in', expired).where('retention_expired', '=', false).execute();
-  return { expired, retainedByRecord };
+  // One statement: a link recorded between a scan and an update cannot be expired by this run.
+  const expired = await sql<{ id: string }>`
+    UPDATE documents SET retention_expired = true
+    WHERE retain_until < ${today}::date AND NOT retention_expired AND NOT ${citedByRecord(sql`documents.id`)}
+    RETURNING id`.execute(db);
+  const left = await db.selectFrom('documents').select('id').where(sql<boolean>`retain_until < ${today}::date`).where('retention_expired', '=', false).orderBy('id').execute();
+  return { expired: expired.rows.map((r) => r.id).sort(), retainedByRecord: left.map((r) => r.id) };
 }

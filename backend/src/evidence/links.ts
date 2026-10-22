@@ -1,4 +1,4 @@
-import { sql } from 'kysely';
+import { sql, type RawBuilder } from 'kysely';
 import type { Executor } from '../db/trail-repo';
 import { tidyLinks } from '../engine/evidence';
 import type { EvidenceLink, User } from '../engine/types';
@@ -43,12 +43,18 @@ export async function documentUsage(db: Executor, documentId: string): Promise<{
   };
 }
 
+/**
+ * SQL predicate: some test record or any finding version (superseded ones included) cites the document whose id
+ * `docId` evaluates to. Shared by linkedDocumentIds and the retention UPDATE so the two cannot drift.
+ */
+export const citedByRecord = (docId: RawBuilder<unknown>) => sql<boolean>`(
+  EXISTS (SELECT 1 FROM engagement_work w, jsonb_each(w.test_inputs) kv, jsonb_array_elements(CASE WHEN jsonb_typeof(kv.value->'evidence') = 'array' THEN kv.value->'evidence' ELSE '[]'::jsonb END) e WHERE e->>'documentId' = ${docId})
+  OR EXISTS (SELECT 1 FROM findings f, jsonb_array_elements(CASE WHEN jsonb_typeof(f.data->'evidence') = 'array' THEN f.data->'evidence' ELSE '[]'::jsonb END) e WHERE e->>'documentId' = ${docId})
+)`;
+
 /** Every document id cited by any test record or any finding version, superseded ones included (retention must not release a document a signed version cites). */
 export async function linkedDocumentIds(db: Executor): Promise<Set<string>> {
-  const rows = await sql<{ id: string }>`
-    SELECT e->>'documentId' AS id FROM engagement_work w, jsonb_each(w.test_inputs) kv, jsonb_array_elements(CASE WHEN jsonb_typeof(kv.value->'evidence') = 'array' THEN kv.value->'evidence' ELSE '[]'::jsonb END) e
-    UNION
-    SELECT e->>'documentId' FROM findings f, jsonb_array_elements(CASE WHEN jsonb_typeof(f.data->'evidence') = 'array' THEN f.data->'evidence' ELSE '[]'::jsonb END) e`.execute(db);
+  const rows = await sql<{ id: string }>`SELECT d.id FROM documents d WHERE ${citedByRecord(sql`d.id`)}`.execute(db);
   return new Set(rows.rows.map((r) => r.id));
 }
 

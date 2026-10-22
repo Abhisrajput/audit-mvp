@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { readTrail } from '../src/db/trail-repo';
@@ -155,6 +156,17 @@ describe('evidence extraction', () => {
     const row = await runExtraction({ ...deps, blobs }, doc, auditor);
     expect(row).toMatchObject({ status: 'failed', error: 'Stored file could not be read' });
     expect(row.error).not.toContain('secret-bucket');
+  });
+
+  it('fails without extracting when the stored bytes do not hash to the registered sha256 [REQ-38]', async () => {
+    const { deps, register, db, chunkCount } = await setup();
+    const doc = await register(fx('sample.pdf'), 'sample.pdf', 'application/pdf');
+    const blobs = { ...deps.blobs, get: async () => Readable.from([fx('sample.docx')]) } as unknown as LocalBlobStore;
+    const row = await runExtraction({ ...deps, blobs }, doc, auditor);
+    expect(row).toMatchObject({ status: 'failed', error: 'Stored file does not match its SHA-256' });
+    expect((await latestExtraction(db, doc.id))).toMatchObject({ status: 'failed', error: 'Stored file does not match its SHA-256' });
+    expect(await db.selectFrom('document_text').select('document_id').where('document_id', '=', doc.id).execute()).toEqual([]);
+    expect(await chunkCount(doc.id)).toBe(0);
   });
 
   it('records a file with no visible text as no_text, with no document_text row and no chunks', async () => {

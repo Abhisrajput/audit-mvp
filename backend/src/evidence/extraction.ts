@@ -65,6 +65,8 @@ async function attempt(deps: ExtractionDeps, doc: DocumentRecord, given?: Buffer
       logger.error({ err, documentId: doc.id, notFound: err instanceof BlobNotFound }, 'Stored file could not be read for extraction');
       return failed(new Error('Stored file could not be read'));
     }
+    // The blob store is addressed by hash, but text may derive only from bytes that hash to the registered value.
+    if (sha256Of(bytes) !== doc.sha256) return failed(new Error('Stored file does not match its SHA-256'));
   }
   if (bytes.length > config.extractMaxBytes) return { ...base, status: 'too_large' };
 

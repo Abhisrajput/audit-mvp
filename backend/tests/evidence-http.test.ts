@@ -385,4 +385,21 @@ describe('evidence upload, retry and text routes', () => {
     const none = await send(auditor, url, fx('sample.xlsx'), 'a.xlsx', 'application/octet-stream', FIELDS).expect(201);
     expect(none.body.retainUntil).toBeNull();
   });
+
+  it('an extraction that throws after upload still answers 201 with extraction: null, and Retry then succeeds [REQ-38]', async () => {
+    const { svc, app, engagement } = await setup();
+    const db = svc.db.kysely;
+    await sql`CREATE FUNCTION fail_extraction() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom'; END $$ LANGUAGE plpgsql`.execute(db);
+    await sql`CREATE TRIGGER fail_extraction BEFORE INSERT ON document_extractions FOR EACH ROW EXECUTE FUNCTION fail_extraction()`.execute(db);
+    const auditor = await signIn(app, 'auditor');
+    const res = await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.pdf'), 'sample.pdf', 'application/pdf', FIELDS);
+    expect(res.status).toBe(201);
+    expect(res.body.extraction).toBeNull();
+    const list = await auditor.agent.get(`/api/documents?engagementId=${engagement.id}`);
+    expect(JSON.stringify(list.body)).toContain(res.body.id);
+    await sql`DROP TRIGGER fail_extraction ON document_extractions`.execute(db);
+    const retry = await auditor.agent.post(`/api/documents/${res.body.id}/extract`).set('x-csrf-token', auditor.csrf);
+    expect(retry.status).toBe(200);
+    expect(retry.body.extraction).toMatchObject({ status: 'ok' });
+  });
 });
