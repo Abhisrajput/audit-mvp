@@ -19,7 +19,10 @@ export const POLICY_SYSTEM = `You supervise one internal-audit engagement run. A
 - Opening a gate suits work that QA found no blocking issue in and scored at or above the threshold. A redraft suits blocking issues. A challenge pass (request_qa, mode challenge) is worth it before a borderline gate. Escalate when a person must decide.
 ${DATA_RULES}`;
 
-/** How an action is shown to the model. A rework's instruction is left out: it is reviewer text, and the model does not need it to choose. */
+/**
+ * How an action is shown to the model. A rework's instruction is left out: it is reviewer text, and the model does not
+ * need it to choose. So is the signature a rework carries (directiveBy).
+ */
 function describe(a: Action): string {
   if (a.type === 'rework') return JSON.stringify({ type: a.type, specialist: a.specialist, subjectKey: a.subjectKey, ...(a.rows ? { rows: a.rows } : {}) });
   return JSON.stringify(a);

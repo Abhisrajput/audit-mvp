@@ -115,7 +115,7 @@ export function sameMemo(a: JudgmentMemo | undefined, b: JudgmentMemo | undefine
   return bare(a) === bare(b);
 }
 
-const pct = (rate: number) => `${Math.round(rate * 10000) / 100}%`;
+export const pct = (rate: number) => `${Math.round(rate * 10000) / 100}%`;
 
 /** The RCM memo: one call per row whose assessed risk differs from its library rating (naming the sample size), and a summary. */
 export function rcmMemo(input: { rows: RcmRow[]; scope: ScopeItem[]; context: EngagementContext | null; producedAt: string }): JudgmentMemo {

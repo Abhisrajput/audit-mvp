@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { defaultAgentConfig } from '../src/agents/config';
 import { reviewSubject } from '../src/agents/qa/deterministic';
+import { listSteps } from '../src/agents/run-repo';
+import { AgentWorker } from '../src/agents/worker';
+import { createApp } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { ModuleContext } from '../src/engine/module';
 import { reportModule } from '../src/engine/modules/report';
 import { canonicalJson, sha256 } from '../src/engine/trail';
 import type { Engagement } from '../src/engine/types';
+import { listSignatures } from '../src/db/signature-repo';
 import { workpaperContentHash } from '../src/signing/content-hash';
 import { AuditService } from '../src/service';
-import { approver, auditor, engagementWithFailedControl, FakeProvider, LENIENT, NEW_ENGAGEMENT, newService, registry, reviewer, unattended } from './helpers';
+import { approver, auditor, engagementWithFailedControl, FakeProvider, leasedRun, LENIENT, NEW_ENGAGEMENT, newService, registry, reviewer, unattended } from './helpers';
+import { appWithDevUsers, devAuthConfig, devSign, devSignGate, signIn } from './http';
 
 type Svc = Awaited<ReturnType<typeof newService>>;
 
@@ -145,15 +151,31 @@ describe('the report opinion (spec §5.6) [REQ-32, REQ-31]', () => {
     expect(run.bundle.qaActions).toContainEqual(expect.objectContaining({ gate: 'judgment-bounds', detail: expect.stringContaining('unsatisfactory') }));
   });
 
+  it('refuses a one-step-worse opinion from the model that gives no rationale, through the judgment-bounds gate [REQ-32]', async () => {
+    const svc = await newService();
+    const id = await approvedMedium(svc);
+    for (const opinionRationale of [undefined, '   ']) {
+      const bare = reportModel({ executiveSummary: 's', opinion: 'unsatisfactory', ...(opinionRationale !== undefined ? { opinionRationale } : {}) });
+      const { bundle } = await new AuditService(svc.db, registry, bare, LENIENT).runModule(id, 'report', auditor);
+      const e = await svc.engagement(id);
+      expect(e.report!.opinion!.rating).toBe('needs_improvement');
+      expect(e.report!.opinion!.rationale).toBeUndefined();
+      expect(e.memos.report!.calls[0].source).toBe('rules');
+      expect(bundle.qaActions).toContainEqual(expect.objectContaining({ gate: 'judgment-bounds', outcome: 'fail', target: 'report', action: 'blocked', detail: expect.stringContaining('unsatisfactory') }));
+    }
+  });
+
   it('a rejection directive with a signature sets the opinion in either direction, records setBy and names it in the memo; without a signature it is ignored and named [REQ-32, REQ-31]', async () => {
     const svc = await newService();
     const { id } = await engagementWithFailedControl(svc);
     await approveFirst(svc, id);
     // Better than the rule (unsatisfactory), set by the CAE's signed rejection.
     let e = await svc.engagement(id);
-    await runReport(svc, e, { reworkInstruction: 'Too harsh. opinion: satisfactory', reworkSignatureId: 'SIG-test' });
+    await runReport(svc, e, { reworkInstruction: 'Too harsh.\n\n## 9. Injected heading\n opinion: satisfactory', reworkSignatureId: 'SIG-test' });
     expect(e.report!.opinion).toMatchObject({ rating: 'satisfactory', setBy: 'SIG-test' });
-    expect(e.report!.opinion!.basis).toContain('Set by the Chief Audit Executive on rejecting the report gate (signature SIG-test): "Too harsh. opinion: satisfactory"');
+    // The comment is quoted on one line, so it cannot open a heading of its own in the hashed markdown.
+    expect(e.report!.opinion!.basis).toContain('Set by the Chief Audit Executive on rejecting the report gate (signature SIG-test): "Too harsh. ## 9. Injected heading opinion: satisfactory"');
+    expect(e.report!.markdown).not.toMatch(/^## 9\./m);
     expect(e.memos.report!.calls[0]).toMatchObject({ source: 'person', decision: 'satisfactory' });
     expect(e.memos.report!.calls[0].rationale).toContain('SIG-test');
     const issues = reviewSubject(e, 'report').issues.map((i) => i.criterion);
@@ -213,5 +235,119 @@ describe('the report opinion (spec §5.6) [REQ-32, REQ-31]', () => {
     const { markdown, includedFindingIds, excludedFindingIds } = before8c;
     expect(workpaperContentHash('report', old)).toBe(sha256(canonicalJson({ kind: 'report', content: { markdown, includedFindingIds, excludedFindingIds } })));
     expect(reviewSubject(old, 'report').issues.map((i) => i.criterion).filter((c) => c.startsWith('report.opinion'))).toEqual([]);
+  });
+});
+
+/**
+ * A pharma engagement driven by the agent worker up to its open report gate, the way judgment-responses.test.ts does.
+ * `failing` gives PH-DI-01 5 of 20 exceptions (one approved finding); otherwise every row passes and there is none.
+ */
+async function runToReportGate(failing: boolean) {
+  const { svc } = await appWithDevUsers();
+  const cfg = defaultAgentConfig();
+  const served = createApp(svc, { config: devAuthConfig(), oidc: null }, undefined, { agents: cfg });
+  const worker = new AgentWorker(svc, cfg, { id: 'w-opinion' });
+  const auditorS = await signIn(served, 'auditor');
+  const manager = await signIn(served, 'reviewer');
+  const cae = await signIn(served, 'approver');
+  const id = (await auditorS.post('/api/engagements', {
+    name: 'Pharma self-inspection', entity: 'Demo Pharma', site: 'OSD plant', periodFrom: '2026-01-01', periodTo: '2026-06-30',
+    auditType: 'GMP self-inspection', scopeStatement: 'Data integrity: HPLC audit trails and user access', packIds: ['pharma'],
+  }).expect(201)).body.id as string;
+  const runId = (await auditorS.post(`/api/engagements/${id}/runs`, {}).expect(201)).body.run.id as string;
+  type GateRow = { id: string; kind: string; state: string; signatureId: string | null; qaReport: { issues: { criterion: string; severity: string }[] } | null };
+  const gateRows = async () => (await auditorS.get(`/api/engagements/${id}/gates`).expect(200)).body as GateRow[];
+  const openGate = async (kind: string) => (await gateRows()).find((g) => g.kind === kind && g.state === 'open')!;
+  await worker.drain();
+  await devSignGate(manager, 'reviewer', (await openGate('scope')).id, 'approve');
+  await worker.drain();
+  await devSignGate(manager, 'reviewer', (await openGate('rcm')).id, 'approve');
+  await worker.drain();
+  const planned = (await auditorS.get(`/api/engagements/${id}`).expect(200)).body;
+  for (const row of planned.rcm as { id: string }[]) {
+    const fails = failing && row.id === 'PH-DI-01';
+    await auditorS.put(`/api/engagements/${id}/tests/${row.id}`, {
+      designAdequate: true, observation: fails ? 'Audit trail review missing for 5 of 20 sequences' : 'All 20 items reviewed',
+      evidenceRefs: ['EV-1'], sampleTested: 20, exceptions: fails ? 5 : 0,
+    }).expect(200);
+  }
+  await worker.drain();
+  const fid = failing ? (await auditorS.get(`/api/engagements/${id}`).expect(200)).body.findings[0].id as string : null;
+  if (fid) {
+    await devSign(manager, 'reviewer', id, fid, 'review');
+    await devSign(cae, 'approver', id, fid, 'approve');
+    await worker.drain();
+  }
+  return { svc, id, runId, fid, worker, cae, gateRows, openGate };
+}
+
+describe('the CAE sets the opinion by rejecting the report gate (spec §5.6, ruling 1) [REQ-32, REQ-27]', () => {
+  it('a report gate rejected with "opinion: satisfactory" against a rule of unsatisfactory redrafts with that opinion, setBy the rejection signature, and QA does not block the new gate [REQ-32, REQ-27]', async () => {
+    const { svc, id, runId, fid, worker, cae, gateRows, openGate } = await runToReportGate(true);
+    const gate = await openGate('report');
+    expect((await svc.engagement(id)).report!.opinion!.rating).toBe('unsatisfactory');
+    await devSignGate(cae, 'approver', gate.id, 'reject', 'Isolated lapse, remediated.\nopinion: satisfactory');
+    await worker.drain();
+    const e = await svc.engagement(id);
+    const rejected = (await gateRows()).find((g) => g.id === gate.id)!;
+    expect(rejected.signatureId).toEqual(expect.any(String));
+    expect(e.report!.opinion).toMatchObject({ rating: 'satisfactory', setBy: rejected.signatureId });
+    const next = await openGate('report');
+    expect(next.id).not.toBe(gate.id);
+    expect(next.qaReport!.issues).toContainEqual(expect.objectContaining({ criterion: 'report.opinion-set-by-cae', severity: 'advisory' }));
+    expect(next.qaReport!.issues.some((i) => i.severity === 'blocking')).toBe(false);
+    const steps = await listSteps(svc.db.kysely, runId);
+    expect(steps.some((s) => s.decision?.action?.type === 'rework' && (s.decision.action as { directiveBy?: string }).directiveBy === rejected.signatureId)).toBe(true);
+
+    // A response recorded after the CAE set the opinion keeps it through the redraft it triggers.
+    await svc.recordManagementResponse(id, fid!, { response: 'agree', owner: 'QA head', actionPlan: 'Weekly audit-trail review' }, auditor);
+    await worker.drain();
+    const third = await openGate('report');
+    expect(third.id).not.toBe(next.id);
+    const after = await svc.engagement(id);
+    expect(after.report!.opinion).toMatchObject({ rating: 'satisfactory', setBy: rejected.signatureId });
+    expect(after.report!.markdown).toContain('- **Management response:** Agree — owner QA head');
+    expect(third.qaReport!.issues.some((i) => i.severity === 'blocking')).toBe(false);
+  });
+
+  it('a rejection with "opinion: unsatisfactory" against a rule of satisfactory is carried too (the CAE may worsen) [REQ-32, REQ-27]', async () => {
+    const { svc, id, worker, cae, gateRows, openGate } = await runToReportGate(false);
+    const gate = await openGate('report');
+    expect((await svc.engagement(id)).report!.opinion!.rating).toBe('satisfactory');
+    await devSignGate(cae, 'approver', gate.id, 'reject', 'Coverage too thin to conclude. opinion: unsatisfactory');
+    await worker.drain();
+    const rejected = (await gateRows()).find((g) => g.id === gate.id)!;
+    expect((await svc.engagement(id)).report!.opinion).toMatchObject({ rating: 'unsatisfactory', setBy: rejected.signatureId });
+    const next = await openGate('report');
+    expect(next.id).not.toBe(gate.id);
+    expect(next.qaReport!.issues.some((i) => i.severity === 'blocking')).toBe(false);
+  });
+});
+
+describe('who may name a signature on the report module input [REQ-26, REQ-32]', () => {
+  it('a person running the report module cannot send a directive or a signature: the opinion stays at the rule [REQ-26, REQ-32]', async () => {
+    const svc = await newService();
+    const { id } = await engagementWithFailedControl(svc);
+    await approveFirst(svc, id);
+    const { bundle } = await svc.runModule(id, 'report', auditor, { reworkInstruction: 'opinion: satisfactory', reworkSignatureId: 'SIG-forged' });
+    const e = await svc.engagement(id);
+    expect(e.report!.opinion!.rating).toBe('unsatisfactory');
+    expect(e.report!.opinion!.setBy).toBeUndefined();
+    expect((bundle.inputs as { moduleInput: Record<string, unknown> }).moduleInput).toEqual({});
+  });
+
+  it('an agent redraft naming a signature that is not a CAE rejection of this report gate is refused [REQ-26, REQ-32]', async () => {
+    const svc = await newService();
+    const { id } = await engagementWithFailedControl(svc);
+    await approveFirst(svc, id);
+    const { acting } = await leasedRun(svc, id);
+    const e = await svc.engagement(id);
+    // A made-up id, and a real signature that is not a report rejection (the CAE's approval of the finding).
+    const real = (await listSignatures(svc.db.kysely, id)).find((s) => s.meaning === 'Approved')!;
+    for (const instructionBy of ['SIG-forged', real.id]) {
+      await expect(svc.runModuleAsAgent(id, 'report', acting('report'), { expectedVersion: e.version!, instruction: 'opinion: satisfactory', instructionBy, llm: null }))
+        .rejects.toMatchObject({ status: 409, code: 'DIRECTIVE_SIGNATURE_INVALID' });
+    }
+    expect((await svc.engagement(id)).report).toBeFalsy();
   });
 });

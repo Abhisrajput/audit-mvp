@@ -50,9 +50,12 @@ interface StepOptions {
   blockedReason?: string;
 }
 
-function rework(o: StepOptions, subjectKey: string, instruction: string): Action {
+function rework(o: StepOptions, subjectKey: string, instruction: string, directiveBy?: string): Action {
   if (!o.canRework) return { type: 'wait', reason: o.blockedReason ?? `${subjectKey} cannot be redrafted now` };
-  return { type: 'rework', specialist: o.specialist, subjectKey, instruction: instruction.slice(0, 2000), ...(o.rows ? { rows: o.rows } : {}) };
+  return {
+    type: 'rework', specialist: o.specialist, subjectKey, instruction: instruction.slice(0, 2000),
+    ...(o.rows ? { rows: o.rows } : {}), ...(directiveBy ? { directiveBy } : {}),
+  };
 }
 
 /** A fresh draft from the current basis, unless the subject may not be redrafted now (a reviewed finding). */
@@ -93,7 +96,9 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
     const rejections = input.gates.filter((x) => x.subjectKey === key && x.state === 'rejected').length;
     if (rejections >= MAX_REJECTIONS) return act([{ type: 'escalate', reason: `gate_rejected_twice: ${key}` }]);
     if (mine.some((r) => r.kind === 'rework')) return act([{ type: 'escalate', reason: `rework produced no change: ${key}; edit it by hand, then resume` }]);
-    return act([rework(o, key, g.comment.trim() || `Address the reasons the ${label} gate was rejected`)]);
+    // A report rejection carries its signature, the only authority for an opinion the comment names (spec §5.6, ruling 1).
+    const directiveBy = s.gateKind === 'report' ? g.signatureId ?? undefined : undefined;
+    return act([rework(o, key, g.comment.trim() || `Address the reasons the ${label} gate was rejected`, directiveBy)]);
   }
 
   // No gate yet, the last one was superseded, or a person edited it after a rejection or approval: QA, then a gate.

@@ -92,6 +92,11 @@ export interface AgentWriteOptions {
   /** A reviewer's or signer's feedback for a redraft. The module's model prompt carries it as data. */
   instruction?: string;
   /**
+   * The signature of the report-gate rejection whose comment is `instruction` (spec §5.6, ruling 1). It must be a CAE's
+   * rejection of this engagement's report; the report module then honours an `opinion:` directive in the comment.
+   */
+  instructionBy?: string;
+  /**
    * The run's metered model for this module (AgentModels.forModules()). Without one the module runs on its offline
    * rules: an agent's module run never falls back to the service's own provider, so no agent call escapes the budget.
    */
@@ -241,8 +246,11 @@ export class AuditService {
     }
   }
 
-  async runModule(engagementId: string, moduleId: string, actor: User, input: Record<string, unknown> = {}, opts: MutationOptions = {}) {
+  async runModule(engagementId: string, moduleId: string, actor: User, body: Record<string, unknown> = {}, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'run modules');
+    // Only what a person may ask of a module gets through. A redraft instruction and the signature that authorises it
+    // come from the agent path alone (runModuleAsAgent), so a person cannot claim a CAE's opinion (spec §5.6, ruling 1).
+    const input: Record<string, unknown> = body.keepDecisions === true ? { keepDecisions: true } : {};
     const mod = this.moduleById(moduleId);
     const { result: engagement, sealed } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const blocker = mod.precondition(e);
@@ -305,11 +313,20 @@ export class AuditService {
     const blocker = mod.precondition(loaded.engagement);
     if (blocker) throw new AppError(409, blocker);
     const snapshot = loaded.engagement;
+    const signatures = mod.id === 'report' || opts.instructionBy ? await listSignatures(this.db.kysely, engagementId) : [];
     const view = mod.id === 'report'
-      ? withSignatureStatus(snapshot, await listSignatures(this.db.kysely, engagementId), await lastRevisionTimes(this.db.kysely, engagementId))
+      ? withSignatureStatus(snapshot, signatures, await lastRevisionTimes(this.db.kysely, engagementId))
       : snapshot;
+    // A redraft that names a signature must name a CAE's rejection of this engagement's report gate (spec §5.6, ruling 1).
+    const signedBy = opts.instructionBy ? signatures.find((s) => s.id === opts.instructionBy) : undefined;
+    if (opts.instructionBy && !(signedBy && signedBy.workpaper === 'report' && signedBy.meaning === 'Rejected' && APPROVER_ROLES.includes(signedBy.role as Role))) {
+      throw new AppError(409, 'The redraft instruction names a signature that is not a rejection of this engagement\'s report gate', 'DIRECTIVE_SIGNATURE_INVALID');
+    }
     // keepDecisions: the scope module pins the in/out decisions people made (decidedBy) before it builds coverage and the memo.
-    const input = { keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}) };
+    const input = {
+      keepDecisions: true, ...(opts.rows ? { rows: opts.rows } : {}), ...(opts.instruction ? { reworkInstruction: opts.instruction } : {}),
+      ...(opts.instructionBy ? { reworkSignatureId: opts.instructionBy } : {}),
+    };
     const { output, bundle } = await this.executeModule(mod, view, acting.startedBy, input, acting, opts.llm ?? null);
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: loaded.version }, async (e, emit, trx) => {
       // Lock order is engagement (taken by mutate), then run: a worker that lost the run, or a cancelled run, saves nothing.

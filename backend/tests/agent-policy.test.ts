@@ -74,6 +74,14 @@ describe('the LLM policy [REQ-26]', () => {
     expect(POLICY_SYSTEM).toContain(DATA_RULES);
   });
 
+  it('never shows the model whose signature a rework carries [REQ-26]', () => {
+    const signed: Menu = { ...menu, actions: [{ type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: satisfactory', directiveBy: 'SIG-1' }, menu.actions[3]] };
+    const prompt = policyPrompt(signed);
+    expect(prompt).not.toContain('SIG-1');
+    expect(prompt).not.toContain('"directiveBy"');
+    expect(prompt).not.toContain('opinion: satisfactory');
+  });
+
   it('is not asked at all when the menu has one entry', async () => {
     const fake = new FakeProvider(() => ({ choice: 0, rationale: 'x' }));
     const only: Menu = { ...menu, actions: [menu.actions[0]] };

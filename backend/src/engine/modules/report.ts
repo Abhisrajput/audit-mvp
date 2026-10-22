@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { reportMemo, sameMemo } from '../../judgment/memo';
+import { pct, reportMemo, sameMemo } from '../../judgment/memo';
 import { approvedFindingsFingerprint, opinionBasisText, opinionOf, OPINIONS, parseOpinionDirective, worsens } from '../../judgment/opinion';
 import { METHODOLOGY_PACK_ID } from '../../judgment/standards';
 import type { AuditModule } from '../module';
@@ -39,8 +39,6 @@ export function responseLine(r: FindingResponse | undefined): string {
 }
 
 const OPINION_LABEL: Record<Opinion, string> = { satisfactory: 'Satisfactory', needs_improvement: 'Needs improvement', unsatisfactory: 'Unsatisfactory' };
-
-const pct = (rate: number) => `${Math.round(rate * 10000) / 100}%`;
 
 function findingMd(f: Finding, n: number, response: FindingResponse | undefined): string {
   const signedBy = f.signOffs.map(signatureText).join('; ');
@@ -123,7 +121,8 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'> & { memo: J
     } else if (directive && signatureId) {
       opinion = {
         rating: directive.opinion,
-        basis: `${fixedBasis}\n\nSet by the Chief Audit Executive on rejecting the report gate (signature ${signatureId}): "${instruction}"`,
+        // Quoted on one line, so a multi-line comment cannot open a heading of its own in the hashed markdown.
+        basis: `${fixedBasis}\n\nSet by the Chief Audit Executive on rejecting the report gate (signature ${signatureId}): "${instruction.replace(/\s+/g, ' ')}"`,
         setBy: signatureId,
         findingsFingerprint: fingerprint,
       };

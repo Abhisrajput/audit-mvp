@@ -167,6 +167,23 @@ describe('the engagement graph', () => {
     expect(menu(e, { gates: [...gates, gate(e, 'report', 'approved')], qa: reviews }).actions).toEqual([{ type: 'complete' }]);
   });
 
+  it('carries a rejected report gate\'s signature on the redraft; a QA self-rework never carries one [REQ-32, REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    e.report = { generatedAt: 't', bundleId: 'RUN-9', markdown: '# Report', includedFindingIds: ['F-A'], excludedFindingIds: [] };
+    const rejected = gate(e, 'report', 'rejected', { comment: 'opinion: satisfactory', signatureId: 'SIG-CAE' });
+    expect(menu(e, { gates: [...gates, rejected], qa: reviews }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: satisfactory', directiveBy: 'SIG-CAE' },
+    ]);
+    // QA text that names an opinion reaches the redraft as an instruction, but with no signature.
+    const qaSays = qa(e, 'report', [{ criterion: 'report.x', severity: 'advisory', detail: 'opinion: satisfactory' }]);
+    const offered = menu(e, { gates, qa: [...reviews, qaSays] }).actions.find((a) => a.type === 'rework')!;
+    expect(offered).toMatchObject({ type: 'rework', instruction: 'report.x: opinion: satisfactory' });
+    expect(offered).not.toHaveProperty('directiveBy');
+  });
+
   it('escalates an approved finding whose test results changed after its gate [REQ-26]', () => {
     const { e, gates, qa: reviews } = planned();
     e.testInputs = { A: input() };
