@@ -4,15 +4,17 @@ import { useState } from 'react';
 import { api } from '../../api';
 import { SEVERITY_LABELS } from '../../judgment';
 import type { TabProps } from '../../pages/EngagementPage';
-import type { Engagement, EvidenceLink, RcmRow, TestInput, TestPlan, TestResult } from '../../types';
+import { draftToForm, type FormState } from '../../drafting';
+import { isPreparer } from '../../evidence';
+import { useSession } from '../../session';
+import type { Engagement, RcmRow, TestDraft, TestInput, TestPlan, TestResult } from '../../types';
 import { ActionButton, ConclusionChip, RiskChip } from '../common';
+import DraftPanel from './DraftPanel';
 import EvidencePicker from '../evidence/EvidencePicker';
 import { useEngagementDocuments } from '../evidence/useEngagementDocuments';
 import type { DocumentRecord } from '../../evidence';
 
-type Draft = { designAdequate: string; observation: string; evidenceRefs: string; evidence: EvidenceLink[]; sampleTested: string; exceptions: string };
-
-const toDraft = (t?: TestInput): Draft => ({
+const toForm = (t?: TestInput): FormState => ({
   designAdequate: t ? (t.designAdequate === null ? 'na' : t.designAdequate ? 'yes' : 'no') : 'na',
   observation: t?.observation ?? '',
   evidenceRefs: t?.evidenceRefs.join(', ') ?? '',
@@ -21,10 +23,12 @@ const toDraft = (t?: TestInput): Draft => ({
   exceptions: String(t?.exceptions ?? 0),
 });
 
-function RowCard({ row, plan, input, result, engagementId, version, onSaved, documents, loadError }: { documents: DocumentRecord[]; loadError: string | null; row: RcmRow; plan?: TestPlan; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
-  const [d, setD] = useState<Draft>(toDraft(input));
-  const set = (k: Exclude<keyof Draft, 'evidence'>) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
-  const dirty = JSON.stringify(d) !== JSON.stringify(toDraft(input));
+function RowCard({ row, plan, input, draft, result, engagementId, version, onSaved, documents, loadError }: { documents: DocumentRecord[]; loadError: string | null; row: RcmRow; plan?: TestPlan; input?: TestInput; draft?: TestDraft; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
+  const [d, setD] = useState<FormState>(toForm(input));
+  const set = (k: Exclude<keyof FormState, 'evidence'>) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
+  const [accepted, setAccepted] = useState(false);
+  const { user } = useSession();
+  const dirty = JSON.stringify(d) !== JSON.stringify(toForm(input));
 
   return (
     <Card variant="outlined">
@@ -65,6 +69,17 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved, doc
               </Typography>
             )}
           </Alert>
+        )}
+        {draft && !input && (
+          <DraftPanel
+            draft={draft}
+            documents={documents}
+            canEdit={isPreparer(user?.role)}
+            engagementId={engagementId}
+            version={version}
+            onAccept={() => { setD({ ...d, ...draftToForm(draft) }); setAccepted(true); }}
+            onDiscarded={onSaved}
+          />
         )}
         <Grid container spacing={2}>
           <Grid item xs={12} md={2}>
@@ -107,6 +122,7 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved, doc
                     evidenceRefs: d.evidenceRefs.split(',').map((s) => s.trim()).filter(Boolean),
                     sampleTested: Number(d.sampleTested) || 0,
                     exceptions: Number(d.exceptions) || 0,
+                    ...(accepted && draft ? { fromDraft: { runId: draft.draftedBy.runId, at: draft.draftedBy.at } } : {}),
                   },
                 }),
               )
@@ -139,7 +155,7 @@ export default function FieldworkTab({ engagement: e, setEngagement, run }: TabP
         </Typography>
       </Stack>
       {e.rcm.map((r) => (
-        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} plan={e.testPlans[r.id]} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} documents={documents} loadError={docError} />
+        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}-${e.testDrafts[r.id]?.draftedBy.at ?? ''}`} row={r} plan={e.testPlans[r.id]} input={e.testInputs[r.id]} draft={e.testDrafts[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} documents={documents} loadError={docError} />
       ))}
     </Stack>
   );
