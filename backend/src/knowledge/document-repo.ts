@@ -4,6 +4,7 @@ import type { DocumentsTable } from '../db/schema';
 import type { Executor } from '../db/trail-repo';
 import { AppError } from '../errors';
 import type { Classification, DocumentKind } from './access';
+import { latestExtractions, type ExtractionRow, type ExtractionStatus } from '../evidence/extraction-repo';
 import { chunkText, normalisePageStarts } from './chunk';
 
 export type { Classification, DocumentKind } from './access';
@@ -22,7 +23,13 @@ export interface DocumentRecord {
   retainUntil: string | null;
   retentionExpired: boolean;
   metadata: Record<string, unknown>;
+  /** The latest extraction attempt; null only while a document is being registered. */
+  extraction: DocumentExtraction | null;
 }
+
+export interface DocumentExtraction { status: ExtractionStatus; extractor: string; version: string; chars: number; pages: number | null; error: string | null; at: string }
+
+const toExtraction = (e: ExtractionRow): DocumentExtraction => ({ status: e.status, extractor: e.extractor, version: e.extractorVersion, chars: e.chars, pages: e.pages, error: e.error, at: e.at });
 
 export interface NewDocument {
   sha256: string;
@@ -41,7 +48,7 @@ function toRecord(r: Selectable<DocumentsTable>): DocumentRecord {
   return {
     id: r.id, sha256: r.sha256, filename: r.filename, mime: r.mime, size: Number(r.size), kind: r.kind, classification: r.classification,
     engagementId: r.engagement_id, uploadedBy: r.uploaded_by, uploadedAt: new Date(r.uploaded_at).toISOString(),
-    retainUntil: r.retain_until, retentionExpired: r.retention_expired, metadata: r.metadata,
+    retainUntil: r.retain_until, retentionExpired: r.retention_expired, metadata: r.metadata, extraction: null,
   };
 }
 
@@ -60,7 +67,10 @@ export async function insertDocument(db: Executor, d: NewDocument): Promise<Docu
 
 export async function getDocument(db: Executor, id: string): Promise<DocumentRecord | null> {
   const row = await db.selectFrom('documents').selectAll().where('id', '=', id).executeTakeFirst();
-  return row ? toRecord(row) : null;
+  if (!row) return null;
+  const doc = toRecord(row);
+  const latest = (await latestExtractions(db, [id])).get(id);
+  return latest ? { ...doc, extraction: toExtraction(latest) } : doc;
 }
 
 /** Global documents, plus one engagement's when engagementId is given, that the reader's classifications allow. */
@@ -70,7 +80,12 @@ export async function listDocuments(db: Executor, f: { engagementId: string | nu
   // An engagement's listing includes global documents, as search does; never another engagement's.
   const engagementId = f.engagementId;
   q = engagementId === null ? q.where('engagement_id', 'is', null) : q.where((eb) => eb.or([eb('engagement_id', 'is', null), eb('engagement_id', '=', engagementId)]));
-  return (await q.orderBy('uploaded_at').orderBy('id').execute()).map(toRecord);
+  const docs = (await q.orderBy('uploaded_at').orderBy('id').execute()).map(toRecord);
+  const latest = await latestExtractions(db, docs.map((d) => d.id));
+  return docs.map((d) => {
+    const e = latest.get(d.id);
+    return e ? { ...d, extraction: toExtraction(e) } : d;
+  });
 }
 
 /**

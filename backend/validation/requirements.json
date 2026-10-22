@@ -35,5 +35,6 @@
   { "id": "REQ-34", "risk": "Medium", "text": "Management responses are recorded outside signed finding content; recording one never alters a signed finding or breaks its signature.", "evalKinds": [] },
   { "id": "REQ-35", "risk": "Medium", "text": "The engagement context is written only by people, and a change to it after the scope gate reopens the scope.", "evalKinds": [] },
   { "id": "REQ-36", "risk": "High", "text": "The assistant runs only catalogued commands as the signed-in person: reads carry that person's permissions, every write needs their explicit confirmation and is trailed as their own action, and no command signs, approves or rejects anything.", "evalKinds": ["assistant"] },
-  { "id": "REQ-37", "risk": "Medium", "text": "Text the assistant retrieves or is shown (documents, engagement names, finding titles, earlier turns) reaches its model only as delimited data, and cannot make it run a command the person did not confirm.", "evalKinds": [] }
+  { "id": "REQ-37", "risk": "Medium", "text": "Text the assistant retrieves or is shown (documents, engagement names, finding titles, earlier turns) reaches its model only as delimited data, and cannot make it run a command the person did not confirm.", "evalKinds": [] },
+  { "id": "REQ-38", "risk": "Medium", "text": "Extracted text and chunks derive only from the stored bytes identified by sha256, with the extractor and its version recorded; every document has an extraction status.", "evalKinds": [] }
 ]

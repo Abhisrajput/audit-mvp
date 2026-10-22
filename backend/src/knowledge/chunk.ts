@@ -66,7 +66,8 @@ export function chunkText(text: string, pageStartsIn: readonly number[] = []): T
   };
   for (const piece of pieces(text)) {
     const size = current.reduce((n, p) => n + p.text.length + 2, 0);
-    if (current.length && size + piece.text.length > CHUNK_TARGET_CHARS) flush();
+    // A chunk never spans a page break, so its page is the page every word of it is on.
+    if (current.length && (size + piece.text.length > CHUNK_TARGET_CHARS || pageOf(piece.start) !== pageOf(current[0].start))) flush();
     current.push(piece);
   }
   flush();

@@ -10,6 +10,9 @@ import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { assertSha256, attachmentDisposition, BlobNotFound, type BlobStore } from '../storage/blob-store';
 import { CLASSIFICATIONS, CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, mayRead } from './access';
+import { loadEvidenceConfig, MAX_TEXT_CHARS, type EvidenceConfig } from '../evidence/config';
+import { runExtraction } from '../evidence/extraction';
+import { insertExtraction } from '../evidence/extraction-repo';
 import { getDocument, insertDocument, listDocuments, setDocumentText, type DocumentRecord } from './document-repo';
 import { MAX_HITS, PgFtsRetriever } from './retriever';
 import { recordDocumentEvent } from './trail';
@@ -18,11 +21,12 @@ export interface StorageDeps {
   blobs: BlobStore | null;
   maxUploadBytes: number;
   presignDownloads: boolean;
+  /** Extraction limits; defaults apply when absent. */
+  evidence?: EvidenceConfig;
 }
 
 export const UPLOAD_PATH = '/api/blobs';
 
-const MAX_TEXT_CHARS = 900_000;
 const MAX_QUERY_CHARS = 500;
 
 /** A real calendar date in YYYY-MM-DD form (2026-02-30 is not). */
@@ -70,6 +74,7 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
   const db = svc.db.kysely;
   const readers = requireRole(READ_ROLES);
   const preparers = requireRole(PREPARER_ROLES);
+  const evidence = storage.evidence ?? loadEvidenceConfig({}, { maxBytes: storage.maxUploadBytes });
   const blobs = () => {
     if (!storage.blobs) throw new AppError(503, 'File storage is not configured', 'STORAGE_UNAVAILABLE');
     return storage.blobs;
@@ -119,15 +124,24 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     const stored = uploaded ? await storageCall('head', () => store.head(sha256)) : null;
     if (!stored) throw new AppError(400, 'Upload the file first: no stored object has that SHA-256');
 
-    const result = await db.transaction().execute(async (trx) => {
+    const registered = await db.transaction().execute(async (trx) => {
       const doc = await insertDocument(trx, {
         sha256, filename: body.filename, mime: body.mime, size: stored.size, kind: body.kind, classification: body.classification,
         engagementId, uploadedBy: actor.id, retainUntil: body.retainUntil ?? null, metadata: body.metadata,
       });
       const chunks = body.text ? await setDocumentText(trx, doc, { extractor: 'client', extractorVersion: '1', text: body.text.content, pageStarts: body.text.pageStarts }) : 0;
+      if (body.text) {
+        await insertExtraction(trx, { documentId: doc.id, extractor: 'client', extractorVersion: '1', status: 'client', chars: body.text.content.length, pages: body.text.pageStarts?.length ?? null, error: null, by: actor.id });
+      }
       await recordDocumentEvent(trx, actor, doc, chunks);
-      return { ...doc, chunks };
+      return { doc, chunks };
     });
+    // No text supplied: the server reads the stored bytes itself, in its own transaction, so a slow or failing
+    // extractor never undoes the registration; its outcome is the document's extraction status.
+    if (!body.text) await runExtraction({ db, blobs: store, config: evidence }, registered.doc, actor);
+    const doc = (await getDocument(db, registered.doc.id))!;
+    const chunks = body.text ? registered.chunks : Number((await db.selectFrom('chunks').select((eb) => eb.fn.countAll().as('n')).where('document_id', '=', doc.id).executeTakeFirstOrThrow()).n);
+    const result = { ...doc, chunks };
     res.status(201).json(result);
   }));
 
