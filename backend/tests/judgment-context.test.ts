@@ -3,7 +3,7 @@ import { defaultAgentConfig } from '../src/agents/config';
 import { startRun } from '../src/agents/runs';
 import { subjectInfo } from '../src/agents/subjects';
 import { listGates } from '../src/agents/gate-repo';
-import { getRun } from '../src/agents/run-repo';
+import { getRun, listSteps } from '../src/agents/run-repo';
 import { AgentWorker } from '../src/agents/worker';
 import { auditor, NEW_ENGAGEMENT, reviewer, unattended } from './helpers';
 import { appWithDevUsers, signIn } from './http';
@@ -81,5 +81,54 @@ describe('the scope memo on the gate [REQ-31]', () => {
     expect(memo.body.memo.subjectKey).toBe('scope');
     expect(memo.body.markdown).toMatch(/For the reviewer/);
     await user.get(`/api/engagements/${e.id}/memos/report`).expect(404);
+  });
+});
+
+describe('a hand-drafted subject under a changing basis [REQ-35]', () => {
+  it('rebuilds a hand-drafted scope once when the context changes under an open gate, instead of reopening a gate on stale assessments [REQ-35]', async () => {
+    const { svc } = await appWithDevUsers();
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    const AREA = 'Food safety – HACCP';
+    const A = 'Metal detector line 2 failed twice in March';
+    const B = 'Allergen cross-contact found on line 3';
+    await svc.setEngagementContext(e.id, { factors: [{ kind: 'incident', processAreas: [AREA], description: A }], background: 'Single site.' }, auditor);
+    await svc.runModule(e.id, 'scope', auditor);                               // drafted by hand, before any agent run
+    const { run } = await startRun(svc, defaultAgentConfig(), e.id, auditor);
+    const worker = new AgentWorker(svc, defaultAgentConfig(), { id: 'w-hand' });
+    await worker.drain();
+    const first = (await listGates(svc.db.kysely, e.id)).filter((g) => g.kind === 'scope');
+    expect(first).toHaveLength(1);
+    expect(first[0].state).toBe('open');
+    const before = (await svc.engagement(e.id)).scope.filter((s) => s.processArea === AREA);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.some((s) => s.riskFactors.join(' ').includes(A))).toBe(true);
+
+    await svc.setEngagementContext(e.id, {
+      factors: [
+        { kind: 'incident', processAreas: [AREA], description: B },
+        { kind: 'prior_finding', processAreas: ['Governance'], description: 'Prior audit: board minutes not retained' },
+      ],
+      background: 'Single site.',
+    }, auditor);
+    await worker.drain();
+
+    const scopeDelegates = async () => (await listSteps(svc.db.kysely, run.id)).filter((s) => s.kind === 'delegate' && (s.decision as { action: { subjectKey: string } }).action.subjectKey === 'scope');
+    const gates = (await listGates(svc.db.kysely, e.id)).filter((g) => g.kind === 'scope');
+    expect(gates.find((g) => g.id === first[0].id)!.state).toBe('superseded');
+    expect(await scopeDelegates()).toHaveLength(1);
+    const scope = (await svc.engagement(e.id)).scope;
+    const food = scope.filter((s) => s.processArea === AREA);
+    expect(food.length).toBeGreaterThan(0);
+    expect(food.some((s) => s.riskFactors.join(' ').includes(B))).toBe(true);
+    expect(food.some((s) => s.riskFactors.join(' ').includes(A))).toBe(false);
+    const step = { Low: 'Medium', Medium: 'High', High: 'High' } as const;
+    const gov = scope.filter((s) => s.processArea === 'Governance');
+    expect(gov.length).toBeGreaterThan(0);
+    for (const s of gov) expect(s.assessedRisk).toBe(step[s.inherentRisk]);
+    expect(gates.filter((g) => g.state === 'open')).toHaveLength(1);
+
+    await worker.drain();                                                       // nothing changed: no second rebuild
+    expect(await scopeDelegates()).toHaveLength(1);
+    expect((await listGates(svc.db.kysely, e.id)).filter((g) => g.kind === 'scope')).toHaveLength(2);
   });
 });

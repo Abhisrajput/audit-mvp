@@ -43,7 +43,7 @@ export function selectionFor(row: Pick<RcmRow, 'frequency' | 'processArea'>, con
   }
   const factor = factorsFor(context, row.processArea).find((f) => JUDGEMENTAL_KINDS.includes(f.kind));
   if (factor) {
-    return { method: 'judgemental', reason: `${factor.kind.replace('_', ' ')} touches ${row.processArea}: ${factor.description}` };
+    return { method: 'judgemental', reason: `${factor.kind === 'incident' ? 'an incident' : 'a prior finding'} touching ${row.processArea} (${factor.description})` };
   }
   return { method: 'random', reason: `no incident or prior finding touching ${row.processArea}` };
 }
