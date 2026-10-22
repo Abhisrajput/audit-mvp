@@ -12,6 +12,7 @@ import { authRoutes, type AuthDeps } from './auth/routes';
 import { errorHandler } from './http/errors';
 import { DEFAULT_RATE_LIMITS, rateLimiters, securityHeaders, type RateLimits } from './http/security';
 import { visibleTrail } from './knowledge/trail-visibility';
+import { DOCUMENT_UPLOAD_PATH, EVIDENCE_UPLOAD_PATH, evidenceRoutes } from './evidence/routes';
 import { documentRoutes, UPLOAD_PATH, type StorageDeps } from './knowledge/routes';
 import { requestContext } from './observability/context';
 import { accessLog } from './observability/log';
@@ -27,7 +28,9 @@ import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
 
 /** Routes that parse their own bodies (see documentRoutes). */
-const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
+const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents', DOCUMENT_UPLOAD_PATH]);
+const EVIDENCE_UPLOAD = /^\/api\/engagements\/[^/]+\/evidence$/;
+const parsesOwnBody = (path: string) => OWN_BODY_PARSER.has(path) || EVIDENCE_UPLOAD.test(path);
 
 /** Operational settings. */
 export interface OpsOptions {
@@ -66,12 +69,15 @@ export function createApp(
   app.post('/api/gates/:gateId/sign-intents', limits.signing);
   app.post(ASSISTANT_TURN_PATH, limits.assistant);
   app.post(ASSISTANT_COMMAND_PATH, limits.assistant);
+  app.post(EVIDENCE_UPLOAD_PATH, limits.uploads);
+  app.post(DOCUMENT_UPLOAD_PATH, limits.uploads);
+  app.post('/api/documents/:id/extract', limits.uploads);
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,
   // so the global parser skips both: a body parsed here would never reach their own parsers.
   const json = express.json({ limit: '1mb' });
-  app.use((req, res, next) => (OWN_BODY_PARSER.has(req.path.toLowerCase().replace(/\/+$/, '')) ? next() : json(req, res, next)));
+  app.use((req, res, next) => (parsesOwnBody(req.path.toLowerCase().replace(/\/+$/, '')) ? next() : json(req, res, next)));
   app.use(sessionMiddleware(svc.db.kysely, auth.config));
 
   const param = (req: Request, name: string) => String(req.params[name]);
@@ -88,6 +94,7 @@ export function createApp(
   app.use(adminRoutes(svc.db, auth.config));
   app.use(signing.router);
   app.use(documentRoutes(svc, storage));
+  app.use(evidenceRoutes(svc, storage));
   const agentCfg = ops.agents ?? defaultAgentConfig();
   app.use(agentRoutes(svc, agentCfg));
   app.use(assistantRoutes(svc, { agents: agentCfg, assistant: ops.assistant ?? defaultAssistantConfig() }));

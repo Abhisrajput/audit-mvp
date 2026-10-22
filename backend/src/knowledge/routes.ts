@@ -4,6 +4,8 @@ import express, { Router, type Response } from 'express';
 import { z } from 'zod';
 import { actorOf, requireRole } from '../auth/http';
 import { PREPARER_ROLES, READ_ROLES } from '../auth/roles';
+import type { Executor } from '../db/trail-repo';
+import type { Role } from '../engine/types';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import { logger } from '../observability/log';
@@ -30,7 +32,7 @@ export const UPLOAD_PATH = '/api/blobs';
 const MAX_QUERY_CHARS = 500;
 
 /** A real calendar date in YYYY-MM-DD form (2026-02-30 is not). */
-const CalendarDate = z
+export const CalendarDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
   .refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s, 'Not a calendar date');
@@ -68,6 +70,27 @@ const SearchQuery = z.object({
 const ACTIVE_CONTENT = /html|xml|javascript/i;
 const servedType = (mime: string) => (ACTIVE_CONTENT.test(mime) ? 'application/octet-stream' : mime);
 
+/**
+ * Runs a storage call. A missing object (BlobNotFound) and our own validation errors pass through;
+ * anything else (missing bucket, denied credentials, network) is logged and answered 503.
+ */
+export async function storageCall<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof AppError || err instanceof BlobNotFound) throw err;
+    logger.error({ err, what }, 'File storage failed');
+    throw new AppError(503, 'File storage is unavailable', 'STORAGE_UNAVAILABLE');
+  }
+}
+
+/** The document if this reader may see it; otherwise "not found", whether or not it exists. */
+export async function readableDocument(db: Executor, id: string, role: Role): Promise<DocumentRecord> {
+  const doc = await getDocument(db, id);
+  if (!doc || !mayRead(role, doc.classification)) throw new AppError(404, 'Document not found');
+  return doc;
+}
+
 /** Document upload, registry, download and search. All under /api, so session, CSRF and role gates apply. */
 export function documentRoutes(svc: AuditService, storage: StorageDeps): Router {
   const r = Router();
@@ -80,26 +103,7 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     return storage.blobs;
   };
 
-  /**
-   * Runs a storage call. A missing object (BlobNotFound) and our own validation errors pass through;
-   * anything else (missing bucket, denied credentials, network) is logged and answered 503.
-   */
-  const storageCall = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
-    try {
-      return await fn();
-    } catch (err) {
-      if (err instanceof AppError || err instanceof BlobNotFound) throw err;
-      logger.error({ err, what }, 'File storage failed');
-      throw new AppError(503, 'File storage is unavailable', 'STORAGE_UNAVAILABLE');
-    }
-  };
-
-  /** The document if this reader may see it; otherwise "not found", whether or not it exists. */
-  const readable = async (id: string, role: Parameters<typeof mayRead>[0]): Promise<DocumentRecord> => {
-    const doc = await getDocument(db, id);
-    if (!doc || !mayRead(role, doc.classification)) throw new AppError(404, 'Document not found');
-    return doc;
-  };
+  const readable = (id: string, role: Role) => readableDocument(db, id, role);
 
   r.put(UPLOAD_PATH, preparers, express.raw({ type: () => true, limit: storage.maxUploadBytes }), wrap(async (req, res) => {
     const store = blobs();

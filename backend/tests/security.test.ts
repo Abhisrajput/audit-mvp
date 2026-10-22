@@ -2,10 +2,11 @@ import express from 'express';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
+import { DEFAULT_RATE_LIMITS } from '../src/http/security';
 import { resultPage } from '../src/signing/pages';
 import { appWithDevUsers, devAuthConfig, signIn } from './http';
 
-const LOW = { authPerMinute: 2, signingPerMinute: 2 };
+const LOW = { ...DEFAULT_RATE_LIMITS, authPerMinute: 2, signingPerMinute: 2 };
 
 describe('HTTP security', () => {
   it('sends strict security headers on API responses and no framework banner', async () => {
@@ -57,7 +58,7 @@ describe('HTTP security', () => {
 
   it('limits signing requests per client [REQ-18]', async () => {
     const { svc } = await appWithDevUsers();
-    const app = createApp(svc, { config: devAuthConfig(), oidc: null }, undefined, { rateLimits: { authPerMinute: 100, signingPerMinute: 2 } });
+    const app = createApp(svc, { config: devAuthConfig(), oidc: null }, undefined, { rateLimits: { ...DEFAULT_RATE_LIMITS, authPerMinute: 100, signingPerMinute: 2 } });
     const reviewer = await signIn(app, 'reviewer');
     const start = () => reviewer.post('/api/engagements/ENG-NONE/findings/F-NONE/sign-intents', { action: 'review' });
     expect((await start()).status).toBe(404);
