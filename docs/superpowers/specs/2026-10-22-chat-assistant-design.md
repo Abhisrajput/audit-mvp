@@ -236,6 +236,14 @@ Decisions made by the builder, for the user to check while reading:
 - **Default model `claude-sonnet-5-5`** at low effort: intent parsing with a schema needs reliability more than depth. Configurable.
 - **The rules planner is the universal fallback**, so an offline phrase works even when the model misbehaves or is down.
 
+**Made during the build:**
+
+- Tests for the HTTP routes were written after the code (no RED run). Accepted because they assert server behaviour (status codes, trail actor, 409/429/503) and the task review judged them, rather than discarding the work.
+- The `set_tolerance` describe shows the rate as a percentage with one decimal; `find_documents` with a query looks each chunk hit's document up to show its kind; a viewer's `find_documents` test uses the audit manager for the all-classifications case because an auditor cannot read restricted documents.
+- The offline signing check matches `sign`, `approve` and `reject` as word prefixes, so a phrase like "find supplier approval records" is answered as a signing request. One eval case was reworded; tightening the pattern is parked for a later pass.
+- The confirm request sends exactly `{ name, args, expectedVersion }` (the server body is strict), found in the visual check. The proposal card's done/cancelled state lives on the turn so a drawer remount cannot re-expose Confirm. Search snippets are shown as plain text with the highlighter's tags stripped.
+- A write on the current engagement reloads the engagement at once; the run panel catches up through its own polling within seconds.
+
 ## 13. Risks
 
 | Risk | Mitigation |
