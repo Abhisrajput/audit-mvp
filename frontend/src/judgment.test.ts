@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { areaOptions, contextLocked, contextProblems, memoFor, raisedAreas, ratingOf, responsesLocked, toleranceEditable, percentToRate, toleranceProblems } from './judgment';
+import { areaOptions, OPINION_LABELS, opinionColor, responsesRecorded, contextLocked, contextProblems, memoFor, raisedAreas, ratingOf, responsesLocked, toleranceEditable, percentToRate, toleranceProblems } from './judgment';
 import type { Gate, Impact, JudgmentMemo, Likelihood, RiskRating, ScopeItem } from './types';
 
 const item = (controlId: string, processArea: string, inherentRisk: 'High' | 'Medium' | 'Low', assessedRisk = inherentRisk, riskFactors: string[] = []) =>
@@ -77,5 +77,14 @@ describe('finding judgment helpers', () => {
     expect(toleranceProblems(0.25)).toEqual([]);
     expect(toleranceProblems(0.3)[0]).toMatch(/25%/);
     expect(toleranceProblems(-0.01)[0]).toMatch(/negative|0%/);
+  });
+});
+
+describe('opinion helpers', () => {
+  it('labels and colours each opinion, and counts responses over approved findings', () => {
+    expect(OPINION_LABELS.needs_improvement).toBe('Needs improvement');
+    expect(opinionColor('unsatisfactory')).toBe('error');
+    expect(responsesRecorded({ findings: [{ id: 'F1', status: 'approved' }, { id: 'F2', status: 'approved' }, { id: 'F3', status: 'draft' }] as never, responses: { F1: {} as never } })).toEqual({ recorded: 1, approved: 2 });
+    expect(responsesRecorded({ findings: [{ id: 'F1', status: 'approved' }] as never, responses: undefined as never })).toEqual({ recorded: 0, approved: 1 });
   });
 });

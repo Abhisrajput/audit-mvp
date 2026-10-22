@@ -1,4 +1,4 @@
-import type { ContextFactor, Engagement, FactorKind, Gate, Impact, JudgmentMemo, Likelihood, RiskRating, ScopeItem, Severity } from './types';
+import type { ContextFactor, Engagement, FactorKind, Gate, Impact, JudgmentMemo, Likelihood, Opinion, RiskRating, ScopeItem, Severity } from './types';
 
 export const FACTOR_LABELS: Record<FactorKind, string> = {
   change: 'Process or system change',
@@ -107,4 +107,16 @@ export function toleranceProblems(rate: number): string[] {
   if (rate < 0) return ['Tolerance cannot be negative'];
   if (rate > TOLERANCE_MAX) return [`Tolerance cannot be above ${TOLERANCE_MAX * 100}%`];
   return [];
+}
+
+export const OPINION_LABELS: Record<Opinion, string> = { satisfactory: 'Satisfactory', needs_improvement: 'Needs improvement', unsatisfactory: 'Unsatisfactory' };
+
+export function opinionColor(o: Opinion): 'success' | 'warning' | 'error' {
+  return o === 'satisfactory' ? 'success' : o === 'needs_improvement' ? 'warning' : 'error';
+}
+
+/** Approved findings and how many of them have a management response (an engagement from before responses has none). */
+export function responsesRecorded(e: Pick<Engagement, 'findings' | 'responses'>): { recorded: number; approved: number } {
+  const approved = e.findings.filter((f) => f.status === 'approved');
+  return { recorded: approved.filter((f) => e.responses?.[f.id]).length, approved: approved.length };
 }
