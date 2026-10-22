@@ -7,6 +7,8 @@ import type { TabProps } from '../../pages/EngagementPage';
 import type { Engagement, EvidenceLink, RcmRow, TestInput, TestPlan, TestResult } from '../../types';
 import { ActionButton, ConclusionChip, RiskChip } from '../common';
 import EvidencePicker from '../evidence/EvidencePicker';
+import { useEngagementDocuments } from '../evidence/useEngagementDocuments';
+import type { DocumentRecord } from '../../evidence';
 
 type Draft = { designAdequate: string; observation: string; evidenceRefs: string; evidence: EvidenceLink[]; sampleTested: string; exceptions: string };
 
@@ -19,7 +21,7 @@ const toDraft = (t?: TestInput): Draft => ({
   exceptions: String(t?.exceptions ?? 0),
 });
 
-function RowCard({ row, plan, input, result, engagementId, version, onSaved }: { row: RcmRow; plan?: TestPlan; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
+function RowCard({ row, plan, input, result, engagementId, version, onSaved, documents, loadError }: { documents: DocumentRecord[]; loadError: string | null; row: RcmRow; plan?: TestPlan; input?: TestInput; result?: TestResult; engagementId: string; version?: number; onSaved: (e: Engagement) => void }) {
   const [d, setD] = useState<Draft>(toDraft(input));
   const set = (k: Exclude<keyof Draft, 'evidence'>) => (ev: React.ChangeEvent<HTMLInputElement>) => setD({ ...d, [k]: ev.target.value });
   const dirty = JSON.stringify(d) !== JSON.stringify(toDraft(input));
@@ -80,7 +82,7 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved }: {
           </Grid>
           <Grid item xs={12} md={7}>
             <Stack spacing={1}>
-              <EvidencePicker engagementId={engagementId} value={d.evidence} onChange={(evidence) => setD({ ...d, evidence })} />
+              <EvidencePicker engagementId={engagementId} documents={documents} loadError={loadError} value={d.evidence} onChange={(evidence) => setD({ ...d, evidence })} />
               <TextField fullWidth size="small" label="Other references (comma separated)" placeholder={row.evidenceExpected.join(', ')} value={d.evidenceRefs} onChange={set('evidenceRefs')} />
             </Stack>
           </Grid>
@@ -125,6 +127,7 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved }: {
 }
 
 export default function FieldworkTab({ engagement: e, setEngagement, run }: TabProps) {
+  const { documents, error: docError } = useEngagementDocuments(e.id);
   return (
     <Stack spacing={2}>
       <Stack direction="row" spacing={2} alignItems="center">
@@ -136,7 +139,7 @@ export default function FieldworkTab({ engagement: e, setEngagement, run }: TabP
         </Typography>
       </Stack>
       {e.rcm.map((r) => (
-        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} plan={e.testPlans[r.id]} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} />
+        <RowCard key={`${r.id}-${e.testInputs[r.id]?.updatedAt ?? ''}`} row={r} plan={e.testPlans[r.id]} input={e.testInputs[r.id]} result={e.testResults[r.id]} engagementId={e.id} version={e.version} onSaved={setEngagement} documents={documents} loadError={docError} />
       ))}
     </Stack>
   );

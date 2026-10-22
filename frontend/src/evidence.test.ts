@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { setCsrfToken, uploadHeaders } from './api';
-import { formatSize, isPreparer, linkLabel, mergeDocuments, statusLabel, toggleLink } from './evidence';
+import { formatSize, isPreparer, linkLabel, mergeDocuments, statusLabel, toggleLink, addLink } from './evidence';
 import type { DocumentExtraction } from './evidence';
 
 const ex = (status: DocumentExtraction['status'], pages: number | null = null): DocumentExtraction =>
@@ -63,6 +63,16 @@ describe('evidence links', () => {
     expect(toggleLink(added, { documentId: 'd1' })).toHaveLength(2);
     expect(toggleLink(added, { documentId: 'd1', page: 7, note: 'x' })).toEqual([]);
     expect(added).toEqual([a]);
+  });
+  it('treats an undefined page like no page, and page 0 as no page in labels', () => {
+    expect(toggleLink([{ documentId: 'd1' }], { documentId: 'd1', page: undefined })).toEqual([]);
+    expect(linkLabel({ documentId: 'd1', page: 0 }, docs)).toBe('BMR-2026-0142.pdf');
+  });
+  it('addLink never removes', () => {
+    const a = { documentId: 'd1', page: 7 };
+    const list = [a];
+    expect(addLink(list, { documentId: 'd1', page: 7, note: 'x' })).toBe(list);
+    expect(addLink(list, { documentId: 'd1' })).toEqual([a, { documentId: 'd1' }]);
   });
   it('merges document lists with the first list winning', () => {
     const m = mergeDocuments([{ id: 'a', n: 1 }, { id: 'b', n: 1 }], [{ id: 'b', n: 2 }, { id: 'c', n: 2 }]);

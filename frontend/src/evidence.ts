@@ -79,6 +79,11 @@ export function toggleLink(links: EvidenceLink[], link: EvidenceLink): EvidenceL
   return links.some(same) ? links.filter((l) => !same(l)) : [...links, link];
 }
 
+/** Append a link unless the same document and page is already linked (then the list is returned unchanged). */
+export function addLink(links: EvidenceLink[], link: EvidenceLink): EvidenceLink[] {
+  return links.some((l) => l.documentId === link.documentId && l.page === link.page) ? links : [...links, link];
+}
+
 /** "BMR-2026-0142.pdf p.7"; the bare id when the document is not in the list. */
 export function linkLabel(link: EvidenceLink, documents: Array<{ id: string; filename: string }>): string {
   const name = documents.find((d) => d.id === link.documentId)?.filename ?? link.documentId;
