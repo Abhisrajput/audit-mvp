@@ -6,7 +6,7 @@ import type { Engagement, Finding, SignOff } from '../engine/types';
 /** SHA-256 of what a finding says — the part a signature vouches for. Status, sign-offs and preparers are not content. */
 export function findingContentHash(f: Finding): string {
   const { id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo } = f;
-  return sha256(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo }));
+  return sha256(canonicalJson({ id, rowId, controlId, title, rating, condition, criteria, cause, effect, recommendation, citations, evidenceRefs, likelihood, impact, rootCause, memo, ...(f.evidence ? { evidence: f.evidence } : {}) }));
 }
 
 /** Whether the finding's content last changed after this signature was made. */

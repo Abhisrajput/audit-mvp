@@ -14,6 +14,7 @@ import { logger } from '../observability/log';
 import type { AuditService } from '../service';
 import { sha256Of } from '../storage/blob-store';
 import { runExtraction } from './extraction';
+import { documentUsage } from './links';
 import { latestExtraction } from './extraction-repo';
 import { ContentMismatch, sniff } from './sniff';
 
@@ -210,6 +211,13 @@ export function evidenceRoutes(svc: AuditService, storage: StorageDeps): Router 
     if (!pages) throw new AppError(400, 'This document has no page breaks');
     if (page < 1 || page > pages) throw new AppError(400, `Page must be between 1 and ${pages}`);
     res.json({ page, pages, text: row.text.slice(starts[page - 1], starts[page] ?? row.text.length) });
+  }));
+
+  // Where a document is cited: the tests and live findings that link it. Unreadable and missing documents answer alike.
+  r.get('/api/documents/:id/usage', requireRole(READ_ROLES), wrap(async (req, res) => {
+    const doc = await readableDocument(svc.db.kysely, String(req.params.id), actorOf(req).role);
+    // Every read role may list every engagement (GET /api/engagements is not scoped), so the scan covers them all.
+    res.json(await documentUsage(svc.db.kysely, doc.id));
   }));
 
   return r;
