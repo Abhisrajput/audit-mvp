@@ -76,7 +76,7 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
     // What it was built from changed: rebuild it once, then review the rebuilt version. (Edited by hand: review it.)
     if (g.basisHash !== s.basis && !mine.some((r) => r.basis === s.basis)) return act([rebuild(input, o, key)]);
   }
-  // Drafted by hand before the run, every gate superseded because the basis moved (content unchanged): rebuild it once, not re-gate stale content.
+  // The newest gate was superseded because the basis moved while the content stayed: rebuild once rather than re-gate stale content. This also fires for a subject drafted in an earlier run and for the report after a management response (rebuilt once; the markdown is the same until 8C).
   const overtaken = findLast(input.gates, (x) => x.subjectKey === key);
   if (!g && overtaken?.state === 'superseded' && overtaken.subjectHash === s.hash && overtaken.basisHash !== s.basis && !input.redrafts.some((r) => r.subjectKey === key && r.basis === s.basis)) {
     return act([rebuild(input, o, key)]);

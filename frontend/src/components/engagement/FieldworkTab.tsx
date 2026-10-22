@@ -32,9 +32,13 @@ function RowCard({ row, plan, input, result, engagementId, version, onSaved }: {
           </Typography>
           <RiskChip rating={row.riskRating} />
           {result?.severity && (
-            <Tooltip title={result.severityRationale ?? ''}>
-              <Chip tabIndex={0} size="small" variant="outlined" color={result.severity === 'none' ? 'default' : 'warning'} label={SEVERITY_LABELS[result.severity]} />
-            </Tooltip>
+            result.severityRationale ? (
+              <Tooltip title={result.severityRationale}>
+                <Chip tabIndex={0} size="small" variant="outlined" color={result.severity === 'none' ? 'default' : 'warning'} label={SEVERITY_LABELS[result.severity]} />
+              </Tooltip>
+            ) : (
+              <Chip size="small" variant="outlined" color={result.severity === 'none' ? 'default' : 'warning'} label={SEVERITY_LABELS[result.severity]} />
+            )
           )}
           <ConclusionChip conclusion={result?.conclusion} />
         </Stack>

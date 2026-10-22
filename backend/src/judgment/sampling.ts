@@ -58,9 +58,6 @@ export function recommendedTolerance(row: Pick<RcmRow, 'packId'>, assessedRisk: 
 export function samplingRationale(row: Pick<RcmRow, 'frequency'>, assessedRisk: RiskRating, size: number, selection: { method: Selection; reason: string }): string {
   const column = assessedRisk === 'High' ? 'high-risk' : 'lower-risk';
   const head = `Sample of ${size}: a ${row.frequency} control with ${assessedRisk} assessed risk, so the ${column} column of the sample table; ${selection.method} selection because of ${selection.reason}`;
-  if (selection.method === 'all') {
-    return `${head}; the population count is not recorded, so frequency decides and every item is tested.`;
-  }
   return `${head}.`;
 }
 

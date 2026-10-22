@@ -132,7 +132,7 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
             </Typography>
             {!f.rootCause.confirmed && (
               <Typography variant="caption" color="warning.main" sx={{ flexBasis: '100%' }}>
-                Not yet confirmed with the process owner; confirm it before the exit meeting.
+                Not yet confirmed with the process owner; confirm it before the exit meeting and record what you learn in Cause.
               </Typography>
             )}
           </Stack>
