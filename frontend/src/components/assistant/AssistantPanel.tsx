@@ -2,7 +2,6 @@ import { Close as CloseIcon, Send as SendIcon } from '@mui/icons-material';
 import { Alert, Box, Drawer, IconButton, Stack, TextField, Typography, useMediaQuery, useTheme } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ApiError } from '../../api';
 import {
   assistantApi, engagementIdOf, notifyChanged, OFFLINE_HINT, shownFrom, trimHistory,
   type AssistantSettings, type Turn,
@@ -55,7 +54,7 @@ export default function AssistantPanel({ open, onClose }: { open: boolean; onClo
       const response = await assistantApi.turn({ message, context: { engagementId, ...(shown.length ? { shown } : {}) }, history });
       patch(id, { response });
     } catch (e) {
-      patch(id, { error: e instanceof ApiError || e instanceof Error ? e.message : String(e) });
+      patch(id, { error: e instanceof Error ? e.message : String(e) });
     } finally {
       setBusy(false);
     }
@@ -98,6 +97,8 @@ export default function AssistantPanel({ open, onClose }: { open: boolean; onClo
                 {t.response.proposal && (
                   <ProposalCard
                     proposal={t.response.proposal}
+                    done={t.done}
+                    cancelled={t.cancelled}
                     onDone={onDone(t.id)}
                     onCancel={() => patch(t.id, { cancelled: true })}
                   />
@@ -115,7 +116,7 @@ export default function AssistantPanel({ open, onClose }: { open: boolean; onClo
         ) : (
           <>
             <TextField
-              fullWidth multiline maxRows={5} size="small" placeholder="Ask the assistant" value={composer} disabled={busy}
+              fullWidth multiline maxRows={5} size="small" placeholder="Ask the assistant" inputProps={{ 'aria-label': 'Ask the assistant' }} value={composer} disabled={busy}
               onChange={(e) => setComposer(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

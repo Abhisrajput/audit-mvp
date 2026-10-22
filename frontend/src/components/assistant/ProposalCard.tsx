@@ -6,25 +6,23 @@ import type { CommandName, TurnResponse } from '../../types';
 import { ActionButton } from '../common';
 
 type Proposal = NonNullable<TurnResponse['proposal']>;
-type Status = { kind: 'open' } | { kind: 'done'; summary: string } | { kind: 'cancelled' };
-
-export default function ProposalCard({ proposal, onDone, onCancel }: {
+export default function ProposalCard({ proposal, done, cancelled, onDone, onCancel }: {
   proposal: Proposal;
+  done: { summary: string } | null;
+  cancelled: boolean;
   onDone: (summary: string, name: CommandName, args: unknown, result: unknown) => void;
   onCancel: () => void;
 }) {
-  const [status, setStatus] = useState<Status>({ kind: 'open' });
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
 
-  if (status.kind === 'done') return <Typography variant="body2" sx={{ mt: 1 }}>Done: {status.summary}</Typography>;
-  if (status.kind === 'cancelled') return <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Cancelled</Typography>;
+  if (done) return <Typography variant="body2" sx={{ mt: 1 }}>Done: {done.summary}</Typography>;
+  if (cancelled) return <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Cancelled</Typography>;
 
   const confirm = async () => {
     setError(null);
     try {
       const res = await assistantApi.confirm(proposal);
-      setStatus({ kind: 'done', summary: res.summary });
       onDone(res.summary, proposal.name, proposal.args, res.result);
     } catch (e) {
       if (e instanceof ApiError && e.code === 'VERSION_CONFLICT') {
@@ -52,7 +50,7 @@ export default function ProposalCard({ proposal, onDone, onCancel }: {
       {error && <Alert severity={conflict ? 'warning' : 'error'} sx={{ mb: 1 }}>{error}</Alert>}
       <Stack direction="row" spacing={1}>
         <ActionButton size="small" action={confirm} disabled={conflict}>Confirm</ActionButton>
-        <Button size="small" onClick={() => { setStatus({ kind: 'cancelled' }); onCancel(); }}>Cancel</Button>
+        <Button size="small" onClick={onCancel}>Cancel</Button>
       </Stack>
     </Card>
   );
