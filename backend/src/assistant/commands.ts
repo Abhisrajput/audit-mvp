@@ -10,6 +10,7 @@ import { NewEngagementSchema, ResponseInputSchema, searchClauses, ToleranceSchem
 import { EngagementContextInputSchema } from '../judgment/context';
 import { METHODOLOGY_PACK_ID } from '../judgment/standards';
 import { CLASSIFICATIONS_BY_ROLE, DOCUMENT_KINDS, type DocumentKind } from '../knowledge/access';
+import type { ExtractionStatus } from '../evidence/extraction-repo';
 import { getDocument, listDocuments } from '../knowledge/document-repo';
 import { PgFtsRetriever } from '../knowledge/retriever';
 import type { AuditService, MutationOptions } from '../service';
@@ -42,7 +43,7 @@ export interface EngagementCard {
 }
 export interface FindingRow { id: string; title: string; rating: RiskRating; status: FindingStatus; response: ResponseKind | null }
 export type DocumentResult =
-  | { kind: 'document'; id: string; filename: string; documentKind: DocumentKind; snippet: string; href: string }
+  | { kind: 'document'; id: string; filename: string; documentKind: DocumentKind; snippet: string; href: string; extraction?: ExtractionStatus | null }
   | { kind: 'concept'; conceptId: string; packId: string; title: string; snippet: string };
 export interface ClauseResult { id: string; title: string; regulation: string; ref: string; summary: string }
 export interface PackRow { id: string; name: string; version: string; vertical: string }
@@ -81,11 +82,11 @@ async function findDocuments(ctx: CommandContext, a: { query?: string; engagemen
     return Promise.all(hits.map(async (h): Promise<DocumentResult> => {
       if (h.kind === 'kg_node') return { kind: 'concept', conceptId: h.citation.conceptId, packId: h.citation.packId, title: h.title, snippet: h.snippet };
       const doc = await getDocument(db, h.citation.documentId);
-      return { kind: 'document', id: h.citation.documentId, filename: h.citation.filename, documentKind: doc?.kind ?? 'other', snippet: h.snippet, href: contentHref(h.citation.documentId) };
+      return { kind: 'document', id: h.citation.documentId, filename: h.citation.filename, documentKind: doc?.kind ?? 'other', snippet: h.snippet, href: contentHref(h.citation.documentId), extraction: doc?.extraction?.status ?? null };
     }));
   }
   const docs = await listDocuments(db, { engagementId: a.engagementId ?? null, classifications: CLASSIFICATIONS_BY_ROLE[ctx.actor.role] });
-  return docs.reverse().slice(0, 20).map((d) => ({ kind: 'document', id: d.id, filename: d.filename, documentKind: d.kind, snippet: '', href: contentHref(d.id) }));
+  return docs.reverse().slice(0, 20).map((d) => ({ kind: 'document', id: d.id, filename: d.filename, documentKind: d.kind, snippet: '', href: contentHref(d.id), extraction: d.extraction?.status ?? null }));
 }
 
 const none = z.object({}).strict();

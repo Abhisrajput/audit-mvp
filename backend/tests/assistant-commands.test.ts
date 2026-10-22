@@ -69,7 +69,7 @@ describe('the command catalogue (spec §3)', () => {
 
     const all = (await run('find_documents', ctxOf(svc, reviewer), { engagementId: e.id })) as DocumentResult[];
     expect(all.map((d) => d.kind === 'document' && d.id)).toEqual([evidence.id, global.id]);
-    expect(all[0]).toEqual({ kind: 'document', id: evidence.id, filename: 'CCP-LOG-MAR.xlsx', documentKind: 'evidence', snippet: '', href: `/api/documents/${evidence.id}/content` });
+    expect(all[0]).toEqual({ kind: 'document', id: evidence.id, filename: 'CCP-LOG-MAR.xlsx', documentKind: 'evidence', snippet: '', href: `/api/documents/${evidence.id}/content`, extraction: null });
     const hits = (await run('find_documents', ctxOf(svc, reviewer), { engagementId: e.id, query: 'allergen', kinds: ['evidence'] })) as DocumentResult[];
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatchObject({ kind: 'document', id: evidence.id, filename: 'CCP-LOG-MAR.xlsx', href: `/api/documents/${evidence.id}/content` });

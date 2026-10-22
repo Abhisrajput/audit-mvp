@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { onChanged } from '../assistant';
+import EvidenceTab from '../components/evidence/EvidenceTab';
 import FieldworkTab from '../components/engagement/FieldworkTab';
 import FindingsTab from '../components/engagement/FindingsTab';
 import RcmTab from '../components/engagement/RcmTab';
@@ -14,9 +15,11 @@ import TrailTab from '../components/engagement/TrailTab';
 import { useAgentRun } from '../components/engagement/useAgentRun';
 import type { Engagement, Gate, TrailBundle } from '../types';
 
-const STEPS = ['Risk & scope', 'RCM', 'Test plans', 'Fieldwork & testing', 'Findings', 'Report'];
-const FINDINGS_TAB = 4;
-const REPORT_TAB = 5;
+const STEPS = ['Risk & scope', 'RCM', 'Test plans', 'Evidence', 'Fieldwork & testing', 'Findings', 'Report'];
+const EVIDENCE_TAB = 3;
+const FIELDWORK_TAB = 4;
+const FINDINGS_TAB = 5;
+const REPORT_TAB = 6;
 const TRAIL_TAB = STEPS.length;
 
 export interface TabProps {
@@ -85,7 +88,7 @@ export default function EngagementPage() {
 
   if (!engagement) return null;
   const e = engagement;
-  const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testPlans).length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
+  const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testPlans).length > 0, false, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
   const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, refreshGates: agent.refresh, qaThreshold: agent.settings?.qaThreshold ?? null };
 
   return (
@@ -134,7 +137,8 @@ export default function EngagementPage() {
       {tab === 0 && <ScopeTab {...props} />}
       {tab === 1 && <RcmTab {...props} />}
       {tab === 2 && <TestPlansTab {...props} />}
-      {tab === 3 && <FieldworkTab {...props} />}
+      {tab === EVIDENCE_TAB && <EvidenceTab engagementId={e.id} />}
+      {tab === FIELDWORK_TAB && <FieldworkTab {...props} />}
       {tab === FINDINGS_TAB && <FindingsTab {...props} />}
       {tab === REPORT_TAB && <ReportTab {...props} />}
       {tab === TRAIL_TAB && <TrailTab {...props} />}

@@ -9,3 +9,6 @@ export type { DelegateRecord } from '../../backend/src/agents/state';
 export type { CommandName, CommandKind, EngagementCard, FindingRow, DocumentResult, ClauseResult, PackRow } from '../../backend/src/assistant/commands';
 export type { TurnResponse, CommandResponse } from '../../backend/src/assistant/routes';
 export type { ShownItem, HistoryTurn } from '../../backend/src/assistant/planner';
+export type { ExtractionStatus } from '../../backend/src/evidence/extraction-repo';
+export type { DocumentRecord, DocumentExtraction } from '../../backend/src/knowledge/document-repo';
+export type { Classification, DocumentKind } from '../../backend/src/knowledge/access';
