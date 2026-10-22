@@ -96,6 +96,14 @@ export function assistantRoutes(svc: AuditService, deps: { agents: AgentConfig; 
     const cmd = commandNamed(body.name)!;
     if (!commandsFor(actor.role).some((c) => c.name === cmd.name)) throw new AppError(403, `${actor.role} may not ${cmd.description}`);
     const args = cmd.args.parse(withDefaults(cmd, body.args, {}));
+    // Every engagement write is checked here; the services keep their own checks.
+    const engagementId = (args as { engagementId?: unknown } | null)?.engagementId;
+    if (cmd.needsEngagement && body.expectedVersion !== undefined && typeof engagementId === 'string') {
+      const loaded = await svc.engagement(engagementId);
+      if (loaded.version !== body.expectedVersion) {
+        throw new AppError(409, `Engagement ${engagementId} is at version ${loaded.version}, not ${body.expectedVersion}; reload and try again`, 'VERSION_CONFLICT');
+      }
+    }
     const result = await cmd.run({ svc, agents, actor }, args, { expectedVersion: body.expectedVersion });
     const out: CommandResponse = { summary: cmd.describe(args), result };
     res.json(out);

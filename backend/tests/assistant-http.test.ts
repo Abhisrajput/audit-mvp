@@ -73,6 +73,17 @@ describe('the assistant over HTTP (spec §7)', () => {
     expect(res.body.code).toBe('VERSION_CONFLICT');
   });
 
+  it('every engagement write is version-checked at confirm, even one whose service does not check [REQ-36]', async () => {
+    const { svc, auditor, id } = await setup();
+    const proposal = (await auditor.post(TURNS, { message: `start the run on ${id}` }).expect(200)).body.proposal;
+    expect(proposal.expectedVersion).toBe(1);
+    await auditor.post(`/api/engagements/${id}/modules/scope/run`).expect(200);
+    const res = await auditor.post(COMMANDS, { name: proposal.name, args: proposal.args, expectedVersion: proposal.expectedVersion });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('VERSION_CONFLICT');
+    expect(await listRuns(svc.db.kysely, id)).toEqual([]);
+  });
+
   it('a viewer may not confirm a write, and unknown names or bad args are 400/403', async () => {
     const { app, auditor, id } = await setup();
     const viewer = await signIn(app, 'viewer');
