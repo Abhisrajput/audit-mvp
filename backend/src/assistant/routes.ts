@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AgentConfig } from '../agents/config';
 import { actorOf, requireRole } from '../auth/http';
 import { READ_ROLES } from '../auth/roles';
+import type { Engagement } from '../engine/types';
 import { AppError } from '../errors';
 import { wrap } from '../http-util';
 import { METHODOLOGY_PACK_ID } from '../judgment/standards';
@@ -11,6 +12,9 @@ import type { AuditService } from '../service';
 import { COMMAND_NAMES, commandNamed, commandsFor, withDefaults, type CommandKind, type CommandName } from './commands';
 import type { AssistantConfig } from './config';
 import { boundInput, LIMITS, ModelPlanner, rulesPlan, type PlannerData, type PlanOutcome } from './planner';
+
+const isEngagement = (v: unknown): v is Engagement =>
+  typeof v === 'object' && v !== null && 'testDrafts' in v && 'rcm' in v && 'id' in v;
 
 export const ASSISTANT_TURN_PATH = '/api/assistant/turns';
 export const ASSISTANT_COMMAND_PATH = '/api/assistant/commands';
@@ -119,7 +123,9 @@ export function assistantRoutes(svc: AuditService, deps: { agents: AgentConfig; 
         throw new AppError(409, `Engagement ${engagementId} is at version ${loaded.version}, not ${body.expectedVersion}; reload and try again`, 'VERSION_CONFLICT');
       }
     }
-    const result = await cmd.run({ svc, agents, actor }, args, { expectedVersion: body.expectedVersion });
+    const ran = await cmd.run({ svc, agents, actor }, args, { expectedVersion: body.expectedVersion });
+    // A command that returns the engagement serves it as this reader may see it (drafts are redacted per reader).
+    const result = isEngagement(ran) ? await svc.servedTo(ran, actor) : ran;
     const out: CommandResponse = { summary: cmd.describe(args), result };
     res.json(out);
   }));

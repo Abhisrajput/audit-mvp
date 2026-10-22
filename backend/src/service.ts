@@ -133,10 +133,10 @@ export interface ServiceOptions {
   citationPolicy?: CitationPolicy;
 }
 
-/** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
 /** Thrown inside a mutation to roll it back when there is nothing to write. */
 class NothingToSave {}
 
+/** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
 class NoChange {
   constructor(readonly finding: Finding) {}
 }

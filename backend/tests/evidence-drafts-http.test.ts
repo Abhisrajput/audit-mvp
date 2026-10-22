@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { defaultAgentConfig } from '../src/agents/config';
 import { agentPort } from '../src/agents/port';
+import { defaultAssistantConfig } from '../src/assistant/config';
 import { createApp } from '../src/app';
 import type { TestDraft } from '../src/engine/types';
 import { ensureDevUsers } from '../src/auth/dev-users';
+import { DEFAULT_RATE_LIMITS } from '../src/http/security';
 import { insertDocument } from '../src/knowledge/document-repo';
 import { devAuthConfig, signIn } from './http';
 import { auditor, leasedRun, NEW_ENGAGEMENT, newService } from './helpers';
@@ -69,5 +72,17 @@ describe('drafts are redacted per reader', () => {
     expect(recorded.testDrafts[rows[0]]).toBeUndefined();
     const run = (await aud.post(`/api/engagements/${e.id}/modules/scope/run`, {}).expect(200)).body;
     expect(run.engagement.testDrafts[rows[0]]).toBeUndefined();
+  });
+
+  it('an assistant write command that returns the engagement is redacted too', async () => {
+    const { svc, e, rows } = await setup();
+    const app = createApp(svc, { config: devAuthConfig(), oidc: null }, undefined, {
+      agents: defaultAgentConfig(), assistant: defaultAssistantConfig(), rateLimits: DEFAULT_RATE_LIMITS,
+    });
+    const aud = await signIn(app, 'auditor');
+    const controlId = (await svc.engagement(e.id)).rcm.find((r) => r.id === rows[0])!.controlId;
+    const res = (await aud.post('/api/assistant/commands', { name: 'set_tolerance', args: { engagementId: e.id, controlId, rate: 0.05 } }).expect(200)).body;
+    expect(Object.keys(res.result.testDrafts)).toEqual([rows[1]]);
+    expect(JSON.stringify(res)).not.toContain('the restricted clause');
   });
 });
