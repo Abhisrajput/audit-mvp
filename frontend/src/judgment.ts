@@ -98,6 +98,9 @@ export function responsesLocked(gates: Gate[]): boolean {
   return gates.some((g) => g.kind === 'report' && g.state === 'approved');
 }
 
+/** A percent typed by a person as a rate, rounded to a tenth of a percent (12.3 gives 0.123). */
+export const percentToRate = (text: string): number => Math.round(Number(text) * 10) / 1000;
+
 /** Problems with a tolerance rate (0 to 25%); [] when fine. */
 export function toleranceProblems(rate: number): string[] {
   if (!Number.isFinite(rate)) return ['Enter a tolerance as a percentage'];

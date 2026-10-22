@@ -240,11 +240,14 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
   );
 }
 
-export default function FindingsTab({ engagement: e, setEngagement, run, gates, qaThreshold }: TabProps) {
+export default function FindingsTab({ engagement: e, setEngagement, run, gates, refreshGates, qaThreshold }: TabProps) {
   const ctx: CardContext = {
     engagementId: e.id,
     version: e.version,
-    reload: async () => setEngagement(await api<Engagement>(`/engagements/${e.id}`)),
+    reload: async () => {
+      setEngagement(await api<Engagement>(`/engagements/${e.id}`));
+      await refreshGates().catch(() => undefined);
+    },
     engagement: e,
     responsesLocked: responsesLocked(gates),
   };

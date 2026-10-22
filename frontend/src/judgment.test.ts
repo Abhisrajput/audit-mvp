@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { areaOptions, contextLocked, contextProblems, memoFor, raisedAreas, ratingOf, responsesLocked, toleranceEditable, toleranceProblems } from './judgment';
+import { areaOptions, contextLocked, contextProblems, memoFor, raisedAreas, ratingOf, responsesLocked, toleranceEditable, percentToRate, toleranceProblems } from './judgment';
 import type { Gate, Impact, JudgmentMemo, Likelihood, RiskRating, ScopeItem } from './types';
 
 const item = (controlId: string, processArea: string, inherentRisk: 'High' | 'Medium' | 'Low', assessedRisk = inherentRisk, riskFactors: string[] = []) =>
@@ -64,6 +64,12 @@ describe('finding judgment helpers', () => {
     expect(responsesLocked([{ kind: 'report', state: 'open' } as Gate])).toBe(false);
     expect(responsesLocked([{ kind: 'rcm', state: 'approved' } as Gate])).toBe(false);
     expect(responsesLocked([{ kind: 'report', state: 'approved' } as Gate])).toBe(true);
+  });
+
+  it('turns typed percents into clean rates', () => {
+    expect(percentToRate('5')).toBe(0.05);
+    expect(percentToRate('12.3')).toBe(0.123);
+    expect(percentToRate('0')).toBe(0);
   });
 
   it('names the limit for a tolerance outside 0 to 25%', () => {

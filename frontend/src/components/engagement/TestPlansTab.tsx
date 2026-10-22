@@ -1,6 +1,6 @@
 import { Alert, Card, CardContent, Chip, Grid, MenuItem, Stack, TextField, Typography } from '@mui/material';
 import { useState } from 'react';
-import { toleranceEditable, toleranceProblems } from '../../judgment';
+import { percentToRate, toleranceEditable, toleranceProblems } from '../../judgment';
 import { api } from '../../api';
 import { agentApi, formatUtc, planDraft, planPatch, REASON_MAX, rowsAwaitingTests, type PlanDraft } from '../../agents';
 import type { TabProps } from '../../pages/EngagementPage';
@@ -25,7 +25,7 @@ function ToleranceField({ row, plan, tolerance, engagementId, version, canEdit, 
   onSaved: (e: Engagement) => void;
 }) {
   const [text, setText] = useState(tolerance ? String(Math.round(tolerance.rate * 1000) / 10) : '');
-  const rate = text.trim() === '' ? NaN : Number(text) / 100;
+  const rate = text.trim() === '' ? NaN : percentToRate(text);
   const problems = text.trim() === '' ? [] : toleranceProblems(rate);
   const unchanged = tolerance ? Math.abs(tolerance.rate - rate) < 1e-9 : false;
   return (
@@ -158,7 +158,7 @@ function PlanCard({ row, plan, engagementId, version, canEdit, onSaved, toleranc
 }
 
 /** Test plans for each RCM row (agent spec §7.2): drafted by the agent, edited by auditors. */
-export default function TestPlansTab({ engagement: e, setEngagement }: TabProps) {
+export default function TestPlansTab({ engagement: e, setEngagement, refreshGates }: TabProps) {
   const { user } = useSession();
   // The route returns the plan, not the engagement: reload it, or the next save would be refused as stale.
   const reload = async () => setEngagement(await api<Engagement>(`/engagements/${e.id}`));
@@ -196,7 +196,10 @@ export default function TestPlansTab({ engagement: e, setEngagement }: TabProps)
                 version={e.version}
                 canEdit={canPrepare(user?.role)}
                 editable={toleranceEditable(e, r.id)}
-                onSaved={setEngagement}
+                onSaved={(next) => {
+                  setEngagement(next);
+                  void refreshGates().catch(() => undefined);
+                }}
               />
             }
           />

@@ -40,7 +40,7 @@ export default function RcmTab({ engagement: e, run }: TabProps) {
                 <RiskChip rating={r.riskRating} />
                 {r.assessedRisk && (
                   <Tooltip title="Assessed risk, after the engagement context">
-                    <Chip size="small" variant="outlined" label={`Assessed ${r.assessedRisk}`} />
+                    <Chip tabIndex={0} size="small" variant="outlined" label={`Assessed ${r.assessedRisk}`} />
                   </Tooltip>
                 )}
                 <Chip size="small" variant="outlined" label={`${r.frequency} · sample ${r.sampleSize}`} />
