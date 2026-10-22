@@ -118,6 +118,52 @@ describe('finding judgment (spec §5.5) [REQ-32]', () => {
     expect((await svc.trailFor(id)).some((b) => b.moduleId === 'human:finding-edit')).toBe(true);
   });
 
+  describe('a person\'s edit keeps the memo consistent with the finding (final review I1)', () => {
+    const editLine = (memo: { forTheReviewer: string[] } | undefined) => memo?.forTheReviewer.find((l) => l.startsWith('Edited by auditor:'));
+    const callOf = (f: Finding, question: string) => f.memo!.calls.find((c) => c.question === question)!;
+
+    it('rebuilds the rating call from the new likelihood and impact, marked as the person\'s change, keeping the standards', async () => {
+      const { app, svc } = await appWithDevUsers();
+      const { auditor: user, id, fid } = await draftFinding(app);
+      const before = (await svc.engagement(id)).findings.find((f) => f.id === fid)!;
+      const wasDecision = callOf(before, 'Rating of the finding').decision;
+      const ok = await user.put(`/api/engagements/${id}/findings/${fid}`, { likelihood: 'rare', impact: 'minor' });
+      const f = ok.body as Finding;
+      const rating = callOf(f, 'Rating of the finding');
+      expect(rating.decision).toBe(`${f.rating} (rare likelihood, minor impact)`);
+      expect(rating.rationale).toContain(`Set by auditor: was ${wasDecision}`);
+      expect(rating.standard).toEqual(callOf(before, 'Rating of the finding').standard);
+    });
+
+    it('refreshes the recommendation call when the recommendation changes, and names the field in a text-only edit with no likelihood or impact pair', async () => {
+      const { app, svc } = await appWithDevUsers();
+      const { auditor: user, id, fid } = await draftFinding(app);
+      const before = (await svc.engagement(id)).findings.find((f) => f.id === fid)!;
+      const ok = await user.put(`/api/engagements/${id}/findings/${fid}`, { recommendation: 'Add a second check at the line', likelihood: before.likelihood, impact: before.impact });
+      expect(ok.status).toBe(200);
+      const f = ok.body as Finding;
+      const rec = callOf(f, 'Recommendation');
+      expect(rec.decision).toBe('Add a second check at the line');
+      expect(rec.rationale).toContain('Set by auditor');
+      const line = editLine(f.memo)!;
+      expect(line).toContain('recommendation');
+      expect(line).not.toMatch(/likelihood|impact/);
+      expect(callOf(f, 'Rating of the finding').decision).toBe(callOf(before, 'Rating of the finding').decision);
+    });
+
+    it('writes an Edited by line for a text-only patch, and no pair for a same-value likelihood and impact resubmission', async () => {
+      const { app, svc } = await appWithDevUsers();
+      const { auditor: user, id, fid } = await draftFinding(app);
+      const before = (await svc.engagement(id)).findings.find((f) => f.id === fid)!;
+      const text = await user.put(`/api/engagements/${id}/findings/${fid}`, { condition: `${before.condition} (corrected)` });
+      expect(editLine(text.body.memo)).toContain('condition');
+      const same = await user.put(`/api/engagements/${id}/findings/${fid}`, { condition: `${before.condition} (corrected again)`, likelihood: before.likelihood, impact: before.impact });
+      const line = editLine(same.body.memo)!;
+      expect(line).toContain('condition');
+      expect(line).not.toMatch(/likelihood|impact/);
+    });
+  });
+
   it('serves the finding memo from the memos route', async () => {
     const { app, svc } = await appWithDevUsers();
     const { auditor: user, id, fid } = await draftFinding(app);

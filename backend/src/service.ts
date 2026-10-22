@@ -33,7 +33,7 @@ import { recomputedCoverage } from './judgment/coverage';
 import { insertResponse, insertTolerance, responseHistory } from './db/judgment-repo';
 import { TOLERANCE_MAX } from './judgment/sampling';
 import { impactOf, ratingOf } from './judgment/finding';
-import { markEditedByHand, markEditedByPerson, sameMemo } from './judgment/memo';
+import { markEditedByHand, markEditedByPerson, reviseCallByPerson, sameMemo } from './judgment/memo';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
@@ -514,6 +514,7 @@ export class AuditService {
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
+      const changes: string[] = [];
       if (patch.likelihood || patch.impact) {
         // A pre-8B finding has neither: fall back to possible and the impact its rating implies, and write both so the matrix check engages from now on.
         const likelihood = patch.likelihood ?? previous.likelihood ?? 'possible';
@@ -521,13 +522,22 @@ export class AuditService {
         edited.likelihood = likelihood;
         edited.impact = impact;
         edited.rating = ratingOf(likelihood, impact);
-        if (previous.memo) {
-          const changes = [
-            ...(patch.likelihood ? [`likelihood ${previous.likelihood ?? 'possible'} → ${likelihood}`] : []),
-            ...(patch.impact ? [`impact ${previous.impact ?? impactOf(previous.rating)} → ${impact}`] : []),
-          ];
-          edited.memo = markEditedByPerson(previous.memo, actor.id, changes);
+        const was = { likelihood: previous.likelihood ?? 'possible', impact: previous.impact ?? impactOf(previous.rating) };
+        if (likelihood !== was.likelihood) changes.push(`likelihood ${was.likelihood} → ${likelihood}`);
+        if (impact !== was.impact) changes.push(`impact ${was.impact} → ${impact}`);
+      }
+      // Text fields changed by name; a value the patch repeats is not a change.
+      for (const key of ['title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'evidenceRefs'] as const) {
+        if (patch[key] !== undefined && JSON.stringify(patch[key]) !== JSON.stringify(previous[key])) changes.push(key);
+      }
+      if (previous.memo && changes.length > 0) {
+        let memo = previous.memo;
+        // The memo is signed with the finding, so its calls must say what the finding now says.
+        if (edited.rating !== previous.rating || edited.likelihood !== previous.likelihood || edited.impact !== previous.impact) {
+          memo = reviseCallByPerson(memo, 'Rating of the finding', `${edited.rating}${edited.likelihood && edited.impact ? ` (${edited.likelihood} likelihood, ${edited.impact} impact)` : ''}`, actor.id);
         }
+        if (edited.recommendation !== previous.recommendation) memo = reviseCallByPerson(memo, 'Recommendation', edited.recommendation, actor.id);
+        edited.memo = markEditedByPerson(memo, actor.id, changes);
       }
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed, this.citationPolicy);
       e.findings[idx] = finding;

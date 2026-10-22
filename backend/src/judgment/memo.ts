@@ -100,6 +100,14 @@ export function markEditedByPerson(memo: JudgmentMemo, actor: string, changes: s
   return { ...memo, forTheReviewer: [...memo.forTheReviewer.filter((line) => !line.startsWith(mine)), `${mine} ${changes.join('; ')}.`] };
 }
 
+/** The memo with one call's decision replaced by a person's, its rationale saying who set it and what it was; the basis and standards stay, and the source is the rules' since the model did not make this call. */
+export function reviseCallByPerson(memo: JudgmentMemo, question: string, decision: string, actor: string): JudgmentMemo {
+  return {
+    ...memo,
+    calls: memo.calls.map((c) => (c.question === question ? { ...c, decision, rationale: `Set by ${actor}: was ${c.decision}`, source: 'rules' } : c)),
+  };
+}
+
 /** Whether two memos say the same thing: producedAt and the hand-edit line do not count. Absent on both sides is the same; absent on one is not. */
 export function sameMemo(a: JudgmentMemo | undefined, b: JudgmentMemo | undefined): boolean {
   if (!a || !b) return !a && !b;
