@@ -86,9 +86,16 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         // The evidence agent searches the engagement's evidence and reads cited pages; it proposes drafts, never test inputs.
         const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'evidence') : undefined;
         const result = await draftEvidenceWithModel(e, { models: ctx.models, toolbox, db, user: starter, runId: run.id });
-        if (Object.keys(result.drafts).length) ({ bundle } = await port.saveTestDrafts(e.id, result.drafts, acting, { expectedVersion: e.version! }));
+        // No version is passed: the drafts took a while and a person may have worked meanwhile. The write drops the rows
+        // that changed and the engagement save still guards the rest.
+        const noDraftRows = [...result.noDraft];
+        if (Object.keys(result.drafts).length) {
+          const saved = await port.saveTestDrafts(e.id, result.drafts, acting);
+          bundle = saved.bundle;
+          for (const rowId of saved.dropped) noDraftRows.push({ rowId, reason: 'row changed during drafting' });
+        }
         withoutModel = result.withoutModel;
-        if (result.noDraft.length) noDraft = result.noDraft;
+        if (noDraftRows.length) noDraft = noDraftRows;
       } else if (a.specialist === 'test-plan') {
         // The test-plan agent looks each fresh row up in the knowledge base (its allow-list), then drafts with its model.
         const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'test-plan') : undefined;

@@ -134,6 +134,9 @@ export interface ServiceOptions {
 }
 
 /** Raised inside a mutation that turns out to change nothing, so its transaction ends without a save or trail entry. */
+/** Thrown inside a mutation to roll it back when there is nothing to write. */
+class NothingToSave {}
+
 class NoChange {
   constructor(readonly finding: Finding) {}
 }
@@ -386,27 +389,43 @@ export class AuditService {
     return { bundle: sealed[0], engagement };
   }
 
-  /** Saves evidence-based test drafts for an agent. A draft is a proposal beside the workpapers; it never becomes a test record by itself. */
-  async saveTestDraftsAsAgent(engagementId: string, drafts: Record<string, TestDraft>, acting: AgentActing, opts: AgentWriteOptions) {
+  /**
+   * Saves evidence-based test drafts for an agent. A draft is a proposal beside the workpapers; it never becomes a test
+   * record by itself. The drafts were made from an engagement read some time ago, so no version is expected: against the
+   * engagement as it is now, a row a person has since tested or taken over is dropped (and returned), the rest are
+   * saved. A human write that lands after this read is still caught by the engagement save's own version check.
+   */
+  async saveTestDraftsAsAgent(engagementId: string, drafts: Record<string, TestDraft>, acting: AgentActing, opts: Partial<Pick<AgentWriteOptions, 'expectedVersion'>> = {}) {
     this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
     for (const [rowId, draft] of Object.entries(drafts)) if (draft.rowId !== rowId) throw new AppError(400, `The draft under ${rowId} is for ${draft.rowId}`);
-    if (!Object.keys(drafts).length) return { bundle: undefined, engagement: await this.engagement(engagementId) };
-    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
-      await assertLease(trx, acting.runId, acting.leaseOwner);
-      const before = structuredClone(e);
-      for (const [rowId, draft] of Object.entries(drafts)) {
-        if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
-        e.testDrafts = { ...e.testDrafts, [rowId]: draft };
-      }
-      assertDraftsWithinRails(before, e);
-      emit(this.agentBundle(e, {
-        moduleId: 'agent:test-drafts', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
-        inputs: { rows: Object.keys(drafts) },
-        output: { drafts: Object.entries(drafts).map(([rowId, d]) => ({ rowId, proposal: Boolean(d.proposal), quotes: d.evidence.length, blocking: d.qa.blocking })) },
-      }));
-      return e;
-    });
-    return { bundle: sealed[0], engagement };
+    if (!Object.keys(drafts).length) return { bundle: undefined, engagement: await this.engagement(engagementId), dropped: [] as string[] };
+    const dropped: string[] = [];
+    try {
+      const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
+        await assertLease(trx, acting.runId, acting.leaseOwner);
+        const before = structuredClone(e);
+        const kept: string[] = [];
+        for (const [rowId, draft] of Object.entries(drafts)) {
+          if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
+          if (e.testInputs[rowId] || e.testDrafts[rowId]?.personEdited) { dropped.push(rowId); continue; }
+          e.testDrafts = { ...e.testDrafts, [rowId]: draft };
+          kept.push(rowId);
+        }
+        // Nothing left to save: roll back rather than bump the version for no change.
+        if (!kept.length) throw new NothingToSave();
+        assertDraftsWithinRails(before, e);
+        emit(this.agentBundle(e, {
+          moduleId: 'agent:test-drafts', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
+          inputs: { rows: kept },
+          output: { drafts: kept.map((rowId) => ({ rowId, proposal: Boolean(drafts[rowId].proposal), quotes: drafts[rowId].evidence.length, blocking: drafts[rowId].qa.blocking })) },
+        }));
+        return e;
+      });
+      return { bundle: sealed[0], engagement, dropped };
+    } catch (err) {
+      if (err instanceof NothingToSave) return { bundle: undefined, engagement: await this.engagement(engagementId), dropped };
+      throw err;
+    }
   }
 
   /** A person throws away the agent's proposal for a row. The row keeps a person-edited marker, so the agent does not redraft it. */

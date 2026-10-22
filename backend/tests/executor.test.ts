@@ -239,4 +239,43 @@ describe('the executor and the evidence specialist', () => {
     expect((last.decision as { bundleId?: string }).bundleId).toBeUndefined();
     expect((await svc.engagement(e.id)).version).toBe(after.version);
   });
+
+  it('a person recording a test during drafting does not fail the batch: that row is a no-draft, the rest are saved, the step is appended once [I3]', async () => {
+    const { svc, e, run, steps } = await setup();
+    await svc.runModule(e.id, 'scope', auditor);
+    const scoped = await svc.engagement(e.id);
+    await svc.setScope(e.id, scoped.scope.map((s, i) => ({ controlId: s.controlId, included: i < 2 })), auditor);
+    await svc.runModule(e.id, 'rcm', auditor);
+    const acting = (agent: string) => ({ runId: run.id, agent, startedBy: auditor, leaseOwner: 'w1' });
+    const withRcm = await svc.engagement(e.id);
+    const plans = Object.fromEntries(Object.entries(draftTestPlans(withRcm)).map(([id, p]) => [id, { ...p, evidenceToRequest: ['Cold room temperature log'] }]));
+    await svc.saveTestPlansAsAgent(e.id, plans, acting('test-plan'), { expectedVersion: withRcm.version! });
+    const doc = await insertDocument(svc.db.kysely, { sha256: 'c'.repeat(64), filename: 'log.pdf', mime: 'application/pdf', size: 10, kind: 'evidence', classification: 'internal', engagementId: e.id, uploadedBy: 'auditor' });
+    await setDocumentText(svc.db.kysely, doc, { extractor: 'test', extractorVersion: '1', text: 'Cold room temperature log for March. Signed by QA on 3 March.' });
+    const before = await svc.engagement(e.id);
+    const [first, second] = before.rcm.map((r) => r.id);
+    const recorded = { designAdequate: true, observation: 'Tested by hand.', evidenceRefs: [] as string[], sampleTested: 3, exceptions: 0 };
+    // While the model drafts the second row, a person records a test for it.
+    const fake = new FakeProvider(async (_req, call) => {
+      if (call === 2) await svc.recordTest(e.id, second, recorded, auditor);
+      return { proposal: { designAdequate: true, sampleTested: 1, exceptions: 0, observation: 'Signed.' }, evidence: [{ documentId: doc.id, quote: 'Signed by QA on 3 March.' }], couldNotVerify: [], confidence: 'medium' };
+    });
+    const action: Action = { type: 'delegate', specialist: 'evidence', subjectKey: 'evidence' };
+    const ctx: ExecutorContext = {
+      db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: before, gates: [], models: runModels(svc, run, fake),
+      menu: { stage: 'testing', actions: [action], qa: null, qaThreshold: 70, memo: null },
+    };
+    expect(await applyDecision(ctx, { action, rationale: 'test', policy: 'rules', policyVersion: RULES_VERSION })).toEqual({ next: 'continue' });
+
+    const after = await svc.engagement(e.id);
+    expect(Object.keys(after.testDrafts)).toEqual([first]);
+    expect(after.testInputs[second]).toMatchObject(recorded);
+    expect(after.testInputs[second].updatedBy).toBe('auditor');
+    const delegates = (await steps()).filter((s) => s.kind === 'delegate');
+    expect(delegates).toHaveLength(1);
+    expect(delegates[0].decision).toMatchObject({ bundleId: expect.any(String), noDraft: [{ rowId: second, reason: 'row changed during drafting' }] });
+    // The run does not draft again: evidence counts as offered.
+    const input = await loadGraphInput(svc.db.kysely, run, after, await listGates(svc.db.kysely, e.id), 70, auditor);
+    expect(input.redrafts.some((r) => r.kind === 'delegate' && r.subjectKey === 'evidence')).toBe(true);
+  });
 });

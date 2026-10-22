@@ -51,12 +51,16 @@ describe('test drafts: agent write, accept and discard', () => {
     // replacing an agent draft is fine
     await save({ [r1]: draftFor(r1, { confidence: 'high' }) });
     expect((await svc.engagement(e.id)).testDrafts[r1].confidence).toBe('high');
-    // a tested row is refused
+    // a tested row is dropped from the write, and the person's record stands
     await svc.recordTest(e.id, r2, INPUT, auditor);
-    expect(await failure(save({ [r2]: draftFor(r2, { confidence: 'low' }) }))).toMatchObject({ status: 403, code: 'AGENT_FORBIDDEN' });
-    // a person-edited draft is refused
+    const tested = await svc.engagement(e.id);
+    expect((await save({ [r2]: draftFor(r2, { confidence: 'low' }) })).dropped).toEqual([r2]);
+    expect((await svc.engagement(e.id)).testDrafts[r2]).toEqual(tested.testDrafts[r2]);
+    expect((await svc.engagement(e.id)).testInputs[r2]).toEqual(tested.testInputs[r2]);
+    // a person-edited draft is dropped too
     await svc.discardTestDraft(e.id, r1, auditor);
-    expect(await failure(save({ [r1]: draftFor(r1) }))).toMatchObject({ status: 403, code: 'AGENT_FORBIDDEN' });
+    expect((await save({ [r1]: draftFor(r1) })).dropped).toEqual([r1]);
+    expect((await svc.engagement(e.id)).testDrafts[r1].personEdited).toBe(true);
   });
 
   it('the agent still cannot write a test input even alongside a draft [REQ-27, REQ-41]', async () => {
@@ -125,7 +129,8 @@ describe('test drafts: agent write, accept and discard', () => {
     expect(d.evidence).toHaveLength(1);
     const entry = (await readTrail(svc.db.kysely, e.id)).filter((b) => b.moduleId === 'human:draft-discard').at(-1)!;
     expect(entry.inputs).toEqual({ rowId: rows[0] });
-    expect(await failure(save({ [rows[0]]: draftFor(rows[0]) }))).toMatchObject({ code: 'AGENT_FORBIDDEN' });
+    expect((await save({ [rows[0]]: draftFor(rows[0]) })).dropped).toEqual([rows[0]]);
+    expect((await svc.engagement(e.id)).testDrafts[rows[0]]).toMatchObject({ personEdited: true });
   });
 
   it('refuses a draft filed under another row, and an empty write changes nothing [REQ-41]', async () => {
@@ -162,5 +167,23 @@ describe('test drafts: agent write, accept and discard', () => {
     const d = ok.body.testDrafts[rows[0]];
     expect(d.personEdited).toBe(true);
     expect('proposal' in d).toBe(false);
+  });
+
+  it('an agent write without a version drops the rows a person has since tested or taken over and saves the rest [I3]', async () => {
+    const { svc, e, rows, port, acting } = await setup();
+    await svc.recordTest(e.id, rows[0], INPUT, auditor);
+    const saved = await port.saveTestDrafts(e.id, { [rows[0]]: draftFor(rows[0]), [rows[1]]: draftFor(rows[1]) }, acting('evidence'), {});
+    expect(saved.dropped).toEqual([rows[0]]);
+    const after = await svc.engagement(e.id);
+    expect(Object.keys(after.testDrafts)).toEqual([rows[1]]);
+    expect(after.testInputs[rows[0]]).toMatchObject({ sampleTested: 5, exceptions: 1 });
+
+    // A person-edited draft is dropped the same way; when nothing is left nothing is written.
+    await svc.discardTestDraft(e.id, rows[1], auditor);
+    const v = (await svc.engagement(e.id)).version;
+    const none = await port.saveTestDrafts(e.id, { [rows[0]]: draftFor(rows[0]), [rows[1]]: draftFor(rows[1]) }, acting('evidence'), {});
+    expect(none).toMatchObject({ dropped: [rows[0], rows[1]], bundle: undefined });
+    expect((await svc.engagement(e.id)).version).toBe(v);
+    expect((await svc.engagement(e.id)).testDrafts[rows[1]].personEdited).toBe(true);
   });
 });
