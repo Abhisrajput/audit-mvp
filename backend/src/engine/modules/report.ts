@@ -151,6 +151,8 @@ export const reportModule: AuditModule<Omit<AuditReport, 'bundleId'> & { memo: J
           controlsInScope: e.rcm.length,
           findings: approved.map((f) => ({ title: f.title, rating: f.rating, effect: f.effect })),
           ruleOpinion: rule,
+          // The opinion the report will state: a CAE's directive or carried opinion where one applies, else the rule.
+          reportOpinion: opinion?.rating ?? rule,
           approvedFindings: { total: approved.length, High: count('High'), Medium: count('Medium'), Low: count('Low') },
           controlsTested: rowsTested,
         }),

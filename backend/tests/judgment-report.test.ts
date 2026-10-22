@@ -129,6 +129,15 @@ describe('the report opinion (spec §5.6) [REQ-32, REQ-31]', () => {
     const prompt = worse.requests[0].user;
     expect(prompt).toContain('You may state a worse opinion than needs_improvement with a one-sentence rationale; never a better one.');
     expect(prompt).toMatch(/<data source="workpaper:approved-findings">[\s\S]*"ruleOpinion": "needs_improvement"[\s\S]*<\/data>/);
+    expect(prompt).toMatch(/<data source="workpaper:approved-findings">[\s\S]*"reportOpinion": "needs_improvement"[\s\S]*<\/data>/);
+    // Under a CAE directive the data names the opinion the report will state, with the rule beside it; the instruction is unchanged.
+    const directed = reportModel({ executiveSummary: 's' });
+    const dctx = new ModuleContext(structuredClone(e), svc.registry, svc.grounding, directed, auditor, { reworkInstruction: 'opinion: satisfactory', reworkSignatureId: 'SIG-test' }, LENIENT.citationPolicy);
+    await reportModule.run(dctx);
+    const directedPrompt = directed.requests[0].user;
+    expect(directedPrompt).toContain('You may state a worse opinion than needs_improvement with a one-sentence rationale; never a better one.');
+    expect(directedPrompt).toMatch(/<data source="workpaper:approved-findings">[\s\S]*"ruleOpinion": "needs_improvement"[\s\S]*<\/data>/);
+    expect(directedPrompt).toMatch(/<data source="workpaper:approved-findings">[\s\S]*"reportOpinion": "satisfactory"[\s\S]*<\/data>/);
     expect(reviewSubject(e, 'report').issues.map((i) => i.criterion)).not.toContain('report.opinion-rule');
 
     for (const proposed of ['satisfactory']) {
