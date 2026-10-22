@@ -210,7 +210,7 @@ The Fieldwork row card shows the draft above the form: the proposal, the quotes 
 | `EVIDENCE_RETENTION_YEARS` | unset | Default `retainUntil` at upload; unset keeps indefinitely |
 | `ZIP_MAX_UNCOMPRESSED_BYTES` | 256 MiB | Refuse a docx/xlsx whose entries would inflate beyond this |
 
-Runbook: `## 9. Evidence` with the retention job (schedule, output, what "retained by record" means), the upload limits and nginx's `client_max_body_size` (already 26m; raise together with `BLOB_MAX_BYTES`), the extraction statuses and the retry, and that the Docker image needs no native libraries: both `npm ci` lines in `backend/Dockerfile` gain `--omit=optional` so pdfjs-dist's optional canvas binding is never installed, with a comment saying why.
+Runbook: `## 9. Evidence` with the retention job (schedule, output, what "retained by record" means), the upload limits and nginx's `client_max_body_size` (already 26m; raise together with `BLOB_MAX_BYTES`), the extraction statuses and the retry, and that the Docker image needs no native libraries: the build stage runs plain `npm ci` (TypeScript 7's native compiler is an optional dependency) and the runtime stage runs `npm ci --omit=dev --omit=optional`, so pdfjs-dist's optional canvas binding is never installed.
 
 ## 11. Security, requirements and tests
 
@@ -235,3 +235,24 @@ Runbook: `## 9. Evidence` with the retention job (schedule, output, what "retain
 - **exceljs over SheetJS:** the `xlsx` package on npm is stale with open advisories.
 - **Global uploads for every preparer**, matching the existing registration API: restricting the new route while the old one stays open would be a rule in name only.
 - **No OCR:** a scanned PDF is `no_text`, visible as such, and a person reads it. Sub-project 7's extraction work is the place for OCR if the pilot needs it.
+
+**Made during the build (3A):**
+
+- **Usage route in `evidence/routes.ts`:** one module owns the new routes.
+- **`linkedDocumentIds(db)` exported from `links.ts`:** the retention job reuses the JSONB scan instead of re-deriving it.
+- **Page-aligned chunks in `knowledge/chunk.ts`:** a page-2 hit was cited as page 1; knowledge-graph chunks are unchanged and only new chunks differ, at the cost of slightly smaller chunks around page breaks.
+- **`document:extract` trail entries are redacted like `document:register`, and inputs carry the classification (fail-closed):** a restricted document's sha256 must not reach viewers.
+- **Blob-read errors and `ContentMismatch` become `failed` rows (retryable) rather than thrown:** the document already exists at that point and a 503 would hide the attempt; an outage shows as failed attempts, which the runbook explains.
+- **Empty text from any extractor is `no_text`, not `ok` with an empty row:** an empty `document_text` row would make the document unretryable and unsearchable.
+- **`DocumentResult` gains `extraction` in the assistant's `find_documents`:** the result card shows the status and the result carried none; a small backend touch in a frontend task.
+- **busboy `fieldSize` is 2048:** the 500-character note limit counts characters and multibyte notes must fit.
+- **busboy's default `text/plain` is treated as undeclared:** a part with no Content-Type must not be a mismatch, since the declared type is advisory; a declared text file is typed by its bytes alone.
+- **Dedup ignores retention-expired rows:** a duplicate hit must not point at content that answers 410; after expiry the same bytes get a second row with fresh retention.
+- **Concurrent identical uploads may race to two rows:** no lock, the second row is harmless.
+- **The runbook describes the Dockerfile as built** (plain `npm ci` in the build stage, `--omit=dev --omit=optional` at runtime), not the earlier "both lines gain `--omit=optional`", which predates the TypeScript 7 finding.
+- **`statusLabel` reads "Text (1 page)" for one page:** "(N pages)" was a template, not copy.
+- **Upload kind selects omit `okf_concept`:** a knowledge-pack concept kind is not something a person uploads; the API still accepts it.
+- **The frontend's finding hash in `frontend/src/agents.ts` mirrors the backend change,** with a test pinning both to the backend literals: the plan missed this copy, and a mismatch would show every signed finding with links as broken.
+- **`documentId` is bounded with `.max(64)` only, not the `^DOC-…$` pattern:** a regex would give a malformed id a zod error distinct from `EVIDENCE_NOT_FOUND`, the difference in shape REQ-39 forbids.
+- **The report prints a linked document's filename for every reader, with no per-viewer read check:** a report that varied by viewer would change the signed workpaper hash per viewer. The person who cites a restricted document in a finding chooses that disclosure, so a restricted document's filename can reach viewers. A test pins it.
+- **`linkedDocumentIds` counts superseded findings too, while the usage route stays on live rows:** a signed earlier version that cited a document is still part of the record. Cost: a document cited once in a since-revised finding is never auto-expired.
