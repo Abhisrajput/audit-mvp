@@ -39,7 +39,10 @@ export default function ReportTab({ engagement: e, run }: TabProps) {
               <Typography variant="h6">Overall opinion</Typography>
               <Chip size="small" color={opinionColor(opinion.rating)} label={OPINION_LABELS[opinion.rating]} />
             </Stack>
-            <Typography>{opinion.basis}</Typography>
+            {/* The basis is markdown: the fixed paragraph, then the AI narrative with its italic marker, or the CAE sentence. */}
+            <Box sx={{ '& p': { my: 0.5 } }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{opinion.basis}</ReactMarkdown>
+            </Box>
             {opinion.setBy && (
               <Typography variant="caption" color="text.secondary">
                 Set by the Chief Audit Executive on rejecting the report gate (signature {opinion.setBy})
