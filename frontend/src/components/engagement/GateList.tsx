@@ -89,6 +89,12 @@ function GateCard({ gate, memo, agent, onSigned, showFindings }: { gate: Gate; m
             <Typography variant="caption" color="text.secondary">
               {signing.note} A rejection goes back to the agent as its instruction.
             </Typography>
+            {gate.kind === 'report' && (
+              // A hint only: the opinion is set by the signed rejection itself (spec §5.6).
+              <Typography variant="caption" color="text.secondary" sx={{ width: '100%' }}>
+                To set the overall opinion, put opinion: satisfactory | needs_improvement | unsatisfactory in the rejection comment.
+              </Typography>
+            )}
           </Stack>
         ) : (
           <Typography variant="body2" color="text.secondary">
