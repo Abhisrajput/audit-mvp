@@ -1,9 +1,8 @@
 import type { Executor } from '../db/trail-repo';
 import type { Engagement, User } from '../engine/types';
 import { listGates, supersedeGate, type Gate } from './gate-repo';
-
-import { evidenceDocumentIds } from './specialists/evidence';
 import { listSteps, type AgentRun } from './run-repo';
+import { evidenceDocumentIds } from './specialists/evidence';
 import { findingKey, subjectInfo } from './subjects';
 import type { Action, GraphInput, QaReport, RedraftRecord } from './types';
 
