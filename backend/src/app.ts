@@ -18,48 +18,11 @@ import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { ifMatch, wrap } from './http-util';
-import type { Impact, Likelihood } from './engine/types';
 import { EngagementContextInputSchema } from './judgment/context';
-import { IMPACTS, LIKELIHOODS } from './judgment/finding';
-import { TOLERANCE_MAX } from './judgment/sampling';
+import { FindingPatchSchema, NewEngagementSchema, ResponseInputSchema, searchClauses, TestInputSchema, ToleranceSchema } from './http/schemas';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
-
-const NewEngagementSchema = z.object({
-  name: z.string().min(1),
-  entity: z.string().min(1),
-  site: z.string().min(1),
-  periodFrom: z.string().min(1),
-  periodTo: z.string().min(1),
-  auditType: z.string().min(1),
-  scopeStatement: z.string().min(1),
-  packIds: z.array(z.string()).min(1),
-  context: EngagementContextInputSchema.optional(),
-});
-
-const TestInputSchema = z.object({
-  designAdequate: z.boolean().nullable(),
-  observation: z.string(),
-  evidenceRefs: z.array(z.string().min(1)),
-  sampleTested: z.number().int().min(0),
-  exceptions: z.number().int().min(0),
-});
-
-const FindingPatchSchema = z
-  .object({
-    title: z.string().min(1),
-    likelihood: z.enum([...LIKELIHOODS] as [Likelihood, ...Likelihood[]]),
-    impact: z.enum([...IMPACTS] as [Impact, ...Impact[]]),
-    condition: z.string().min(1),
-    criteria: z.string().min(1),
-    cause: z.string().min(1),
-    effect: z.string().min(1),
-    recommendation: z.string().min(1),
-    evidenceRefs: z.array(z.string().min(1)),
-  })
-  .partial()
-  .strict();
 
 /** Routes that parse their own bodies (see documentRoutes). */
 const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
@@ -134,10 +97,7 @@ export function createApp(
   }));
   app.get('/api/search', readers, (req, res) => {
     const q = String(req.query.q ?? '');
-    const packIds = req.query.packs ? String(req.query.packs).split(',') : svc.registry.list().filter((p) => p.id !== METHODOLOGY_PACK_ID).map((p) => p.id);
-    const allowed = new Set(svc.registry.clausesFor(packIds).map((c) => c.id));
-    const hits = svc.grounding.clauses.search(q, 10, (id) => allowed.has(id));
-    res.json(hits.map((h) => ({ ...h, clause: svc.registry.clauses.get(h.clauseId) })));
+    res.json(searchClauses(svc, q, req.query.packs ? String(req.query.packs).split(',') : undefined));
   });
 
   // ----- Engagements -----
@@ -170,15 +130,12 @@ export function createApp(
   }));
 
   app.put('/api/engagements/:id/tolerances/:controlId', readers, wrap(async (req, res) => {
-    const { rate } = z.object({ rate: z.number().min(0).max(TOLERANCE_MAX) }).strict().parse(req.body);
+    const { rate } = ToleranceSchema.parse(req.body);
     res.json(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)));
   }));
 
   app.post('/api/engagements/:id/findings/:fid/responses', readers, wrap(async (req, res) => {
-    const input = z.object({
-      response: z.enum(['agree', 'partially_agree', 'disagree']), owner: z.string().trim().min(1).max(200),
-      dueDate: z.iso.date().nullable().optional(), actionPlan: z.string().max(4000).optional(),
-    }).strict().parse(req.body);
+    const input = ResponseInputSchema.parse(req.body);
     res.status(201).json(await svc.recordManagementResponse(param(req, 'id'), param(req, 'fid'), input, actorOf(req), ifMatch(req)));
   }));
 
