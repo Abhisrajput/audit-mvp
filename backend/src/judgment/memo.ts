@@ -2,7 +2,7 @@
 // it leans on, written so a reviewer can sign against it. Pure: no I/O.
 
 import { canonicalJson } from '../engine/trail';
-import type { Coverage, EngagementContext, Finding, JudgmentCall, JudgmentMemo, RcmRow, RiskRating, ScopeItem, TestPlan, TestResult } from '../engine/types';
+import type { Coverage, EngagementContext, Finding, FindingResponse, JudgmentCall, JudgmentMemo, Opinion, RcmRow, ReportOpinion, RiskRating, ScopeItem, TestPlan, TestResult, Tolerance } from '../engine/types';
 import { factorsFor } from './context';
 import { areaRisk, RANK } from './risk-assessment';
 import { IIA } from './standards';
@@ -100,11 +100,11 @@ export function markEditedByPerson(memo: JudgmentMemo, actor: string, changes: s
   return { ...memo, forTheReviewer: [...memo.forTheReviewer.filter((line) => !line.startsWith(mine)), `${mine} ${changes.join('; ')}.`] };
 }
 
-/** The memo with one call's decision replaced by a person's, its rationale saying who set it and what it was; the basis and standards stay, and the source is the rules' since the model did not make this call. */
+/** The memo with one call's decision replaced by a person's, its rationale saying who set it and what it was; the basis and standards stay, and the source is the person's. */
 export function reviseCallByPerson(memo: JudgmentMemo, question: string, decision: string, actor: string): JudgmentMemo {
   return {
     ...memo,
-    calls: memo.calls.map((c) => (c.question === question ? { ...c, decision, rationale: `Set by ${actor}: was ${c.decision}`, source: 'rules' } : c)),
+    calls: memo.calls.map((c) => (c.question === question ? { ...c, decision, rationale: `Set by ${actor}: was ${c.decision}`, source: 'person' } : c)),
   };
 }
 
@@ -208,6 +208,56 @@ export function findingMemo(input: { finding: Pick<Finding, 'rowId' | 'likelihoo
   ];
   const forTheReviewer = rootCause && !rootCause.confirmed ? ['The root cause is a proposal; confirm it with the control owner.'] : ['Nothing to verify beyond the calls above.'];
   return { subjectKey: `finding:${f.rowId}`, calls, forTheReviewer, producedAt: input.producedAt };
+}
+
+/** The report memo: the opinion (with who set it), the management responses recorded, and the coverage and methodology status. */
+export function reportMemo(input: {
+  opinion: ReportOpinion; ruleOpinion: Opinion; source: JudgmentCall['source'];
+  approved: Pick<Finding, 'id' | 'rating'>[]; responses: Record<string, FindingResponse>;
+  coverage: Coverage | null; tolerances: Tolerance[]; iia: { verified: number; total: number };
+  notes: string[]; producedAt: string;
+}): JudgmentMemo {
+  const n = input.approved.length;
+  const count = (r: RiskRating) => input.approved.filter((f) => f.rating === r).length;
+  const counts = `${count('High')} High, ${count('Medium')} Medium, ${count('Low')} Low`;
+  const rationale = input.source === 'person'
+    ? `Set by the Chief Audit Executive on rejecting the report gate (signature ${input.opinion.setBy}); the rule gives ${input.ruleOpinion}.`
+    : input.source === 'model'
+      ? `Worsened by the model from ${input.ruleOpinion}: ${input.opinion.rationale ?? ''}`
+      : `Rule over ${n} approved finding(s): ${counts}`;
+  const answered = input.approved.filter((f) => input.responses[f.id]);
+  const calls = [
+    call({
+      question: 'Overall opinion',
+      decision: input.opinion.rating,
+      rationale,
+      basis: input.approved.map((f) => f.id),
+      standard: [IIA.conclusions],
+      source: input.source,
+    }),
+    call({
+      question: 'Management responses',
+      decision: `${answered.length} of ${n} approved finding(s) have a response`,
+      rationale: 'Each approved finding carries management\'s latest response, as recorded by the auditor.',
+      basis: answered.map((f) => `${f.id}: ${input.responses[f.id].response} — ${input.responses[f.id].owner}`),
+      standard: [IIA.recommendations, IIA.followUp],
+    }),
+    call({
+      question: 'Coverage and methodology',
+      decision: input.coverage ? input.coverage.statement : 'No coverage statement was recorded',
+      rationale: input.tolerances.length > 0
+        ? `Tolerances in force: ${input.tolerances.map((t) => `${t.controlId} ${pct(t.rate)} set by ${t.recordedBy}`).join('; ')}.`
+        : 'No tolerance was applied.',
+      basis: input.coverage ? input.coverage.excluded.map((e) => `${e.processArea}: ${e.reason}`) : [],
+      standard: [IIA.finalCommunication],
+    }),
+  ];
+  const forTheReviewer = [
+    ...(answered.length < n ? [`${n - answered.length} approved finding(s) have no management response recorded; the CAE signs once the auditor has recorded them all.`] : []),
+    `Methodology: ${input.iia.verified} of ${input.iia.total} IIA clause summaries are verified by a reviewer.`,
+    ...input.notes,
+  ];
+  return { subjectKey: 'report', calls, forTheReviewer, producedAt: input.producedAt };
 }
 
 /** Markdown for the gate panel: a heading per call, then "For the reviewer". */

@@ -108,7 +108,7 @@ export interface EngagementContext { factors: ContextFactor[]; background: strin
 export interface Coverage { excluded: { processArea: string; reason: string }[]; statement: string }
 
 /** One judgment the engine made, with its decision, reasoning and the standards behind it (spec §3.4). */
-export interface JudgmentCall { question: string; decision: string; rationale: string; basis: string[]; standard: string[]; source: 'rules' | 'model' }
+export interface JudgmentCall { question: string; decision: string; rationale: string; basis: string[]; standard: string[]; source: 'rules' | 'model' | 'person' }
 
 /** The judgment memo for one subject, with the points a reviewer should verify (spec §3.4). */
 export interface JudgmentMemo { subjectKey: string; calls: JudgmentCall[]; forTheReviewer: string[]; producedAt: string }
@@ -278,12 +278,31 @@ export interface Finding {
   signatureIssues?: string[];
 }
 
+/** The engagement's overall opinion, best to worst (spec §5.6). */
+export type Opinion = 'satisfactory' | 'needs_improvement' | 'unsatisfactory';
+
+/** The opinion carried on a report. */
+export interface ReportOpinion {
+  /** The opinion the report states. */
+  rating: Opinion;
+  /** The fixed basis paragraph: finding counts, rows tested and coverage. */
+  basis: string;
+  /** The model's rationale when it worsened the rule's opinion. */
+  rationale?: string;
+  /** The signature id of the Chief Audit Executive who set the opinion on rejecting the report gate; absent when the rules or the model set it. */
+  setBy?: string;
+  /** Fingerprint of the approved findings (id and content hash) the opinion was computed over. */
+  findingsFingerprint: string;
+}
+
 export interface AuditReport {
   generatedAt: string;
   bundleId: string;
   markdown: string;
   includedFindingIds: string[];
   excludedFindingIds: string[];
+  /** The engagement opinion; absent on reports written before 8C. */
+  opinion?: ReportOpinion;
 }
 
 export interface Engagement {
