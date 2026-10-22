@@ -85,6 +85,7 @@ describe('finding judgment (spec §5.5) [REQ-32]', () => {
       const { f, refusals } = await run({});
       expect(f.likelihood).toBe('rare');
       expect(f.impact).toBe('major');
+      expect(f.recommendation).toBe('Tailored recommendation'); // the model's text was used, not a silent rules fallback
       expect(refusals).toEqual([]);
     });
   });
@@ -101,6 +102,20 @@ describe('finding judgment (spec §5.5) [REQ-32]', () => {
     expect(stripped.memo).toBeUndefined();
     const edited = await svc.editFinding(e0.id, stripped.id, { impact: 'minor' }, auditor);
     expect(edited).toMatchObject({ likelihood: 'possible', impact: 'minor', rating: ratingOf('possible', 'minor') });
+  });
+
+  it('edits only the likelihood of a finding drafted before 8B: impact is the one its stored rating implies, and the rating follows both', async () => {
+    const svc = await newService();
+    const e0 = await engagementWithFailedControl(svc);
+    await (svc as unknown as { mutate: (id: string, o: object, fn: (e: typeof e0) => unknown) => Promise<unknown> }).mutate(e0.id, {}, (e) => {
+      e.findings = e.findings.map(({ likelihood, impact, rootCause, memo, ...f }) => f as Finding);
+      return null;
+    });
+    const stripped = (await svc.engagement(e0.id)).findings[0];
+    expect(stripped.impact).toBeUndefined();
+    const edited = await svc.editFinding(e0.id, stripped.id, { likelihood: 'rare' }, auditor);
+    expect(edited.impact).toBe(impactOf(stripped.rating));
+    expect(edited).toMatchObject({ likelihood: 'rare', rating: ratingOf('rare', impactOf(stripped.rating)) });
   });
 
   it('lets a person lower the likelihood, recomputes the rating, names them in the memo, passes QA, and refuses a rating in the body (plan Review Focus 2, 4)', async () => {

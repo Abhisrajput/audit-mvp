@@ -22,6 +22,8 @@ describe('tolerances and management responses (spec §3.3)', () => {
     expect(loaded.tolerances['FD-HACCP-03'].rate).toBe(0.1);
     expect(loaded.responses['F-1'].response).toBe('agree');
     await expect(k.updateTable('test_tolerances').set({ rate: 0 }).where('id', '=', 't1').execute()).rejects.toThrow();
+    await expect(k.updateTable('finding_responses').set({ owner: 'Someone else' }).where('id', '=', 'r1').execute()).rejects.toThrow();
+    await expect(k.deleteFrom('test_tolerances').where('id', '=', 't1').execute()).rejects.toThrow();
     await expect(k.deleteFrom('finding_responses').where('id', '=', 'r1').execute()).rejects.toThrow();
     await expect(insertTolerance(k, e.id, { id: 't3', controlId: 'X', rate: 0.3, recordedBy: 'auditor', recordedAt: '2026-10-22T00:00:02.000Z', trailBundleId: 'b5' })).rejects.toThrow();
   });

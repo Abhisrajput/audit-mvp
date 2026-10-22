@@ -79,8 +79,13 @@ describe('management responses (spec §3.3) [REQ-34]', () => {
     const input = { response: 'agree' as const, owner: 'Plant manager' };
     const actor = auditorUser;
     // Before the report gate is approved a response is accepted (and supersedes the open report gate).
+    const gateRows = async () => (await auditor.get(`/api/engagements/${id}/gates`).expect(200)).body as { id: string; kind: string; state: string }[];
+    const reportGateBefore = await openGate('report');
     await svc.recordManagementResponse(id, fid, input, actor);
     await worker.drain();
+    expect((await gateRows()).find((g) => g.id === reportGateBefore.id)!.state).toBe('superseded');
+    const reportGateAfter = await openGate('report');
+    expect(reportGateAfter.id).not.toBe(reportGateBefore.id);
     await devSignGate(cae, 'approver', (await openGate('report')).id, 'approve');
     await expect(svc.recordManagementResponse(id, fid, input, actor)).rejects.toMatchObject({ status: 409, code: 'RESPONSE_LOCKED' });
   });

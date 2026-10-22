@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptsSelection, recommendedTolerance, sampleSize, selectionFor, SAMPLE_TABLE } from '../src/judgment/sampling';
+import { acceptsSelection, recommendedTolerance, sampleSize, samplingRationale, selectionFor, SAMPLE_TABLE } from '../src/judgment/sampling';
 import { severityOf, toleratedEffective, worsens } from '../src/judgment/evaluation';
 import { causeSupported, impactOf, likelihoodOf, MATRIX, oneStepWorse, ratingOf, IMPACTS, LIKELIHOODS } from '../src/judgment/finding';
 import type { RcmRow, RiskRating, TestResult } from '../src/engine/types';
@@ -23,6 +23,12 @@ describe('sampling (spec §5.3)', () => {
     expect(selectionFor({ frequency: 'Daily', processArea: 'HACCP' }, null).method).toBe('random');
     expect(selectionFor({ frequency: 'Daily', processArea: 'HACCP' }, ctx('incident', 'HACCP')).method).toBe('judgemental');
     expect(selectionFor({ frequency: 'Daily', processArea: 'HACCP' }, ctx('change', 'HACCP')).method).toBe('random');
+    expect(selectionFor({ frequency: 'Daily', processArea: 'HACCP' }, ctx('incident', 'HACCP')).reason).toBe('an incident touching HACCP (x)');
+    expect(selectionFor({ frequency: 'Daily', processArea: 'HACCP' }, ctx('prior_finding', 'HACCP')).reason).toBe('a prior finding touching HACCP (x)');
+    // A sample smaller than the period's population is never described as testing every item (final review M5).
+    const all = samplingRationale({ frequency: 'Quarterly' }, 'Medium', 2, selectionFor({ frequency: 'Quarterly', processArea: 'HACCP' }, null));
+    expect(all).toContain('Sample of 2');
+    expect(all).not.toContain('every item');
     expect(recommendedTolerance({ packId: 'pharma' }, 'Low')).toBe(0);
     expect(recommendedTolerance({ packId: 'common' }, 'High')).toBe(0);
     expect(recommendedTolerance({ packId: 'common' }, 'Medium')).toBe(0.05);
