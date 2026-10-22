@@ -8,6 +8,7 @@ import { defaultAgentConfig } from '../src/agents/config';
 import { RULES_VERSION } from '../src/agents/policy/rules';
 import { createRun, leaseNext, recordSpend, type AgentRun } from '../src/agents/run-repo';
 import { DEV_USERS, ensureDevUsers } from '../src/auth/dev-users';
+import type { TestInput } from '../src/engine/types';
 import { AuditService, type AgentActing } from '../src/service';
 import { testDb } from './db';
 
@@ -86,12 +87,12 @@ export const NEW_ENGAGEMENT = {
   auditType: 'Food safety', scopeStatement: 'HACCP CCP monitoring, supplier approval, traceability and allergen controls', packIds: ['food', 'common'],
 };
 
-export async function engagementWithFailedControl(svc: AuditService, controlId = 'FD-HACCP-03', evidenceRefs = ['CCP-LOG-MAR']) {
+export async function engagementWithFailedControl(svc: AuditService, controlId = 'FD-HACCP-03', evidenceRefs = ['CCP-LOG-MAR'], overrides: Partial<Omit<TestInput, 'updatedBy' | 'updatedAt'>> = {}) {
   const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
   await svc.runModule(e.id, 'scope', auditor);
   await svc.setScope(e.id, [{ controlId, included: true }], auditor);
   await svc.runModule(e.id, 'rcm', auditor);
-  await svc.recordTest(e.id, controlId, { designAdequate: true, observation: '3 of 20 CCP logs unsigned.', evidenceRefs, sampleTested: 20, exceptions: 3 }, auditor);
+  await svc.recordTest(e.id, controlId, { designAdequate: true, observation: '3 of 20 CCP logs unsigned.', evidenceRefs, sampleTested: 20, exceptions: 3, ...overrides }, auditor);
   await svc.runModule(e.id, 'testing', auditor);
   await svc.runModule(e.id, 'gaps', auditor);
   return svc.engagement(e.id);

@@ -1,19 +1,20 @@
 import { PlayArrow as PlayArrowIcon } from '@mui/icons-material';
-import {
-  Alert, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Grid, MenuItem, Stack, TextField, Typography,
-} from '@mui/material';
+import { ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, Card, CardContent, Chip, Divider, Grid, Stack, TextField, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import { findingContentHash, openFindingGate, reviewIsCurrent } from '../../agents';
+import { IMPACT_LABELS, LIKELIHOOD_LABELS, memoFor, responsesLocked } from '../../judgment';
 import type { TabProps } from '../../pages/EngagementPage';
 import { canPrepare } from '../../roles';
 import { openSigningWindow, signWithReauth } from '../../signing';
 import { useSession } from '../../session';
 import type { Engagement, Finding, Gate, SignOff } from '../../types';
 import { ActionButton, Citations, RiskChip, StatusChip } from '../common';
+import FindingEditDialog, { FIELDS } from './FindingEditDialog';
+import MemoView from './MemoView';
 import QaReportView from './QaReportView';
-
-const FIELDS = ['condition', 'criteria', 'cause', 'effect', 'recommendation'] as const;
+import ResponsePanel from './ResponsePanel';
 
 /** 'YYYY-MM-DD HH:MM UTC', as in the report and the CSV. */
 const utc = (iso: string) => {
@@ -28,54 +29,13 @@ function howSigned(s: SignOff): string {
   return ` · re-authenticated ${s.reauth.method === 'oidc' ? 'with the identity provider' : 'by demo confirmation'}`;
 }
 
-interface CardContext {
+export interface CardContext {
   engagementId: string;
   version: number | undefined;
   reload: () => Promise<void>;
-}
-
-function EditDialog({ finding, ctx, onClose }: { finding: Finding; ctx: CardContext; onClose: () => void }) {
-  const [f, setF] = useState({ ...finding, evidence: finding.evidenceRefs.join(', ') });
-  return (
-    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>Edit finding {finding.id}</DialogTitle>
-      <DialogContent>
-        <Alert severity="info" sx={{ mb: 2 }}>
-          Saving resets sign-offs to draft and re-runs the triple-citation gate. Editing makes you a preparer of this finding, so you will not be able to sign it.
-        </Alert>
-        <Stack spacing={2}>
-          <TextField label="Title" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} />
-          <TextField select label="Rating" value={f.rating} onChange={(e) => setF({ ...f, rating: e.target.value as Finding['rating'] })}>
-            {['High', 'Medium', 'Low'].map((r) => (
-              <MenuItem key={r} value={r}>
-                {r}
-              </MenuItem>
-            ))}
-          </TextField>
-          {FIELDS.map((k) => (
-            <TextField key={k} label={k[0].toUpperCase() + k.slice(1)} multiline minRows={2} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} />
-          ))}
-          <TextField label="Evidence references" value={f.evidence} onChange={(e) => setF({ ...f, evidence: e.target.value })} />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <ActionButton
-          action={async () => {
-            await api(`/engagements/${ctx.engagementId}/findings/${finding.id}`, {
-              method: 'PUT',
-              ifMatch: ctx.version,
-              body: { title: f.title, rating: f.rating, ...Object.fromEntries(FIELDS.map((k) => [k, f[k]])), evidenceRefs: f.evidence.split(',').map((s) => s.trim()).filter(Boolean) },
-            });
-            await ctx.reload();
-            onClose();
-          }}
-        >
-          Save
-        </ActionButton>
-      </DialogActions>
-    </Dialog>
-  );
+  /** The engagement's finding memos and responses, and whether the report gate has closed responses. */
+  engagement: Engagement;
+  responsesLocked: boolean;
 }
 
 function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardContext; gate: Gate | null; qaThreshold: number | null }) {
@@ -108,6 +68,7 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
     }
   };
   const role = user?.role;
+  const memo = memoFor(ctx.engagement, `finding:${f.rowId}`);
   const preparedByMe = !!user && (f.preparedBy ?? []).includes(user.id);
   const reviewedByMe = !!user && f.signOffs.some((s) => s.userId === user.id);
   const canReview = role === 'audit_manager' && f.status === 'draft';
@@ -146,6 +107,11 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
             <QaReportView report={gate.qaReport} threshold={qaThreshold} />
           </Alert>
         )}
+        {(f.likelihood || f.impact) && (
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            <b>Likelihood:</b> {f.likelihood ? LIKELIHOOD_LABELS[f.likelihood] : '—'} · <b>Impact:</b> {f.impact ? IMPACT_LABELS[f.impact] : '—'}
+          </Typography>
+        )}
         <Grid container spacing={1.5} sx={{ mt: 0.5 }}>
           {FIELDS.map((k) => (
             <Grid item xs={12} md={k === 'criteria' ? 12 : 6} key={k}>
@@ -156,6 +122,31 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
             </Grid>
           ))}
         </Grid>
+        {f.rootCause && (
+          <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
+            <Typography variant="subtitle2">Root cause</Typography>
+            <Chip size="small" variant="outlined" label={f.rootCause.category} />
+            {f.rootCause.confirmed ? <Chip size="small" color="success" label="confirmed" /> : <Chip size="small" color="warning" label="unconfirmed" />}
+            <Typography variant="body2" sx={{ flexBasis: '100%' }}>
+              {f.rootCause.analysis}
+            </Typography>
+            {!f.rootCause.confirmed && (
+              <Typography variant="caption" color="warning.main" sx={{ flexBasis: '100%' }}>
+                Not yet confirmed with the process owner; confirm it before the exit meeting and record what you learn in Cause.
+              </Typography>
+            )}
+          </Stack>
+        )}
+        {memo && (
+          <Accordion disableGutters variant="outlined" sx={{ mt: 1.5 }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography variant="body2">Why this rating (judgment memo)</Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <MemoView memo={memo} />
+            </AccordionDetails>
+          </Accordion>
+        )}
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mt: 1.5 }} alignItems={{ md: 'center' }}>
           <Typography variant="subtitle2">Triple citation:</Typography>
           <Citations citations={f.citations} />
@@ -232,17 +223,33 @@ function FindingCard({ f, ctx, gate, qaThreshold }: { f: Finding; ctx: CardConte
           {f.status === 'draft' && role !== 'audit_manager' && <Typography variant="caption" color="text.secondary">Awaiting review by an audit manager.</Typography>}
           {f.status === 'reviewed' && role !== 'cae' && <Typography variant="caption" color="text.secondary">Awaiting approval by the Chief Audit Executive.</Typography>}
         </Stack>
+        {f.status === 'approved' && (
+          <ResponsePanel
+            engagementId={ctx.engagementId}
+            findingId={f.id}
+            version={ctx.version}
+            canRecord={canPrepare(role)}
+            locked={ctx.responsesLocked}
+            current={ctx.engagement.responses?.[f.id]}
+            reload={ctx.reload}
+          />
+        )}
       </CardContent>
-      {editing && <EditDialog finding={f} ctx={ctx} onClose={() => setEditing(false)} />}
+      {editing && <FindingEditDialog finding={f} ctx={ctx} onClose={() => setEditing(false)} />}
     </Card>
   );
 }
 
-export default function FindingsTab({ engagement: e, setEngagement, run, gates, qaThreshold }: TabProps) {
+export default function FindingsTab({ engagement: e, setEngagement, run, gates, refreshGates, qaThreshold }: TabProps) {
   const ctx: CardContext = {
     engagementId: e.id,
     version: e.version,
-    reload: async () => setEngagement(await api<Engagement>(`/engagements/${e.id}`)),
+    reload: async () => {
+      setEngagement(await api<Engagement>(`/engagements/${e.id}`));
+      await refreshGates().catch(() => undefined);
+    },
+    engagement: e,
+    responsesLocked: responsesLocked(gates),
   };
   return (
     <Stack spacing={2}>

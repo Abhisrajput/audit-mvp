@@ -224,7 +224,9 @@ describe('signatures written by the service', () => {
     await svc.editFinding(e.id, f.id, { condition: 'Four of twenty logs unsigned.' }, auditor);
     await svc.editFinding(e.id, f.id, { condition: f.condition }, auditor);
     const shown = (await svc.engagementWithSignatureStatus(e.id)).findings[0];
-    expect(findingContentHash(shown)).toBe(findingContentHash(f));
+    // The text is back; the memo now says who edited it (final review I1), so only the memo differs from the original.
+    expect(findingContentHash({ ...shown, memo: f.memo })).toBe(findingContentHash(f));
+    expect(shown.memo?.forTheReviewer.some((l) => l.startsWith('Edited by auditor:') && l.includes('condition'))).toBe(true);
     expect(shown.signOffs).toEqual([]);
     expect(shown.signatureIssues).toBeUndefined();
   });

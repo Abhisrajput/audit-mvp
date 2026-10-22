@@ -30,5 +30,8 @@
   { "id": "REQ-29", "risk": "Medium", "text": "Runs stop at their budget, and the kill switch prevents new agent work.", "evalKinds": [] },
   { "id": "REQ-30", "risk": "Medium", "text": "Every workpaper is reviewed by the QA agent before its gate opens, and the review is shown to the signer.", "evalKinds": [] },
   { "id": "REQ-31", "risk": "High", "text": "Every judgment the agent makes is recorded with its basis and rationale in a memo that is part of the subject the signer approves.", "evalKinds": [] },
+  { "id": "REQ-32", "risk": "High", "text": "Offline, every judgment is a deterministic rule; a model may only tighten a judgment (raise a risk, worsen a severity or an opinion, add an issue), never relax one. Only a person relaxes one, and each relaxation is trailed and named in the memo.", "evalKinds": [] },
+  { "id": "REQ-33", "risk": "High", "text": "A test conclusion accepts exceptions only within a tolerance a person set for that control, recorded outside the signed workpapers; the agent never sets a tolerance.", "evalKinds": [] },
+  { "id": "REQ-34", "risk": "Medium", "text": "Management responses are recorded outside signed finding content; recording one never alters a signed finding or breaks its signature.", "evalKinds": [] },
   { "id": "REQ-35", "risk": "Medium", "text": "The engagement context is written only by people, and a change to it after the scope gate reopens the scope.", "evalKinds": [] }
 ]

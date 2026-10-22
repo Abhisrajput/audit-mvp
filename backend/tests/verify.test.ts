@@ -9,6 +9,7 @@ import { listSteps } from '../src/agents/run-repo';
 import { startRun } from '../src/agents/runs';
 import { AgentWorker } from '../src/agents/worker';
 import { readTrail } from '../src/db/trail-repo';
+import { insertResponse, insertTolerance } from '../src/db/judgment-repo';
 import { insertDocument } from '../src/knowledge/document-repo';
 import { recordDocumentEvent } from '../src/knowledge/trail';
 import { verifyIntegrity } from '../src/ops/verify';
@@ -126,6 +127,24 @@ describe('verify', () => {
     ]));
   });
 
+  it('reports a management response whose trail entry is missing, and one for a finding never approved [REQ-24, REQ-34]', async () => {
+    const s = await restoredSystem();
+    const k = s.db.kysely;
+    const row = (id: string, findingId: string) => ({
+      id, engagement_id: s.engagementId, finding_id: findingId, response: 'agree' as const, owner: 'Plant manager', due_date: null,
+      action_plan: '', recorded_by: 'auditor', recorded_at: new Date().toISOString(), trail_bundle_id: 'no-such-bundle',
+    });
+    await k.insertInto('finding_responses').values([row('R-1', s.fid), row('R-2', 'F-never')]).execute();
+    const report = await verifyIntegrity(k, s.blobs);
+    expect(report.ok).toBe(false);
+    expect(report.records.checked).toBe(2);
+    expect(report.records.problems).toEqual([
+      'Response R-1 (finding ' + s.fid + '): its trail entry no-such-bundle is missing or is not a human:management-response entry for this finding',
+      'Response R-2 (finding F-never): its trail entry no-such-bundle is missing or is not a human:management-response entry for this finding',
+      'Response R-2 is recorded for finding F-never, which was never approved',
+    ]);
+  });
+
   it('prints one JSON report and exits 1 when anything is wrong [REQ-24]', async () => {
     const s = await restoredSystem();
     const run = () => spawnSync('npx', ['tsx', 'src/db/cli.ts', 'verify'], {
@@ -215,5 +234,38 @@ describe('verify on agent work', () => {
       `Step ${run.id}#${decision.seq} (tool_call): has no trail entry`,
     ]));
     expect(report.agents.problems).toHaveLength(2);
+  });
+});
+
+describe('verify on tolerances and management responses (final review I2)', () => {
+  it('reports a tolerance row that reuses another row\'s trail entry and disagrees with it', async () => {
+    const { db } = await testDbWithUrl();
+    const svc = new AuditService(db, registry, null, LENIENT);
+    await ensureDevUsers(db.kysely);
+    const control = 'FD-HACCP-03';
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    await svc.runModule(e.id, 'scope', auditor);
+    await svc.setScope(e.id, [{ controlId: control, included: true }], auditor);
+    await svc.runModule(e.id, 'rcm', auditor);
+    const set = await svc.setTolerance(e.id, control, 0.05, auditor);
+    expect((await verifyIntegrity(db.kysely, null)).records).toEqual({ checked: 1, problems: [] });
+    const genuine = set.tolerances[control];
+    await insertTolerance(db.kysely, e.id, { id: 'forged', controlId: control, rate: 0.25, recordedBy: 'auditor', recordedAt: new Date(Date.now() + 1000).toISOString(), trailBundleId: genuine.trailBundleId });
+    const report = await verifyIntegrity(db.kysely, null);
+    expect(report.ok).toBe(false);
+    expect(report.records.problems).toContain(`Trail entry ${genuine.trailBundleId} is cited by 2 records; each record needs its own entry`);
+    expect(report.records.problems).toContain(`Tolerance forged (control ${control}): its trail entry ${genuine.trailBundleId} records a different rate`);
+    expect(report.records.problems.filter((p) => p.startsWith('Tolerance '))).toHaveLength(1);
+  });
+
+  it('reports a response row whose content differs from its trail entry', async () => {
+    const s = await restoredSystem();
+    const svc = new AuditService(s.db, registry, null, LENIENT);
+    const genuine = await svc.recordManagementResponse(s.engagementId, s.fid, { response: 'agree', owner: 'Plant manager', dueDate: '2026-12-31', actionPlan: 'Retrain' }, auditor);
+    expect((await verifyIntegrity(s.db.kysely, s.blobs)).records).toEqual({ checked: 1, problems: [] });
+    await insertResponse(s.db.kysely, s.engagementId, { ...genuine, id: 'forged', response: 'disagree', recordedAt: new Date(Date.now() + 1000).toISOString() });
+    const report = await verifyIntegrity(s.db.kysely, s.blobs);
+    expect(report.records.problems).toContain(`Trail entry ${genuine.trailBundleId} is cited by 2 records; each record needs its own entry`);
+    expect(report.records.problems).toContain(`Response forged (finding ${s.fid}): its trail entry ${genuine.trailBundleId} records different content`);
   });
 });

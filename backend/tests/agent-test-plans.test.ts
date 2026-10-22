@@ -20,7 +20,7 @@ describe('the test-plan drafter with a model', () => {
     const { models } = withPlans([tailored('A', { sampleSize: 10 }), tailored('B')]);
     const { plans, withoutModel } = await draftTestPlansWithModel(e, { models });
     expect(withoutModel).toBe(false);
-    expect(plans.A).toEqual({ rowId: 'A', rowHash: rcmRowHash(e.rcm[0]), attribute: 'Attr A', population: 'Pop A', sampleSize: 10, selectionMethod: 'random', evidenceToRequest: ['Signed log'], procedure: 'Inspect A' });
+    expect(plans.A).toEqual({ rowId: 'A', rowHash: rcmRowHash(e.rcm[0]), attribute: 'Attr A', population: 'Pop A', sampleSize: 10, selectionMethod: 'random', recommendedToleranceRate: 0.05, evidenceToRequest: ['Signed log'], procedure: 'Inspect A' });
     expect(plans.B.sampleSize).toBe(5);
   });
 
@@ -53,8 +53,8 @@ describe('the test-plan drafter with a model', () => {
   it('drafts on the rules, flagged, when the model is down, and on the rules, unflagged, offline', async () => {
     const e = engagement({ rcm: rows() });
     const down = testModels(new FakeProvider(() => { throw new Error('overloaded'); }));
-    expect(await draftTestPlansWithModel(e, { models: down })).toEqual({ plans: draftTestPlans(e), withoutModel: true });
-    expect(await draftTestPlansWithModel(e)).toEqual({ plans: draftTestPlans(e), withoutModel: false });
+    expect(await draftTestPlansWithModel(e, { models: down })).toMatchObject({ plans: draftTestPlans(e), withoutModel: true });
+    expect(await draftTestPlansWithModel(e)).toMatchObject({ plans: draftTestPlans(e), withoutModel: false });
   });
 
   it('gives the model the RCM only as data', async () => {
@@ -73,5 +73,33 @@ describe('the test-plan drafter with a model', () => {
     const block = user.slice(user.indexOf('<data source="knowledge:A">'));
     expect(block.match(/<\/data>/g)).toHaveLength(1);
     expect(block.match(/<data /g)).toHaveLength(1);
+  });
+});
+
+describe('the drafter and the sampling rules [REQ-32]', () => {
+  it('refuses a model selection that is not random to judgemental, and a higher tolerance; accepts the lower ones; names the refusals', async () => {
+    const all = row('A', { frequency: 'Annual', packId: 'common', assessedRisk: 'Medium' });
+    const rnd = row('B', { frequency: 'Monthly', packId: 'common', assessedRisk: 'Medium' });
+    const tol1 = row('C', { frequency: 'Monthly', packId: 'common', assessedRisk: 'Medium' });
+    const tol2 = row('D', { frequency: 'Monthly', packId: 'common', assessedRisk: 'Medium' });
+    const e = engagement({ rcm: [all, rnd, tol1, tol2] });
+    const { models } = withPlans([
+      tailored('A', { sampleSize: 0, selectionMethod: 'random' }),
+      tailored('B', { selectionMethod: 'judgemental' }),
+      tailored('C', { selectionMethod: 'random', recommendedToleranceRate: 0.2 }),
+      tailored('D', { selectionMethod: 'random', recommendedToleranceRate: 0.01 }),
+    ]);
+    const draft = await draftTestPlansWithModel(e, { models });
+    expect(draft.plans.A.selectionMethod).toBe('all');
+    expect(draft.plans.A.sampleSize).toBe(all.sampleSize);
+    expect(draft.plans.B.selectionMethod).toBe('judgemental');
+    expect(draft.plans.C.recommendedToleranceRate).toBe(0.05);
+    expect(draft.plans.D.recommendedToleranceRate).toBe(0.01);
+    const lines = draft.memo.forTheReviewer;
+    expect(lines.some((l) => l.startsWith('A: '))).toBe(true);
+    expect(lines.some((l) => l.startsWith('C: '))).toBe(true);
+    expect(lines.some((l) => l.startsWith('B: '))).toBe(true);
+    expect(lines.some((l) => l.startsWith('D: '))).toBe(true);
+    expect(draft.memo.calls.find((c) => c.question.includes('How B is selected'))?.source).toBe('model');
   });
 });

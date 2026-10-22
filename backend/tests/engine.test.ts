@@ -93,7 +93,7 @@ describe('QA gates', () => {
   it('blocks a model-drafted finding that cites a clause outside its grounding set [REQ-03]', async () => {
     const llm = new FakeProvider((req) => {
       if (req.user.includes('Draft one audit finding')) {
-        return { findings: [{ rowId: 'FD-HACCP-03', title: 't', rating: 'High', condition: 'c', criteria: '§211.192', cause: 'c', effect: 'e', recommendation: 'r', clauseIds: ['21CFR211.192'] }] };
+        return { findings: [{ rowId: 'FD-HACCP-03', title: 't', rootCause: { category: 'unknown', analysis: 'to be confirmed', confirmed: false }, condition: 'c', criteria: '§211.192', cause: 'c', effect: 'e', recommendation: 'r', clauseIds: ['21CFR211.192'] }] };
       }
       if (req.user.includes('Conclude on each')) return { results: [] };
       if (req.user.includes('Tailor these')) return { rows: [] };

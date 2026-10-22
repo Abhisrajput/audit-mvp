@@ -16,6 +16,9 @@ const FRIENDLY: Record<string, string> = {
   GATE_STALE: 'The workpaper changed after this gate opened. The agent reviews it again and opens a new gate.',
   RUN_NOT_ACTIVE: 'The agent run behind this gate has ended, so the gate can no longer be signed.',
   CONTEXT_LOCKED: 'The scope and RCM are approved, so the engagement context can no longer change. Record late matters in the relevant finding, or start a new engagement.',
+  TOLERANCE_LOCKED: 'A test has been recorded for this control, so its tolerance can no longer change. Record the reason in the finding instead.',
+  FINDING_NOT_APPROVED: 'Management responses can be recorded once the finding is approved. Approve the finding first.',
+  RESPONSE_LOCKED: 'The report is approved, so management responses can no longer be added. Start a new engagement for later matters.',
   PENDING_ACCESS: 'Your account is waiting for an administrator to assign a role.',
 };
 

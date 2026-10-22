@@ -81,7 +81,7 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         // The test-plan agent looks each fresh row up in the knowledge base (its allow-list), then drafts with its model.
         const toolbox = ctx.models?.available ? new Toolbox({ db, port, run, starter, engagement: e }, 'test-plan') : undefined;
         const draft = await draftTestPlansWithModel(e, { models: ctx.models, toolbox });
-        ({ bundle } = await port.saveTestPlans(e.id, draft.plans, acting, { expectedVersion: e.version! }));
+        ({ bundle } = await port.saveTestPlans(e.id, draft.plans, acting, { expectedVersion: e.version! }, draft.memo));
         withoutModel = draft.withoutModel;
       } else {
         ({ bundle } = await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows, instruction, llm }));

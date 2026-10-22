@@ -67,6 +67,7 @@ Run it nightly as a scheduled job with the API's environment (it needs the stora
   "trail": { "valid": true, "length": 128, "brokenAt": null, "reason": null },
   "signatures": { "checked": 9, "problems": [] },
   "agents": { "checked": 64, "problems": [] },
+  "records": { "checked": 5, "problems": [] },
   "documents": { "checked": 14, "problems": [], "skipped": null }
 }
 ```
@@ -84,6 +85,9 @@ What the problems mean:
   - "Gate <id> is approved|rejected, but its signature … is missing", "Gate <id>: signature … is for different content than the gate showed", "… carries <meaning>, not <expected>", "… was made in a different engagement", "… was made for a different gate|finding": a gate and the signature that closed it disagree. One of them was edited outside the application.
   - "Signature <id> (<workpaper> gate <gateId>): its gate is missing", "… its gate is a <kind> gate in <engagement>, not …", "… its gate names signature <other>, not it": the link back from a gate signature to its gate is broken. The gate was edited or removed outside the application, or a signature row was added for a gate that was closed by another.
   - "Gate <id> is open|superseded, but names signature <sig>": a gate nobody decided names a signature.
+- **Records** (tolerances and management responses, which sit outside the signed finding):
+  - "Tolerance <id> (control <controlId>): its trail entry <id> is missing or is not a human:set-tolerance entry for this control": the tolerance row or its trail entry was edited or removed outside the application.
+  - "Response <id> (finding <fid>): its trail entry … is not a human:management-response entry for this finding", "Response <id> is recorded for finding <fid>, which was never approved": a response row was edited, or added, outside the application.
 - **Agents** (each line starts `Step <runId>#<seq> (<kind>)`):
   - "has no trail entry": an agent step (a decision, delegation, QA review, lookup, takeover note or rails refusal) is not in the audit trail. No step is exempt.
   - "its trail entry <id> is missing": the bundle the step names is gone.
@@ -139,3 +143,6 @@ Exit 1 means escalate as a data-integrity incident. Do not edit data to make it 
 - **A worker that stops mid-step.** Another worker takes the run once its 60-second lease expires. The abandoned step counts as a failed one, and three in a row hand the run to a person.
 - **Scaling.** Run more worker replicas, or raise `AGENT_WORKER_CONCURRENCY`. Each worker needs `AGENT_WORKER_CONCURRENCY × 2 + 2` database connections.
 - **Engagement context.** A change to the context after the scope gate is approved reopens the scope gate for a new signature. After the RCM gate is approved the API refuses the change with `CONTEXT_LOCKED` (HTTP 409); there is nothing to fix, as late matters go in the relevant finding or a new engagement.
+- **Tolerances.** A person sets a control's tolerance (trail id `human:set-tolerance`) until the control has a recorded test; after that the API refuses the change with `TOLERANCE_LOCKED` (HTTP 409). A response to a finding that is not yet approved is refused with `FINDING_NOT_APPROVED` (HTTP 409).
+- **Management responses.** A response to an approved finding is refused with `RESPONSE_LOCKED` (HTTP 409) once the report gate is approved. Once a report gate has been approved, responses are closed for that engagement: record a late response outside the system, or in the next engagement.
+- **Upgrading to the expert-auditor release.** The first testing run after this release re-concludes every row and adds the severity fields (`severity`, `severityRationale`, `toleranceApplied`), which moves each row's basis once. An approved finding on an in-flight engagement then escalates once with "approved on test results that have since changed", and is re-confirmed by re-approving it.

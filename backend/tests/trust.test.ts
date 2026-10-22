@@ -117,7 +117,7 @@ describe('trust rules [REQ-22]', () => {
       if (req.user.includes('Draft one audit finding')) {
         const [row] = JSON.parse(req.user.slice(req.user.indexOf('>\n', req.user.indexOf('<data source="workpaper:failed-controls"')) + 2, req.user.lastIndexOf('\n</data>'))) as { allowedClauses: { clauseId: string }[] }[];
         extra = row.allowedClauses.map((c) => c.clauseId).find((id) => !rowClauses.has(id))!;
-        return { findings: [{ rowId: 'FD-HACCP-03', title: 't', rating: 'High', condition: 'c', criteria: 'c', cause: 'c', effect: 'e', recommendation: 'r', clauseIds: [...rowClauses, extra] }] };
+        return { findings: [{ rowId: 'FD-HACCP-03', title: 't', rootCause: { category: 'unknown', analysis: 'to be confirmed', confirmed: false }, condition: 'c', criteria: 'c', cause: 'c', effect: 'e', recommendation: 'r', clauseIds: [...rowClauses, extra] }] };
       }
       if (req.user.includes('Conclude on each')) return { results: [] };
       if (req.user.includes('Tailor these')) return { rows: [] };

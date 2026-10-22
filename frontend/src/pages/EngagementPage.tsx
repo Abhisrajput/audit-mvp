@@ -24,6 +24,8 @@ export interface TabProps {
   run: (moduleId: string) => Promise<void>;
   /** The engagement's agent gates, for the QA review a finding's signer reads. */
   gates: Gate[];
+  /** Refetch the agent state (runs and gates), e.g. after a change that can close or supersede a gate. */
+  refreshGates: () => Promise<void>;
   /** The QA score a gate's review should reach (agent settings); null until loaded. */
   qaThreshold: number | null;
 }
@@ -81,7 +83,7 @@ export default function EngagementPage() {
   if (!engagement) return null;
   const e = engagement;
   const done = [e.scope.length > 0, e.rcm.length > 0, Object.keys(e.testPlans).length > 0, Object.keys(e.testResults).length > 0, e.findings.length > 0, !!e.report];
-  const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, qaThreshold: agent.settings?.qaThreshold ?? null };
+  const props: TabProps = { engagement: e, setEngagement, run, gates: agent.gates, refreshGates: agent.refresh, qaThreshold: agent.settings?.qaThreshold ?? null };
 
   return (
     <Stack spacing={2}>

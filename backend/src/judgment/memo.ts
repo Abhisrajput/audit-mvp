@@ -1,7 +1,8 @@
 // The judgment memo (spec §3.4): what the engine decided, why, and which standard
 // it leans on, written so a reviewer can sign against it. Pure: no I/O.
 
-import type { Coverage, EngagementContext, JudgmentCall, JudgmentMemo, RiskRating, ScopeItem } from '../engine/types';
+import { canonicalJson } from '../engine/trail';
+import type { Coverage, EngagementContext, Finding, JudgmentCall, JudgmentMemo, RcmRow, RiskRating, ScopeItem, TestPlan, TestResult } from '../engine/types';
 import { factorsFor } from './context';
 import { areaRisk, RANK } from './risk-assessment';
 import { IIA } from './standards';
@@ -26,10 +27,11 @@ export function scopeMemo(input: { items: ScopeItem[]; coverage: Coverage; conte
     const assessed = areaRisk(group);
     if (assessed === library) continue;
     changed += 1;
+    const factors = factorsFor(input.context, area).map((f) => `${f.description} (${f.processAreas.length === 0 ? 'the whole entity' : f.processAreas.join(', ')})`);
     calls.push(call({
       question: `Risk of the ${area} area`,
       decision: `${assessed} (library: ${library})`,
-      rationale: `The engagement context raises the risk of the ${area} area above the library rating.`,
+      rationale: `The engagement context raises the risk of the ${area} area above the library rating.${factors.length ? ` Factors: ${factors.join('; ')}.` : ''}`,
       basis: [...new Set(group.flatMap((i) => i.riskFactors))],
       standard: [IIA.riskAssessment],
     }));
@@ -90,6 +92,122 @@ export const EDITED_BY_HAND = 'The scope was edited by hand after this memo; the
 /** The memo after a hand edit of the scope: its calls stay the agent's, and the reviewer is told once. */
 export function markEditedByHand(memo: JudgmentMemo): JudgmentMemo {
   return { ...memo, forTheReviewer: [...memo.forTheReviewer.filter((line) => line !== EDITED_BY_HAND), EDITED_BY_HAND] };
+}
+
+/** The line the memo carries once a person has edited what it describes, naming who and what. Replaces that person's earlier line; other people's stay. */
+export function markEditedByPerson(memo: JudgmentMemo, actor: string, changes: string[]): JudgmentMemo {
+  const mine = `Edited by ${actor}:`;
+  return { ...memo, forTheReviewer: [...memo.forTheReviewer.filter((line) => !line.startsWith(mine)), `${mine} ${changes.join('; ')}.`] };
+}
+
+/** The memo with one call's decision replaced by a person's, its rationale saying who set it and what it was; the basis and standards stay, and the source is the rules' since the model did not make this call. */
+export function reviseCallByPerson(memo: JudgmentMemo, question: string, decision: string, actor: string): JudgmentMemo {
+  return {
+    ...memo,
+    calls: memo.calls.map((c) => (c.question === question ? { ...c, decision, rationale: `Set by ${actor}: was ${c.decision}`, source: 'rules' } : c)),
+  };
+}
+
+/** Whether two memos say the same thing: producedAt and the hand-edit line do not count. Absent on both sides is the same; absent on one is not. */
+export function sameMemo(a: JudgmentMemo | undefined, b: JudgmentMemo | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  const bare = (m: JudgmentMemo) => canonicalJson({ ...m, producedAt: '', forTheReviewer: m.forTheReviewer.filter((line) => line !== EDITED_BY_HAND) });
+  return bare(a) === bare(b);
+}
+
+const pct = (rate: number) => `${Math.round(rate * 10000) / 100}%`;
+
+/** The RCM memo: one call per row whose assessed risk differs from its library rating (naming the sample size), and a summary. */
+export function rcmMemo(input: { rows: RcmRow[]; scope: ScopeItem[]; context: EngagementContext | null; producedAt: string }): JudgmentMemo {
+  const calls: JudgmentCall[] = [];
+  for (const r of input.rows) {
+    if (!r.assessedRisk || r.assessedRisk === r.riskRating) continue;
+    calls.push(call({
+      question: `Sample size for ${r.id}`,
+      decision: `${r.sampleSize} items at ${r.assessedRisk} assessed risk (library: ${r.riskRating})`,
+      rationale: r.samplingRationale ?? `The assessed risk of ${r.id} differs from the library rating, so the sample follows the assessed risk.`,
+      basis: [r.control, ...factorsFor(input.context, r.processArea).map((f) => f.description)],
+      standard: [IIA.resources],
+    }));
+  }
+  const inScope = input.scope.filter((i) => i.included).length;
+  calls.push(call({
+    question: 'Resources for the testing',
+    decision: `${input.rows.length} controls to test${input.scope.length ? ` from ${inScope} in scope` : ''}`,
+    rationale: calls.length === 0 ? 'Every control is sampled at the library rating.' : `${calls.length} control(s) are sampled above or below the library rating.`,
+    basis: [],
+    standard: [IIA.resources],
+  }));
+  return { subjectKey: 'rcm', calls, forTheReviewer: ['Nothing to verify beyond the calls above.'], producedAt: input.producedAt };
+}
+
+/** The test-plan memo: one call per plan whose selection is not random, one per non-zero recommended tolerance; refusals and model changes go to the reviewer. Each modelChanges string starts with `${rowId}: ` (row id, colon, space); that prefix credits the model on that row's selection call. */
+export function planMemo(input: { plans: Record<string, TestPlan>; rows: RcmRow[]; context: EngagementContext | null; refusals: string[]; modelChanges: string[]; producedAt: string }): JudgmentMemo {
+  const calls: JudgmentCall[] = [];
+  const rowOf = new Map(input.rows.map((r) => [r.id, r]));
+  for (const p of Object.values(input.plans)) {
+    const r = rowOf.get(p.rowId);
+    if (p.selectionMethod !== 'random') {
+      calls.push(call({
+        question: `How ${p.rowId} is selected`,
+        decision: `${p.selectionMethod} selection`,
+        rationale: `Random selection is not used for ${p.rowId}: ${p.selectionMethod} selection fits the control better.`,
+        basis: r ? [r.control, `Frequency: ${r.frequency}`] : [],
+        standard: [IIA.workProgram],
+        source: input.modelChanges.some((m) => m.startsWith(`${p.rowId}: `)) ? 'model' : 'rules',
+      }));
+    }
+    if (p.recommendedToleranceRate) {
+      calls.push(call({
+        question: `Tolerance to consider for ${p.rowId}`,
+        decision: `${pct(p.recommendedToleranceRate)} of the sample may fail`,
+        rationale: 'A recommendation only; a person records the tolerance that applies.',
+        basis: r?.assessedRisk ? [`Assessed risk: ${r.assessedRisk}`] : [],
+        standard: [IIA.workProgram],
+      }));
+    }
+  }
+  if (calls.length === 0) {
+    calls.push(call({ question: 'How the controls are tested', decision: 'Random selection, no tolerance recommended', rationale: 'No plan departs from the default.', basis: [], standard: [IIA.workProgram] }));
+  }
+  const forTheReviewer = [...input.refusals, ...input.modelChanges];
+  if (forTheReviewer.length === 0) forTheReviewer.push('Nothing to verify beyond the calls above.');
+  return { subjectKey: 'test_plans', calls, forTheReviewer, producedAt: input.producedAt };
+}
+
+/** The finding memo: the rating, the root cause and the recommendation, each credited to the model when it changed it. */
+export function findingMemo(input: { finding: Pick<Finding, 'rowId' | 'likelihood' | 'impact' | 'rating' | 'rootCause' | 'recommendation'>; row: Pick<RcmRow, 'assessedRisk' | 'riskRating' | 'control'>; result: Pick<TestResult, 'conclusion' | 'exceptionRate' | 'severity'>; libraryRecommendation: string; modelMoves: string[]; producedAt: string }): JudgmentMemo {
+  const { finding: f, row, result } = input;
+  const moved = (what: string) => input.modelMoves.includes(what);
+  const rootCause = f.rootCause;
+  const calls = [
+    call({
+      question: 'Rating of the finding',
+      decision: `${f.rating}${f.likelihood && f.impact ? ` (${f.likelihood} likelihood, ${f.impact} impact)` : ''}`,
+      rationale: `${result.conclusion}${result.exceptionRate != null ? ` with an exception rate of ${pct(result.exceptionRate)}` : ''}${result.severity ? `, ${result.severity} severity` : ''}; assessed risk of the control ${row.assessedRisk ?? row.riskRating}.`,
+      basis: [row.control],
+      standard: [IIA.evaluation],
+      source: moved('rating') ? 'model' : 'rules',
+    }),
+    call({
+      question: 'Root cause',
+      decision: rootCause ? `${rootCause.category}${rootCause.confirmed ? ' (confirmed)' : ' (not confirmed)'}` : 'Not determined',
+      rationale: rootCause?.analysis ?? 'No root cause analysis was recorded.',
+      basis: [row.control],
+      standard: [IIA.analysis],
+      source: moved('root cause') ? 'model' : 'rules',
+    }),
+    call({
+      question: 'Recommendation',
+      decision: f.recommendation,
+      rationale: f.recommendation === input.libraryRecommendation ? 'The library recommendation stands.' : `Adapted from the library recommendation: ${input.libraryRecommendation}`,
+      basis: [input.libraryRecommendation],
+      standard: [IIA.recommendations],
+      source: moved('recommendation') ? 'model' : 'rules',
+    }),
+  ];
+  const forTheReviewer = rootCause && !rootCause.confirmed ? ['The root cause is a proposal; confirm it with the control owner.'] : ['Nothing to verify beyond the calls above.'];
+  return { subjectKey: `finding:${f.rowId}`, calls, forTheReviewer, producedAt: input.producedAt };
 }
 
 /** Markdown for the gate panel: a heading per call, then "For the reviewer". */

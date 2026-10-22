@@ -26,11 +26,14 @@ import type { PackRegistry } from './engine/packs';
 import { findingCitationGate } from './engine/qa';
 import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/trust';
 import { verifyChain } from './engine/trail';
-import type { Engagement, Finding, QaAction, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
-import { markEditedByHand } from './judgment/memo';
+import { insertResponse, insertTolerance, responseHistory } from './db/judgment-repo';
+import { TOLERANCE_MAX } from './judgment/sampling';
+import { impactOf, ratingOf } from './judgment/finding';
+import { markEditedByHand, markEditedByPerson, reviseCallByPerson, sameMemo } from './judgment/memo';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import type { EvalReport } from './eval/harness';
 
@@ -65,6 +68,8 @@ export interface AgentEvent {
 }
 
 /** Optional optimistic-concurrency check: the engagement version the caller last saw. */
+export interface ResponseInput { response: ResponseKind; owner: string; dueDate?: string | null; actionPlan?: string }
+
 export interface MutationOptions {
   expectedVersion?: number;
 }
@@ -216,6 +221,8 @@ export class AuditService {
       context: input.context ? { ...input.context, updatedBy: actor.id, updatedAt: new Date().toISOString() } : null,
       coverage: null,
       memos: {},
+      tolerances: {},
+      responses: {},
     };
     await this.db.kysely.transaction().execute(async (trx) => {
       await insertEngagement(trx, e);
@@ -321,13 +328,17 @@ export class AuditService {
   }
 
   /** Saves drafted test plans for an agent. The agent never sets or clears a reason not to test a row. */
-  async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions) {
+  async saveTestPlansAsAgent(engagementId: string, plans: Record<string, TestPlan>, acting: AgentActing, opts: AgentWriteOptions, memo?: JudgmentMemo) {
     this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
       await assertLease(trx, acting.runId, acting.leaseOwner);
       assertJustificationsUnchanged(e.testPlans, plans, e.rcm.map((r) => r.id));
       assertPlanAttribution(e.testPlans, plans);
       e.testPlans = plans;
+      if (memo) {
+        const before = e.memos?.test_plans;
+        e.memos = { ...e.memos, test_plans: sameMemo(before, memo) ? before : memo };
+      }
       emit(this.agentBundle(e, {
         moduleId: 'agent:test-plans', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
         inputs: { rows: Object.keys(plans) }, output: plans,
@@ -411,10 +422,68 @@ export class AuditService {
     return result;
   }
 
+  /** A person sets the tolerance for a control (spec §3.3). It is locked once the control has a recorded test. */
+  async setTolerance(engagementId: string, controlId: string, requested: number, actor: User, opts: MutationOptions = {}): Promise<Engagement> {
+    this.require(actor, PREPARER_ROLES, 'set a tolerance');
+    if (!Number.isFinite(requested) || requested < 0 || requested > TOLERANCE_MAX) throw new AppError(400, `A tolerance must be between 0 and ${TOLERANCE_MAX}`);
+    // The column keeps three decimals; round here so the trail, the row, the engagement and the testing run all see one value.
+    const rate = Math.round(requested * 1000) / 1000;
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
+      const rows = e.rcm.filter((r) => r.controlId === controlId);
+      if (!rows.length) throw new AppError(404, `No RCM row for control ${controlId}`);
+      if (rows.some((r) => e.testInputs[r.id])) throw new AppError(409, `Control ${controlId} already has a recorded test, so its tolerance can no longer change`, 'TOLERANCE_LOCKED');
+      const recordedAt = new Date().toISOString();
+      const bundle = this.humanBundle(e, 'human:set-tolerance', actor, { controlId, rate }, { controlId, rate });
+      const record = { controlId, rate, recordedBy: actor.id, recordedAt, trailBundleId: bundle.id };
+      await insertTolerance(trx, engagementId, { id: crypto.randomUUID(), ...record });
+      e.tolerances = { ...e.tolerances, [controlId]: record };
+      emit(bundle);
+      return e;
+    });
+    return result;
+  }
+
+  /**
+   * Management's response to an approved finding (spec §3.3). It lives beside the finding, not in it, so the signatures stay valid;
+   * the report basis covers it. A later response is a new row; the latest is current. Refused once the report gate is approved.
+   */
+  async recordManagementResponse(engagementId: string, findingId: string, input: ResponseInput, actor: User, opts: MutationOptions = {}): Promise<FindingResponse> {
+    this.require(actor, PREPARER_ROLES, 'record a management response');
+    const owner = input.owner.trim();
+    if (!owner) throw new AppError(400, 'A response needs an owner');
+    const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
+      const f = e.findings.find((x) => x.id === findingId);
+      if (!f) throw new AppError(404, `Finding ${findingId} not found`);
+      if (f.status !== 'approved') throw new AppError(409, 'A management response can only be recorded for an approved finding', 'FINDING_NOT_APPROVED');
+      if (await hasApprovedGate(trx, engagementId, 'report')) {
+        throw new AppError(409, 'The report gate is approved, so a management response can no longer be recorded', 'RESPONSE_LOCKED');
+      }
+      const dueDate = input.dueDate ?? null;
+      const actionPlan = input.actionPlan ?? '';
+      const bundle = this.humanBundle(e, 'human:management-response', actor, { findingId, response: input.response, owner, dueDate, actionPlan }, { findingId, response: input.response });
+      const record: FindingResponse = {
+        id: crypto.randomUUID(), findingId, response: input.response, owner, dueDate, actionPlan,
+        recordedBy: actor.id, recordedAt: new Date().toISOString(), trailBundleId: bundle.id,
+      };
+      await insertResponse(trx, engagementId, record);
+      e.responses = { ...e.responses, [findingId]: record };
+      emit(bundle);
+      return record;
+    });
+    return result;
+  }
+
+  /** Every response recorded for a finding, oldest first. */
+  async responsesFor(engagementId: string, findingId: string): Promise<FindingResponse[]> {
+    const e = await this.engagement(engagementId);
+    if (!e.findings.some((f) => f.id === findingId)) throw new AppError(404, `Finding ${findingId} not found`);
+    return responseHistory(this.db.kysely, engagementId, findingId);
+  }
+
   async editFinding(
     engagementId: string,
     findingId: string,
-    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
     actor: User,
     opts: MutationOptions = {},
   ) {
@@ -430,7 +499,7 @@ export class AuditService {
   private async applyFindingEdit(
     engagementId: string,
     findingId: string,
-    patch: Partial<Pick<Finding, 'title' | 'rating' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
+    patch: Partial<Pick<Finding, 'title' | 'likelihood' | 'impact' | 'condition' | 'criteria' | 'cause' | 'effect' | 'recommendation' | 'evidenceRefs'>>,
     actor: User,
     opts: MutationOptions,
   ) {
@@ -447,6 +516,31 @@ export class AuditService {
       const allowed = new Set(this.registry.clausesFor(e.packIds).map((c) => c.id));
       const preparedBy = [...new Set([...(previous.preparedBy ?? []), actor.id])];
       const edited: Finding = { ...previous, ...patch, status: 'draft', signOffs: [], preparedBy };
+      const changes: string[] = [];
+      if (patch.likelihood || patch.impact) {
+        // A pre-8B finding has neither: fall back to possible and the impact its rating implies, and write both so the matrix check engages from now on.
+        const likelihood = patch.likelihood ?? previous.likelihood ?? 'possible';
+        const impact = patch.impact ?? previous.impact ?? impactOf(previous.rating);
+        edited.likelihood = likelihood;
+        edited.impact = impact;
+        edited.rating = ratingOf(likelihood, impact);
+        const was = { likelihood: previous.likelihood ?? 'possible', impact: previous.impact ?? impactOf(previous.rating) };
+        if (likelihood !== was.likelihood) changes.push(`likelihood ${was.likelihood} → ${likelihood}`);
+        if (impact !== was.impact) changes.push(`impact ${was.impact} → ${impact}`);
+      }
+      // Text fields changed by name; a value the patch repeats is not a change.
+      for (const key of ['title', 'condition', 'criteria', 'cause', 'effect', 'recommendation', 'evidenceRefs'] as const) {
+        if (patch[key] !== undefined && JSON.stringify(patch[key]) !== JSON.stringify(previous[key])) changes.push(key);
+      }
+      if (previous.memo && changes.length > 0) {
+        let memo = previous.memo;
+        // The memo is signed with the finding, so its calls must say what the finding now says.
+        if (edited.rating !== previous.rating || edited.likelihood !== previous.likelihood || edited.impact !== previous.impact) {
+          memo = reviseCallByPerson(memo, 'Rating of the finding', `${edited.rating}${edited.likelihood && edited.impact ? ` (${edited.likelihood} likelihood, ${edited.impact} impact)` : ''}`, actor.id);
+        }
+        if (edited.recommendation !== previous.recommendation) memo = reviseCallByPerson(memo, 'Recommendation', edited.recommendation, actor.id);
+        edited.memo = markEditedByPerson(memo, actor.id, changes);
+      }
       const { finding, actions } = findingCitationGate(this.registry, edited, allowed, this.citationPolicy);
       e.findings[idx] = finding;
       emit(this.humanBundle(e, 'human:finding-edit', actor, { findingId, patch }, { status: finding.status }, actions));

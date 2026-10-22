@@ -23,7 +23,7 @@ import { devAuthConfig, devSign, draftFinding, signIn } from './http';
 /** What the API's role may do with each table. A table missing here fails the inventory test until it is classified. */
 const PRIVILEGES: Record<string, 'read' | 'append' | 'write'> = {
   engagements: 'write', engagement_work: 'write', findings: 'write', users: 'write', sessions: 'write', sign_intents: 'write', agent_runs: 'write', gates: 'write',
-  agent_steps: 'append', workpaper_revisions: 'append',
+  agent_steps: 'append', workpaper_revisions: 'append', test_tolerances: 'append', finding_responses: 'append',
   trail: 'append', signatures: 'append', finding_revisions: 'append', documents: 'append', document_text: 'append', chunks: 'append',
   blob_uploads: 'append', eval_runs: 'append',
   kg_nodes: 'read', kg_node_versions: 'read', kg_edges: 'read', schema_migrations: 'read',

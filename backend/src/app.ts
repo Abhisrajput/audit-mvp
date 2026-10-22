@@ -18,7 +18,10 @@ import { probeRoutes } from './observability/probes';
 import { signingRoutes } from './signing/routes';
 import { evalMarkdown, runEval } from './eval/harness';
 import { ifMatch, wrap } from './http-util';
+import type { Impact, Likelihood } from './engine/types';
 import { EngagementContextInputSchema } from './judgment/context';
+import { IMPACTS, LIKELIHOODS } from './judgment/finding';
+import { TOLERANCE_MAX } from './judgment/sampling';
 import { METHODOLOGY_PACK_ID } from './judgment/standards';
 import { AppError, AuditService } from './service';
 import { buildTraceability } from './validation/traceability';
@@ -46,7 +49,8 @@ const TestInputSchema = z.object({
 const FindingPatchSchema = z
   .object({
     title: z.string().min(1),
-    rating: z.enum(['High', 'Medium', 'Low']),
+    likelihood: z.enum([...LIKELIHOODS] as [Likelihood, ...Likelihood[]]),
+    impact: z.enum([...IMPACTS] as [Impact, ...Impact[]]),
     condition: z.string().min(1),
     criteria: z.string().min(1),
     cause: z.string().min(1),
@@ -54,7 +58,8 @@ const FindingPatchSchema = z
     recommendation: z.string().min(1),
     evidenceRefs: z.array(z.string().min(1)),
   })
-  .partial();
+  .partial()
+  .strict();
 
 /** Routes that parse their own bodies (see documentRoutes). */
 const OWN_BODY_PARSER = new Set([UPLOAD_PATH, '/api/documents']);
@@ -162,6 +167,23 @@ export function createApp(
 
   app.put('/api/engagements/:id/tests/:rowId', readers, wrap(async (req, res) => {
     res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
+  }));
+
+  app.put('/api/engagements/:id/tolerances/:controlId', readers, wrap(async (req, res) => {
+    const { rate } = z.object({ rate: z.number().min(0).max(TOLERANCE_MAX) }).strict().parse(req.body);
+    res.json(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)));
+  }));
+
+  app.post('/api/engagements/:id/findings/:fid/responses', readers, wrap(async (req, res) => {
+    const input = z.object({
+      response: z.enum(['agree', 'partially_agree', 'disagree']), owner: z.string().trim().min(1).max(200),
+      dueDate: z.iso.date().nullable().optional(), actionPlan: z.string().max(4000).optional(),
+    }).strict().parse(req.body);
+    res.status(201).json(await svc.recordManagementResponse(param(req, 'id'), param(req, 'fid'), input, actorOf(req), ifMatch(req)));
+  }));
+
+  app.get('/api/engagements/:id/findings/:fid/responses', readers, wrap(async (req, res) => {
+    res.json(await svc.responsesFor(param(req, 'id'), param(req, 'fid')));
   }));
 
   app.put('/api/engagements/:id/findings/:fid', readers, wrap(async (req, res) => {

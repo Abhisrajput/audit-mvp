@@ -2,6 +2,7 @@ import { sql } from 'kysely';
 import { canonicalJson } from '../engine/trail';
 import type { Engagement, Finding } from '../engine/types';
 import { AppError } from '../errors';
+import { responsesFor, tolerancesFor } from './judgment-repo';
 import { recordRevision, recordWorkpaperRevisions } from './revision-repo';
 import type { Executor } from './trail-repo';
 
@@ -77,12 +78,15 @@ export async function loadEngagement(db: Executor, id: string, opts: { forUpdate
     .orderBy('seq')
     .execute();
   const findings = rows.map((r) => r.data);
+  // Person-made records kept outside the workpapers (spec §3.3); insertEngagement and saveEngagement never write them.
+  const tolerances = await tolerancesFor(db, id);
+  const responses = await responsesFor(db, id);
   const engagement: Engagement = {
     id: h.id, name: h.name, entity: h.entity, site: h.site, periodFrom: h.period_from, periodTo: h.period_to,
     auditType: h.audit_type, scopeStatement: h.scope_statement, packIds: h.pack_ids, createdBy: h.created_by,
     createdAt: iso(h.created_at), stage: h.stage, scope: w.scope, rcm: w.rcm, testInputs: w.test_inputs,
     testResults: w.test_results, testPlans: w.test_plans ?? {}, findings, report: w.report,
-    context: w.context ?? null, coverage: w.coverage ?? null, memos: w.memos ?? {}, version: h.version,
+    context: w.context ?? null, coverage: w.coverage ?? null, memos: w.memos ?? {}, tolerances, responses, version: h.version,
   };
   return { engagement, version: h.version, findingSnapshots: new Map(findings.map((f) => [f.id, canonicalJson(f)])) };
 }
