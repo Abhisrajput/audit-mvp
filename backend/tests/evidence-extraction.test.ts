@@ -13,6 +13,7 @@ import { PgFtsRetriever } from '../src/knowledge/retriever';
 import { sha256Of } from '../src/storage/blob-store';
 import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { createApp } from '../src/app';
+import { AppError } from '../src/errors';
 import { auditor, newService } from './helpers';
 import { devAuthConfig, signIn } from './http';
 
@@ -133,6 +134,35 @@ describe('evidence extraction', () => {
     const row = await runExtraction(deps, doc, auditor);
     expect(row.status).toBe('failed');
     expect(row.error!.length).toBeLessThanOrEqual(200);
+  });
+
+  it('answers 409 to a second extraction started together with the first, leaving one row', async () => {
+    const { deps, register, db } = await setup();
+    const doc = await register(fx('sample.pdf'), 'sample.pdf', 'application/pdf');
+    const results = await Promise.allSettled([runExtraction(deps, doc, auditor), runExtraction(deps, doc, auditor)]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(lost.reason).toBeInstanceOf(AppError);
+    expect(lost.reason.status).toBe(409);
+    const rows = await db.selectFrom('document_extractions').select('attempt').where('document_id', '=', doc.id).execute();
+    expect(rows).toEqual([{ attempt: 1 }]);
+  });
+
+  it('stores a fixed error, not the storage drivers message, when the stored file cannot be read', async () => {
+    const { deps, register } = await setup();
+    const doc = await register(fx('sample.pdf'), 'sample.pdf', 'application/pdf');
+    const blobs = { ...deps.blobs, get: async () => { throw new Error('https://secret-bucket.internal denied'); } } as unknown as LocalBlobStore;
+    const row = await runExtraction({ ...deps, blobs }, doc, auditor);
+    expect(row).toMatchObject({ status: 'failed', error: 'Stored file could not be read' });
+    expect(row.error).not.toContain('secret-bucket');
+  });
+
+  it('records a file with no visible text as no_text, with no document_text row and no chunks', async () => {
+    const { deps, register, db, chunkCount } = await setup();
+    const doc = await register(Buffer.from('  \n\n \t'), 'empty.txt', 'text/plain');
+    expect(await runExtraction(deps, doc, auditor)).toMatchObject({ status: 'no_text', chars: 0 });
+    expect(await db.selectFrom('document_text').select('document_id').where('document_id', '=', doc.id).execute()).toEqual([]);
+    expect(await chunkCount(doc.id)).toBe(0);
   });
 
   it('loads config defaults and refuses bad values', () => {

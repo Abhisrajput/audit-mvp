@@ -71,6 +71,16 @@ describe('document API', () => {
     expect(trail.id).toMatch(/^DOC-EVT-[0-9a-f]{16}$/);
   });
 
+  it('still answers 201 when extraction throws after the registration committed', async () => {
+    const { app } = await setup({ blobs: (local) => fakeStore(local, { get: async () => { throw new Error('storage went away'); } }) });
+    const auditor = await signIn(app, 'auditor');
+    const up = await upload(auditor, SOP).expect(201);
+    const reg = await auditor.post('/api/documents', { sha256: up.body.sha256, filename: 'x.pdf', mime: 'application/pdf', kind: 'sop', classification: 'internal' });
+    expect(reg.status).toBe(201);
+    expect(reg.body.extraction === null || reg.body.extraction.status === 'failed').toBe(true);
+    expect(reg.body.chunks).toBe(0);
+  });
+
   it('serves the exact bytes back, as a download that cannot be sniffed', async () => {
     const { app } = await setup();
     const auditor = await signIn(app, 'auditor');

@@ -138,7 +138,14 @@ export function documentRoutes(svc: AuditService, storage: StorageDeps): Router 
     });
     // No text supplied: the server reads the stored bytes itself, in its own transaction, so a slow or failing
     // extractor never undoes the registration; its outcome is the document's extraction status.
-    if (!body.text) await runExtraction({ db, blobs: store, config: evidence }, registered.doc, actor);
+    // If it throws, the document still exists: answer 201 with extraction: null, which the retry route treats as retryable.
+    if (!body.text) {
+      try {
+        await runExtraction({ db, blobs: store, config: evidence }, registered.doc, actor);
+      } catch (err) {
+        logger.error({ err, documentId: registered.doc.id }, 'Extraction failed after registration');
+      }
+    }
     const doc = (await getDocument(db, registered.doc.id))!;
     const chunks = body.text ? registered.chunks : Number((await db.selectFrom('chunks').select((eb) => eb.fn.countAll().as('n')).where('document_id', '=', doc.id).executeTakeFirstOrThrow()).n);
     const result = { ...doc, chunks };

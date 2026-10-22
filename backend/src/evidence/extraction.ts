@@ -5,6 +5,7 @@ import type { User } from '../engine/types';
 import { AppError } from '../errors';
 import { setDocumentText, type DocumentRecord } from '../knowledge/document-repo';
 import { recordExtractionEvent } from '../knowledge/trail';
+import { logger } from '../observability/log';
 import { BlobNotFound, sha256Of, type BlobStore } from '../storage/blob-store';
 import { MAX_TEXT_CHARS, type EvidenceConfig } from './config';
 import { EXTRACTORS, NoTextLayer, type Extracted } from './extract';
@@ -60,7 +61,9 @@ async function attempt(deps: ExtractionDeps, doc: DocumentRecord, given?: Buffer
     try {
       bytes = await readAll(deps.blobs, doc.sha256);
     } catch (err) {
-      return failed(err instanceof BlobNotFound ? err : new Error(`Could not read the stored file: ${err instanceof Error ? err.message : String(err)}`));
+      // The driver's message can carry endpoint, bucket or credential detail; the row is append-only and served by the API.
+      logger.error({ err, documentId: doc.id, notFound: err instanceof BlobNotFound }, 'Stored file could not be read for extraction');
+      return failed(new Error('Stored file could not be read'));
     }
   }
   if (bytes.length > config.extractMaxBytes) return { ...base, status: 'too_large' };
@@ -79,6 +82,8 @@ async function attempt(deps: ExtractionDeps, doc: DocumentRecord, given?: Buffer
 
   try {
     const raw = await withTimeout(extractor.extract(bytes), config.extractTimeoutMs);
+    // Nothing but whitespace is no text at all: record it as such so the document stays retryable.
+    if (!/\S/.test(raw.text)) return { ...base, status: 'no_text', extractor: identity };
     // chars records the length before any cut, so a truncated document shows how much was left out.
     return { status: 'ok', extractor: identity, chars: raw.text.length, pages: raw.pages, error: null, extracted: truncate(raw) };
   } catch (err) {
@@ -107,5 +112,13 @@ export async function runExtraction(deps: ExtractionDeps, doc: DocumentRecord, a
     await recordExtractionEvent(trx, actor, doc, row, chunks);
     return row;
   };
-  return deps.db.isTransaction ? write(deps.db as Transaction<DB>) : (deps.db as Kysely<DB>).transaction().execute(write);
+  try {
+    return await (deps.db.isTransaction ? write(deps.db as Transaction<DB>) : (deps.db as Kysely<DB>).transaction().execute(write));
+  } catch (err) {
+    // Two attempts drew the same number: the UNIQUE (document_id, attempt) key lets only one commit.
+    if ((err as { code?: string }).code === '23505' && String((err as { constraint?: string }).constraint ?? 'document_extractions').includes('document_extractions')) {
+      throw new AppError(409, 'Another extraction of this document is in progress', 'CONFLICT');
+    }
+    throw err;
+  }
 }
