@@ -27,6 +27,8 @@ const MAX_FIELD_BYTES = 2048;
 const BODY_OVERHEAD = 64 * 1024;
 
 const NO_CONTROL = (s: string) => !/[\u0000-\u001f\u007f]/.test(s);
+/** A note may span lines and use tabs; NUL and the other control characters are still refused. */
+const NOTE_CONTROL = (s: string) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(s);
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
@@ -42,7 +44,7 @@ const Fields = z.object({
   kind: z.enum(DOCUMENT_KINDS),
   classification: z.enum(CLASSIFICATIONS),
   retainUntil: CalendarDate.optional(),
-  note: z.string().max(500).refine(NO_CONTROL, 'contains control characters').optional(),
+  note: z.string().max(500).refine(NOTE_CONTROL, 'contains control characters').optional(),
 });
 
 interface Upload { bytes: Buffer; filename: string; mime: string; fields: Record<string, string> }

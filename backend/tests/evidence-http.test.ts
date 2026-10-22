@@ -1,7 +1,10 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { sql } from 'kysely';
+import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { createApp, type OpsOptions } from '../src/app';
 import { ensureDevUsers } from '../src/auth/dev-users';
@@ -270,11 +273,56 @@ describe('evidence upload, retry and text routes', () => {
     expect(await count()).toBe(0);
   });
 
-  it('accepts a 500-character multibyte note', async () => {
+  it('accepts a 500-character 4-byte note and keeps whitespace in a note', async () => {
     const { app, engagement } = await setup();
     const auditor = await signIn(app, 'auditor');
-    const res = await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.pdf'), 'a.pdf', 'application/pdf', { ...FIELDS, note: 'é'.repeat(500) });
+    const url = `/api/engagements/${engagement.id}/evidence`;
+    const wide = '😀'.repeat(500);
+    const res = await send(auditor, url, fx('sample.pdf'), 'a.pdf', 'application/pdf', { ...FIELDS, note: wide });
     expect(res.status).toBe(201);
+    expect(res.body.metadata.note).toBe(wide);
+    const multi = 'line one\n\tline two\r\nline three';
+    const m = await send(auditor, url, fx('sample.docx'), 'a.docx', DOCX_MIME, { ...FIELDS, note: multi }).expect(201);
+    expect(m.body.metadata.note).toBe(multi);
+  });
+
+  it('the retry route shares the uploads rate-limit bucket', async () => {
+    const { app, svc, blobs, engagement } = await setup({ ops: { rateLimits: { ...DEFAULT_RATE_LIMITS, uploadsPerMinute: 2 } } });
+    const auditor = await signIn(app, 'auditor');
+    const bytes = fx('sample.pdf');
+    await blobs.put(bytes, { mime: 'application/pdf' });
+    const doc = await insertDocument(svc.db.kysely, { sha256: sha256Of(bytes), filename: 's.pdf', mime: 'application/pdf', size: bytes.length, kind: 'sop', classification: 'internal', engagementId: null, uploadedBy: 'auditor' });
+    await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.docx'), 'a.docx', DOCX_MIME, FIELDS).expect(201);
+    await auditor.post(`/api/documents/${doc.id}/extract`).expect(200);
+    expect((await auditor.post(`/api/documents/${doc.id}/extract`)).status).toBe(429);
+    expect((await send(auditor, `/api/engagements/${engagement.id}/evidence`, fx('sample.xlsx'), 'a.xlsx', 'application/octet-stream', FIELDS)).status).toBe(429);
+  });
+
+  it('an upload aborted mid-stream creates nothing and the server keeps serving', async () => {
+    const { app, engagement, blobs, count } = await setup();
+    const login = await request(app).post('/auth/dev-login').send({ userId: 'auditor' }).expect(200);
+    const cookie = (login.headers['set-cookie'] as unknown as string[]).map((c) => c.split(';')[0]).join('; ');
+    const csrf = (await request(app).get('/api/me').set('Cookie', cookie).expect(200)).body.csrfToken as string;
+    const server = http.createServer(app).listen(0);
+    try {
+      const { port } = server.address() as AddressInfo;
+      const bytes = fx('sample.pdf');
+      const b = '----abort';
+      const head = `--${b}\r\nContent-Disposition: form-data; name="kind"\r\n\r\nevidence\r\n--${b}\r\nContent-Disposition: form-data; name="classification"\r\n\r\ninternal\r\n--${b}\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\nContent-Type: application/pdf\r\n\r\n`;
+      const req = http.request({ port, method: 'POST', path: `/api/engagements/${engagement.id}/evidence`, headers: { 'content-type': `multipart/form-data; boundary=${b}`, 'content-length': String(head.length + bytes.length + 100), 'x-csrf-token': csrf, cookie } });
+      req.on('error', () => undefined);
+      req.write(head);
+      req.write(bytes.subarray(0, 200));
+      await new Promise((r) => setTimeout(r, 200));
+      req.destroy();
+      await new Promise((r) => setTimeout(r, 500));
+      expect(await count()).toBe(0);
+      expect(await blobs.head(sha256Of(bytes))).toBeNull();
+      const health = await new Promise<number>((resolve, reject) => http.get({ port, path: '/api/health' }, (res) => { res.resume(); resolve(res.statusCode ?? 0); }).on('error', reject));
+      expect(health).toBe(200);
+    } finally {
+      server.close();
+    }
   });
 
   it('ignores an expired duplicate and makes a new row', async () => {
