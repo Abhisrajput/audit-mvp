@@ -1,5 +1,6 @@
 import { runAgentTraces } from './agent-traces';
 import { runAssistantCases } from './assistant';
+import { runEvidenceCases } from './evidence';
 import { runJudgmentCases } from './judgment';
 import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
@@ -17,7 +18,7 @@ import { AuditService, ENGINE_VERSION } from '../service';
 export interface EvalCaseResult {
   id: string;
   packId: string;
-  kind: EvalCase['kind'] | 'agent-trace' | 'agent-trace-llm' | 'judgment' | 'assistant';
+  kind: EvalCase['kind'] | 'agent-trace' | 'agent-trace-llm' | 'judgment' | 'assistant' | 'evidence';
   description: string;
   passed: boolean;
   /** Reported for information only, and left out of the totals: a model-driven agent run (--agent-llm). */
@@ -143,6 +144,8 @@ export async function runEval(
     cases.push(...runJudgmentCases());
     // The assistant's planner cases: the offline ones always run; the model ones only with a model (informational).
     cases.push(...(await runAssistantCases(llm)));
+    // The evidence drafter's cases (REQ-41): the offline ones always run on the rules; the model ones only with a model (informational).
+    cases.push(...(await runEvidenceCases(llm, svc)));
     // The agent's golden traces (agent spec §8), offline, each on its own in-process database.
     if (opts.agentTraces) cases.push(...(await runAgentTraces(registry, { update: opts.updateTraces, packIds, llm: opts.agentLlm ? llm : null })));
     return {
