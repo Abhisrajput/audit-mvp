@@ -6,7 +6,8 @@ import { Toolbox } from '../src/agents/tools/toolbox';
 import { AppError } from '../src/errors';
 import { NO_SPEND } from '../src/agents/types';
 import { agentPort } from '../src/agents/port';
-import { checkQuotes, draftEvidenceWithModel, draftEvidenceRules, verifyDraft, type DraftOptions, type ModelDraft, type PageTexts } from '../src/agents/specialists/evidence';
+import { checkQuotes, draftEvidenceWithModel, ModelDraftSchema, draftEvidenceRules, verifyDraft, type DraftOptions, type ModelDraft, type PageTexts } from '../src/agents/specialists/evidence';
+import { listSteps } from '../src/agents/run-repo';
 import { draftTestPlans } from '../src/agents/specialists/test-plan';
 import { ensureDevUsers } from '../src/auth/dev-users';
 import { insertDocument, setDocumentText } from '../src/knowledge/document-repo';
@@ -181,6 +182,10 @@ describe('the evidence specialist', () => {
     expect(verifyDraft(ev('P', 3), t, ids)).toMatchObject({ ok: false, reason: expect.stringContaining('has 2') });
     expect(verifyDraft(ev('P', 2), t, ids)).toMatchObject({ ok: true });
     expect(verifyDraft(ev('F'), t, ids)).toMatchObject({ ok: true });
+    // A page on a document without pages is dropped, not refused (M2).
+    const pageless = verifyDraft(ev('F', 3), t, ids);
+    expect(pageless).toMatchObject({ ok: true });
+    expect(pageless.ok && pageless.draft.evidence[0]).toEqual({ documentId: 'F', quote: 'a' });
     expect(verifyDraft(ev('P', 1, 'x'.repeat(301)), t, ids)).toMatchObject({ ok: false, reason: expect.stringContaining('300') });
     expect(verifyDraft(ev('G', 1), t, ids)).toMatchObject({ ok: false });
   });
@@ -265,5 +270,83 @@ describe('the evidence specialist', () => {
     const [a, b] = e.rcm;
     const edited = { ...e, testInputs: { [a.id]: input() }, testDrafts: { [b.id]: { rowId: b.id, evidence: [], couldNotVerify: [], confidence: 'low' as const, qa: { blocking: [], advisory: [] }, draftedBy: { runId: 'R', at: 't', model: 'm' }, personEdited: true } } };
     expect(await draftEvidenceWithModel(edited, opts(null))).toMatchObject({ drafts: {} });
+  });
+
+  it('bounds every model-supplied string: a long document id, too many or long couldNotVerify items and a huge page are refused [I2]', async () => {
+    const q = { quote: 'x' };
+    const refused = [
+      answer({ evidence: [{ documentId: 'D'.repeat(65), ...q }] }),
+      answer({ couldNotVerify: Array.from({ length: 11 }, () => 'n') }),
+      answer({ couldNotVerify: ['n'.repeat(501)] }),
+      answer({ evidence: [{ documentId: 'D', page: 100_001, ...q }] }),
+    ];
+    for (const r of refused) expect(ModelDraftSchema.safeParse(r).success).toBe(false);
+    expect(ModelDraftSchema.safeParse(answer({ evidence: [{ documentId: 'D'.repeat(64), page: 100_000, ...q }], couldNotVerify: ['n'.repeat(500)] })).success).toBe(true);
+    // The specialist does not save such an answer as the model's draft.
+    const { svc, e, opts } = await setup();
+    await addDoc(svc, e.id);
+    const fake = new FakeProvider(() => answer({ evidence: [{ documentId: 'D'.repeat(65), quote: 'x' }] }));
+    const out = await draftEvidenceWithModel(e, opts(fake));
+    expect(out.withoutModel).toBe(true);
+    expect(JSON.stringify(out.drafts)).not.toContain('D'.repeat(65));
+  });
+
+  it('truncates a no-draft reason to 500 characters [I2]', async () => {
+    const { svc, e, run, opts } = await setup();
+    await addDoc(svc, e.id);
+    class Long extends Toolbox {
+      override async call(): Promise<never> { throw new AppError(404, 'r'.repeat(900)); }
+    }
+    const box = new Long({ db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: e }, 'evidence');
+    const out = await draftEvidenceWithModel(e, opts(new FakeProvider(() => answer()), { toolbox: box }));
+    expect(out.noDraft[0].reason).toHaveLength(500);
+  });
+
+  it('a lost lease or a forbidden tool stops the run instead of becoming a row no-draft [M1]', async () => {
+    for (const code of ['LEASE_LOST', 'AGENT_FORBIDDEN']) {
+      const { svc, e, run, opts } = await setup(2);
+      await addDoc(svc, e.id);
+      class Stopped extends Toolbox {
+        override async call(): Promise<never> { throw new AppError(409, 'stop', code); }
+      }
+      const box = new Stopped({ db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: e }, 'evidence');
+      await expect(draftEvidenceWithModel(e, opts(new FakeProvider(() => answer()), { toolbox: box }))).rejects.toMatchObject({ code });
+    }
+  });
+
+  it('with a toolbox the pages the model is shown are read through read_document, once per document per row [M3]', async () => {
+    const { svc, e, run, opts } = await setup(2);
+    const d = await addDoc(svc, e.id, { pages: ['Introduction to the cold room. ', 'Cold room temperature log signed by QA on 3 March. No exceptions noted.'] });
+    const box = new Toolbox({ db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: e }, 'evidence');
+    const fake = new FakeProvider(() => answer({ evidence: [{ documentId: d.id, page: 2, quote: 'signed by QA on 3 March' }] }));
+    const out = await draftEvidenceWithModel(e, opts(fake, { toolbox: box }));
+    expect(Object.keys(out.drafts)).toHaveLength(2);
+    const reads = (await listSteps(svc.db.kysely, run.id)).filter((s) => s.kind === 'tool_call' && (s.decision as { tool: string }).tool === 'read_document')
+      .map((s) => (s.decision as { args: { documentId: string; pages?: number[] } }).args);
+    // One call per row; each names the document and the pages the model was shown, with no page twice.
+    expect(reads).toHaveLength(2);
+    for (const r of reads) {
+      expect(r.documentId).toBe(d.id);
+      expect(new Set(r.pages).size).toBe(r.pages!.length);
+    }
+    const shown = (fake.requests[0].user.match(/<data source="pages">([\s\S]*?)<\/data>/) ?? [])[1] ?? '';
+    for (const p of reads[0].pages!) expect(shown).toMatch(new RegExp(`"page":\\s*${p}\\b`));
+    expect(shown).toContain('Introduction to the cold room.');
+  });
+
+  it('a row that needs more than six pages of one document reads them in batches of six [M3]', async () => {
+    const { svc, e, run, opts } = await setup();
+    const pages = Array.from({ length: 8 }, (_, i) => `Cold room temperature log, page ${i + 1}. `);
+    const d = await addDoc(svc, e.id, { pages });
+    const calls: unknown[] = [];
+    class Spy extends Toolbox {
+      override async call(...args: Parameters<Toolbox['call']>) { if (args[0] === 'read_document') calls.push(args[1]); return super.call(...args); }
+    }
+    const box = new Spy({ db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: e }, 'evidence');
+    await draftEvidenceWithModel(e, opts(new FakeProvider(() => answer()), { toolbox: box }));
+    const sizes = (calls as { pages: number[] }[]).map((c) => c.pages.length);
+    expect(sizes.every((n) => n <= 6)).toBe(true);
+    expect(sizes.reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    expect(new Set((calls as { documentId: string }[]).map((c) => c.documentId))).toEqual(new Set([d.id]));
   });
 });

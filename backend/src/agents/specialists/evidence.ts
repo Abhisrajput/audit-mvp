@@ -12,6 +12,7 @@ import { listDocuments } from '../../knowledge/document-repo';
 import { ModelUnavailableError, type AgentModels } from '../llm/models';
 import { draftIssues } from '../qa/drafts';
 import { searchKnowledge, type KnowledgeHit } from '../tools/knowledge';
+import type { DocumentText } from '../tools/documents';
 import type { Toolbox } from '../tools/toolbox';
 
 // The evidence specialist (spec §9.1). It reads the evidence already on the engagement and proposes a result for rows
@@ -24,6 +25,11 @@ const HITS_PER_ROW = 8;
 const MAX_READ_PAGES = 6;
 const MAX_SHOWN_CHARS = 12_000;
 const MAX_QUERY = 200;
+// Bounds on what the model supplies: they reach stored drafts, step records and the screen.
+const MAX_ID = 64;
+const MAX_PAGE = 100_000;
+const MAX_NOTE = 500;
+const MAX_REASON = 500;
 
 export const EVIDENCE_SYSTEM = `You propose the result of one control test for internal-audit field work, using only the evidence documents given. You propose; a person decides. Be sceptical: a document that merely describes a control is not proof it operated. Record sampleTested and exceptions only as far as the documents show them. If the documents do not settle something, say so in couldNotVerify and leave the proposal out. Quote only text that appears verbatim in the cited document, and cite its page. Never invent a quote, a document or a count.
 ${DATA_RULES}`;
@@ -35,8 +41,8 @@ export const ModelDraftSchema = z.object({
     exceptions: z.number().int().min(0),
     observation: z.string().max(2000),
   }).optional(),
-  evidence: z.array(z.object({ documentId: z.string(), page: z.number().int().min(1).optional(), quote: z.string().max(MAX_QUOTE) })).max(20),
-  couldNotVerify: z.array(z.string()).max(10),
+  evidence: z.array(z.object({ documentId: z.string().max(MAX_ID), page: z.number().int().min(1).max(MAX_PAGE).optional(), quote: z.string().max(MAX_QUOTE) })).max(20),
+  couldNotVerify: z.array(z.string().max(MAX_NOTE)).max(10),
   confidence: z.enum(['low', 'medium', 'high']),
 });
 export type ModelDraft = z.infer<typeof ModelDraftSchema>;
@@ -71,12 +77,13 @@ const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /**
  * The structural checks that make a draft unusable: a document that is not evidence on this engagement, more exceptions
- * than items tested, a page missing or out of range, or a quote over the length cap. Whether a quote is in the text is
+ * than items tested, a page missing or out of range, or a quote over the length cap. A page on a document without pages is dropped. Whether a quote is in the text is
  * checkQuotes' question: that draft is kept, blocked.
  */
 export function verifyDraft(draft: ModelDraft, texts: Map<string, PageTexts>, engagementDocIds: Set<string>): { ok: true; draft: ModelDraft } | { ok: false; reason: string } {
   const p = draft.proposal;
   if (p && p.exceptions > p.sampleTested) return { ok: false, reason: `the draft records ${p.exceptions} exceptions in ${p.sampleTested} items tested` };
+  const evidence: ModelDraft['evidence'] = [];
   for (const ev of draft.evidence) {
     if (!engagementDocIds.has(ev.documentId)) return { ok: false, reason: `the draft cites ${ev.documentId}, which is not evidence on this engagement` };
     if (ev.quote.length > MAX_QUOTE) return { ok: false, reason: `a quote from ${ev.documentId} is over ${MAX_QUOTE} characters` };
@@ -84,9 +91,14 @@ export function verifyDraft(draft: ModelDraft, texts: Map<string, PageTexts>, en
     if (t?.pages != null) {
       if (ev.page === undefined) return { ok: false, reason: `the draft cites ${ev.documentId} without a page` };
       if (ev.page > t.pages) return { ok: false, reason: `the draft cites page ${ev.page} of ${ev.documentId}, which has ${t.pages}` };
-    }
+      evidence.push(ev);
+    } else if (t?.pages === null) {
+      // A page on a document without page breaks cannot be opened later: the quote stands, the page goes.
+      const { page: _page, ...rest } = ev;
+      evidence.push(rest);
+    } else evidence.push(ev);
   }
-  return { ok: true, draft };
+  return { ok: true, draft: { ...draft, evidence } };
 }
 
 /** The quotes that are not in the cited page (the whole text when the document has no pages), after collapsing whitespace. */
@@ -202,6 +214,37 @@ export function evidencePrompt(row: RcmRow, plan: TestPlan, found: FoundPassage[
   ].join('\n');
 }
 
+const reasonOf = (s: string) => s.slice(0, MAX_REASON);
+
+/**
+ * The pages shown to the model, as `${documentId}#${page}` to text. With a toolbox they are read through read_document
+ * (one call per document, six pages at most per call), so the trail names them; without one, straight from the text.
+ */
+async function readShown(o: DraftOptions, texts: Map<string, PageTexts>, keys: FoundPassage[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const keyOf = (documentId: string, page: number | null) => `${documentId}#${page ?? ''}`;
+  if (!o.toolbox) {
+    for (const f of keys) {
+      await loadPage(o.db, texts, f.documentId, f.page);
+      out.set(keyOf(f.documentId, f.page), texts.get(f.documentId)?.byPage.get(f.page) ?? '');
+    }
+    return out;
+  }
+  const byDoc = new Map<string, Set<number | null>>();
+  for (const f of keys) byDoc.set(f.documentId, (byDoc.get(f.documentId) ?? new Set()).add(f.page));
+  for (const [documentId, wanted] of byDoc) {
+    const numbered = [...wanted].filter((p): p is number => p !== null);
+    const calls: { documentId: string; pages?: number[] }[] = [];
+    if (wanted.has(null)) calls.push({ documentId });
+    for (let i = 0; i < numbered.length; i += MAX_READ_PAGES) calls.push({ documentId, pages: numbered.slice(i, i + MAX_READ_PAGES) });
+    for (const args of calls) {
+      const doc = await o.toolbox.call('read_document', args) as DocumentText;
+      for (const p of doc.pages) out.set(keyOf(documentId, p.page), p.text);
+    }
+  }
+  return out;
+}
+
 /** Drafts every row that needs one, in RCM order: find the passages, read the pages, ask the model, verify, run QA. */
 export async function draftEvidenceWithModel(e: Engagement, o: DraftOptions): Promise<EvidenceDraftResult> {
   const now = (o.now ?? (() => new Date().toISOString()))();
@@ -219,21 +262,23 @@ export async function draftEvidenceWithModel(e: Engagement, o: DraftOptions): Pr
       found = await retrieve(o, e, row, plan, docIds);
       if (o.models?.available) {
         let budget = MAX_SHOWN_CHARS;
-        const keys = [...new Map(found.map((f) => [`${f.documentId}#${f.page ?? ''}`, f])).values()].slice(0, MAX_READ_PAGES);
+        const keys = [...new Map(found.map((f) => [`${f.documentId}#${f.page ?? ''}`, f])).values()];
+        const read = await readShown(o, texts, keys);
         for (const f of keys) {
-          await loadPage(o.db, texts, f.documentId, f.page);
-          const text = texts.get(f.documentId)?.byPage.get(f.page) ?? '';
+          const text = read.get(`${f.documentId}#${f.page ?? ''}`) ?? '';
           shown.push({ documentId: f.documentId, page: f.page, text: text.slice(0, Math.max(budget, 0)) });
           budget -= text.length;
         }
       }
     } catch (err) {
       if (!(err instanceof AppError)) throw err;
+      // A lost lease or a forbidden tool stops the run; it is not this row's problem.
+      if (err.code === 'LEASE_LOST' || err.code === 'AGENT_FORBIDDEN') throw err;
       if (err.code === 'BUDGET_EXHAUSTED') {
         for (const r of rows.slice(i)) out.noDraft.push({ rowId: r.id, reason: 'budget exhausted' });
         break;
       }
-      out.noDraft.push({ rowId: row.id, reason: err.message });
+      out.noDraft.push({ rowId: row.id, reason: reasonOf(err.message) });
       continue;
     }
     if (!o.models?.available) {
@@ -260,7 +305,7 @@ export async function draftEvidenceWithModel(e: Engagement, o: DraftOptions): Pr
     }
     const checked = verifyDraft(model.output, texts, docIds);
     if (!checked.ok) {
-      out.noDraft.push({ rowId: row.id, reason: checked.reason });
+      out.noDraft.push({ rowId: row.id, reason: reasonOf(checked.reason) });
       continue;
     }
     const d = checked.draft;
