@@ -254,6 +254,8 @@ Microsoft-first clients, add a provider for Azure OpenAI, or for Claude on
 Microsoft Foundry, behind the same `LlmProvider` interface in
 `backend/src/engine/llm/provider.ts`.
 
+The chat assistant uses the same provider (`LLM_PROVIDER`) and its own model, `ASSISTANT_MODEL`.
+
 ## Agent runs (supervised autopilot)
 
 An auditor can hand an engagement to the agent: **Start agent run** on the engagement page. The agent drafts the scope, then the RCM, then a test plan for every control. QA reviews each workpaper, and the run stops at a gate for a person to sign:
@@ -270,6 +272,40 @@ The auditor records the engagement context on the Scope tab: process or system c
 Sampling follows the assessed risk, not the library rating: the sample size comes from the assessed risk and the control's frequency, and each control's test plan picks a selection method (annual and quarterly controls are tested in full, a judgemental sample is used where an incident or prior finding touches the area, otherwise random) and carries a one-sentence rationale, which the signer reads in the memo. The plan also recommends a tolerance, and a person may set one per control on the Test plans tab (`PUT /api/engagements/:id/tolerances/:controlId`, trailed as `human:set-tolerance`); a test accepts exceptions only within it, the agent never sets one, and it is stored outside the signed workpapers. Because the test-plans QA review is keyed by the test-plans hash, which excludes tolerances, a tolerance set after that review does not re-run it. A person can set it only until the control has a recorded test (`TOLERANCE_LOCKED`, HTTP 409). Every test result carries a severity (none, isolated, systemic or pervasive); a model may only worsen it. A finding is rated from likelihood and impact by a fixed matrix, with a root cause (marked confirmed only when the record supports it) and a recommendation tailored to the cause. People edit the likelihood and impact of a finding, never the rating itself: sending `rating` in the body is a 400, and the rating is recomputed. Management responses sit outside the signed finding: `POST` and `GET /api/engagements/:id/findings/:fid/responses`, trailed as `human:management-response`. A response is refused before the finding is approved (`FINDING_NOT_APPROVED`, HTTP 409) and once the report gate is approved (`RESPONSE_LOCKED`, HTTP 409). Recording one reopens the report gate without touching the finding's signature, and `verify` checks the tolerances and responses against the trail.
 
 The report carries an overall opinion on the engagement. The rule reads approved findings only: any High gives `unsatisfactory`, otherwise any Medium gives `needs improvement`, otherwise `satisfactory`. Its basis is a fixed paragraph (counts by rating, areas covered and excluded, rows tested). With Claude, the model may worsen the opinion by one step, and only with a written rationale; it can never improve it. The Chief Audit Executive sets the opinion by rejecting the report gate with `opinion: satisfactory`, `opinion: needs_improvement` or `opinion: unsatisfactory` in the comment, in either direction; the redraft takes it, quotes the comment as its basis and names the rejection's signature. A directive in QA text or in a person's module run is ignored, because only a signed rejection carries one. A management response recorded afterwards keeps a CAE-set opinion while the approved findings are unchanged. The report lists each finding with its latest management response, the tolerances in force and the coverage statement, and ends with a methodology line naming the `iia` pack and how many clause summaries a reviewer has verified. The steering model reads each subject's judgment memo as data when it chooses the next action; a memo cannot add an action or open a gate.
+
+## Assistant
+
+The assistant is a chat drawer that opens from every audit page, not only the engagement pages. It turns a sentence into one of a fixed set of commands over the same services the forms use, run under the person's own role: finding documents and standards, listing engagements, findings and packs, opening an engagement, creating an engagement, starting an agent run, and recording the engagement context, a control's tolerance or a management response. The model only names a command; the arguments are checked by the same schema as the route's.
+
+Examples, each of which is an `assistant` eval case:
+
+- "find the HACCP monitoring SOP" runs a document search and shows the hits.
+- "start an audit of supplier approval at Plant 2 for the first half of 2026" is answered by asking for the fields still missing, such as the entity, site and packs, not by guessing them.
+- "record that management agrees with the cover-roster finding, owner the plant manager, due 15 December" comes back as a card with the response, owner and date.
+
+These are three of the eval's six model cases: they run only when a model provider is configured, while the offline eval runs the thirteen rule cases.
+
+Reads run at once. A write comes back as a card that shows exactly what will be saved, and nothing happens until the person presses Confirm; if the engagement changed in the meantime the existing version conflict (HTTP 409) stops it. The assistant never signs: signing stays on the gate card and the finding dialog, and it answers a request to approve or reject by saying so.
+
+With `LLM_PROVIDER=offline` the panel answers these fixed phrases only, and says it is offline:
+
+- `list engagements`, `show engagements`
+- `show ENG-1`, `open ENG-1`
+- `list findings`, `show findings for ENG-1` (the open engagement is the default)
+- `find documents about <topic>`, `find <topic>`
+- `search standards for <topic>`
+- `list packs`
+- `start the run`, `start the audit on ENG-1` (the open engagement is the default)
+
+Settings, all optional:
+
+- `ASSISTANT_ENABLED` (default `true`): `false` switches the assistant off.
+- `ASSISTANT_MODEL` (default `claude-sonnet-5-5`): the model that plans a turn, used only when a model provider is configured.
+- `ASSISTANT_MODEL_TIMEOUT_MS` (default `20000`, minimum 1000): the limit on that one call.
+
+Each client may send 30 turns or commands a minute (`assistantPerMinute`). Conversations are kept in the browser only.
+
+Roles are the forms' own. The auditor, audit manager, Chief Audit Executive and viewer roles can use the reads; the five writes (create engagement, set context, start run, set tolerance, record management response) only the auditor and audit manager, as on the forms. The admin role sees no audit content and gets no commands, so the assistant is not offered to it.
 
 ## Content packs and the knowledge graph
 

@@ -1,4 +1,5 @@
 import { loadAgentConfig } from './agents/config';
+import { loadAssistantConfig } from './assistant/config';
 import { createApp } from './app';
 import { createBlobStore } from './storage/config';
 import { createOidcClient } from './auth/oidc';
@@ -17,6 +18,7 @@ async function main() {
   prepareEnv();
   const { core: config, auth, storage, citationPolicy } = loadServerConfig();
   const agents = loadAgentConfig();
+  const assistant = loadAssistantConfig();
   setLogLevel(config.logLevel);
   const blobs = createBlobStore(storage);
   const db = connectPg(config.databaseUrl, { ssl: config.databaseSsl });
@@ -53,8 +55,9 @@ async function main() {
   }
   if (!config.metricsToken) logger.warn('METRICS_TOKEN is not set: /metrics is open. Set it outside local development.');
   if (!agents.enabled) logger.warn('AGENT_ENABLED=false: agent runs cannot be started');
+  if (!assistant.enabled) logger.warn('ASSISTANT_ENABLED=false: the chat assistant is switched off');
   const svc = new AuditService(db, registry, instrumentProvider(createProvider()), { citationPolicy });
-  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }, { trustProxy: config.trustProxy, metricsToken: config.metricsToken, agents }).listen(config.port, () => {
+  createApp(svc, { config: auth, oidc }, { blobs, maxUploadBytes: storage.maxBytes, presignDownloads: storage.presignDownloads }, { trustProxy: config.trustProxy, metricsToken: config.metricsToken, agents, assistant }).listen(config.port, () => {
     logger.info(`Audit platform API on :${config.port} — packs: ${registry.list().map((p) => `${p.id}@${p.version}`).join(', ')} — provider: ${svc.providerInfo.id}/${svc.providerInfo.model} — files: ${blobs.driver}`);
   });
 }

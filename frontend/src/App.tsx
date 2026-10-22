@@ -1,6 +1,8 @@
-import { FactCheck as FactCheckIcon, Logout as LogoutIcon } from '@mui/icons-material';
+import { Chat as ChatIcon, FactCheck as FactCheckIcon, Logout as LogoutIcon } from '@mui/icons-material';
 import { AppBar, Box, Button, Chip, Container, LinearProgress, Toolbar, Typography } from '@mui/material';
+import { useState } from 'react';
 import { Link as RouterLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import AssistantPanel, { ASSISTANT_WIDTH } from './components/assistant/AssistantPanel';
 import { ActionButton } from './components/common';
 import AdminPage from './pages/AdminPage';
 import EngagementPage from './pages/EngagementPage';
@@ -21,6 +23,7 @@ const AUDIT_NAV = [
 function Shell() {
   const { user, provider, logout } = useSession();
   const { pathname } = useLocation();
+  const [assistantOpen, setAssistantOpen] = useState(false);
   if (!user) return null;
   const isAdmin = user.role === 'admin';
   const nav = isAdmin ? [{ to: '/admin', label: 'Administration' }] : AUDIT_NAV;
@@ -38,6 +41,11 @@ function Shell() {
             </Button>
           ))}
           <Box sx={{ flex: 1 }} />
+          {!isAdmin && (
+            <Button color="inherit" startIcon={<ChatIcon />} onClick={() => setAssistantOpen((o) => !o)} sx={{ fontWeight: assistantOpen ? 700 : 400 }}>
+              Assistant
+            </Button>
+          )}
           {provider && !isAdmin && (
             <Chip size="small" label={`Model: ${provider.id === 'offline' ? 'offline rules' : provider.model}`} sx={{ bgcolor: 'rgba(255,255,255,0.15)', color: 'inherit' }} />
           )}
@@ -48,7 +56,7 @@ function Shell() {
           </ActionButton>
         </Toolbar>
       </AppBar>
-      <Container maxWidth="xl" sx={{ py: 3 }}>
+      <Container maxWidth="xl" sx={{ py: 3, mr: !isAdmin && assistantOpen ? { md: `${ASSISTANT_WIDTH}px` } : undefined }}>
         {isAdmin ? (
           <Routes>
             <Route path="/admin" element={<AdminPage />} />
@@ -65,6 +73,7 @@ function Shell() {
           </Routes>
         )}
       </Container>
+      {!isAdmin && <AssistantPanel open={assistantOpen} onClose={() => setAssistantOpen(false)} />}
     </>
   );
 }

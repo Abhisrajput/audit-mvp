@@ -6,3 +6,6 @@ export type { AgentRun, AgentStep } from '../../backend/src/agents/run-repo';
 export type { Gate } from '../../backend/src/agents/gate-repo';
 export type { Action, Budget, Decision, GateKind, PolicyAttempt, QaIssue, QaReport, RunStatus, Spent, StepKind } from '../../backend/src/agents/types';
 export type { DelegateRecord } from '../../backend/src/agents/state';
+export type { CommandName, CommandKind, EngagementCard, FindingRow, DocumentResult, ClauseResult, PackRow } from '../../backend/src/assistant/commands';
+export type { TurnResponse, CommandResponse } from '../../backend/src/assistant/routes';
+export type { ShownItem, HistoryTurn } from '../../backend/src/assistant/planner';
