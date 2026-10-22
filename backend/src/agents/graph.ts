@@ -1,5 +1,6 @@
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { Engagement } from '../engine/types';
+import { parseOpinionDirective } from '../judgment/opinion';
 import { findingKey, menuMemo, rowBasis, subjectInfo } from './subjects';
 import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type GraphInput, type Menu, type QaReport, type Specialist, type Stage } from './types';
 
@@ -64,6 +65,12 @@ function rebuild(input: GraphInput, o: StepOptions, key: string): Action {
   return delegate(input, o.specialist, key, o.rows);
 }
 
+/** Whether a rejection comment names an opinion the parser can read. */
+const isDirective = (comment: string) => {
+  const d = parseOpinionDirective(comment);
+  return d !== null && 'opinion' in d;
+};
+
 const summarise = (r: QaReport) => r.issues.map((i) => `${i.criterion}: ${i.detail}`).join('; ');
 
 /** One subject: produce it, review it, gate it, and react to the gate. `passed` once its gate is approved and current. */
@@ -84,6 +91,17 @@ function subjectStepOf(input: GraphInput, key: string, o: StepOptions): Step {
     // What it was built from changed: rebuild it once, then review the rebuilt version. (Edited by hand: review it.)
     if (g.basisHash !== s.basis && !mine.some((r) => r.basis === s.basis)) return act([rebuild(input, o, key)]);
   }
+  // A rejection of the content as it stands is redrafted from the current basis before any basis rebuild, so a
+  // directive on a rejected report gate is never lost to a plain rebuild (spec §5.6).
+  if (g?.state === 'rejected' && g.subjectHash === s.hash) {
+    // A report rejection naming an opinion steers the opinion rather than failing the draft: it does not count toward the rail.
+    const rejections = input.gates.filter((x) => x.subjectKey === key && x.state === 'rejected' && !(key === 'report' && isDirective(x.comment))).length;
+    if (rejections >= MAX_REJECTIONS) return act([{ type: 'escalate', reason: `gate_rejected_twice: ${key}` }]);
+    if (mine.some((r) => r.kind === 'rework')) return act([{ type: 'escalate', reason: `rework produced no change: ${key}; edit it by hand, then resume` }]);
+    // A report rejection carries its signature, the only authority for an opinion the comment names (spec §5.6, ruling 1).
+    const directiveBy = s.gateKind === 'report' ? g.signatureId ?? undefined : undefined;
+    return act([rework(o, key, g.comment.trim() || `Address the reasons the ${label} gate was rejected`, directiveBy)]);
+  }
   // The newest gate was superseded because the basis moved while the content stayed: rebuild once rather than re-gate stale content. This also fires for a subject drafted in an earlier run and for the report after a management response (rebuilt once; the markdown is the same until 8C).
   const overtaken = findLast(input.gates, (x) => x.subjectKey === key);
   if (!g && overtaken?.state === 'superseded' && overtaken.subjectHash === s.hash && overtaken.basisHash !== s.basis && !input.redrafts.some((r) => r.subjectKey === key && r.basis === s.basis)) {
@@ -96,14 +114,6 @@ function subjectStepOf(input: GraphInput, key: string, o: StepOptions): Step {
   }
   if (g?.state === 'open') {
     return act([{ type: 'wait', reason: `awaiting ${s.gateKind} gate signature${s.gateKind === 'finding' ? ` (${s.subjectId})` : ''}` }]);
-  }
-  if (g?.state === 'rejected' && g.subjectHash === s.hash) {
-    const rejections = input.gates.filter((x) => x.subjectKey === key && x.state === 'rejected').length;
-    if (rejections >= MAX_REJECTIONS) return act([{ type: 'escalate', reason: `gate_rejected_twice: ${key}` }]);
-    if (mine.some((r) => r.kind === 'rework')) return act([{ type: 'escalate', reason: `rework produced no change: ${key}; edit it by hand, then resume` }]);
-    // A report rejection carries its signature, the only authority for an opinion the comment names (spec §5.6, ruling 1).
-    const directiveBy = s.gateKind === 'report' ? g.signatureId ?? undefined : undefined;
-    return act([rework(o, key, g.comment.trim() || `Address the reasons the ${label} gate was rejected`, directiveBy)]);
   }
 
   // No gate yet, the last one was superseded, or a person edited it after a rejection or approval: QA, then a gate.

@@ -184,6 +184,46 @@ describe('the engagement graph', () => {
     expect(offered).not.toHaveProperty('directiveBy');
   });
 
+  it('does not count a report rejection that carries an opinion directive toward the two-rejections rail [REQ-32, REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    e.report = { generatedAt: 't', bundleId: 'RUN-9', markdown: '# Report', includedFindingIds: ['F-A'], excludedFindingIds: [] };
+    const directive = (comment: string, signatureId: string) => gate(e, 'report', 'rejected', { comment, signatureId });
+    const plain = (comment: string) => gate(e, 'report', 'rejected', { comment, signatureId: 'SIG-PLAIN' });
+    // Two directives: the CAE is steering the opinion, not failing the draft.
+    expect(menu(e, { gates: [...gates, directive('opinion: unsatisfactory', 'SIG-1'), directive('opinion: needs_improvement', 'SIG-2')], qa: reviews }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: needs_improvement', directiveBy: 'SIG-2' },
+    ]);
+    // One plain rejection, then a directive: "Reject again to set it" works.
+    expect(menu(e, { gates: [...gates, plain('Tighten the summary'), directive('opinion: needs improvement', 'SIG-3')], qa: reviews }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: needs improvement', directiveBy: 'SIG-3' },
+    ]);
+    // Two plain rejections (an unreadable directive counts as plain) still escalate.
+    expect(menu(e, { gates: [...gates, plain('Tighten the summary'), plain('opinion: great')], qa: reviews }).actions).toEqual([
+      { type: 'escalate', reason: 'gate_rejected_twice: report' },
+    ]);
+  });
+
+  it('honours a rejected report gate\'s directive even when the basis moved before the redraft [REQ-32, REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    e.report = { generatedAt: 't', bundleId: 'RUN-9', markdown: '# Report', includedFindingIds: ['F-A'], excludedFindingIds: [] };
+    const built: RedraftRecord = { subjectKey: 'report', kind: 'delegate', basis: subjectInfo(e, 'report')!.basis, sinceGateId: null };
+    const rejected = gate(e, 'report', 'rejected', { comment: 'opinion: unsatisfactory', signatureId: 'SIG-CAE' });
+    // A management response recorded after the rejection moves the report's basis; its content is unchanged.
+    e.responses = {
+      'R-1': { id: 'R-1', findingId: 'F-A', response: 'agree', owner: 'Ops', dueDate: null, actionPlan: 'Fix it', recordedBy: 'u', recordedAt: 't', trailBundleId: 'B-1' },
+    };
+    expect(subjectInfo(e, 'report')!.basis).not.toBe(built.basis);
+    expect(menu(e, { gates: [...gates, rejected], qa: reviews, redrafts: [built] }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: unsatisfactory', directiveBy: 'SIG-CAE' },
+    ]);
+  });
+
   it('escalates an approved finding whose test results changed after its gate [REQ-26]', () => {
     const { e, gates, qa: reviews } = planned();
     e.testInputs = { A: input() };
