@@ -53,6 +53,18 @@ describe('memos on the plan and the finding', () => {
 });
 
 describe('hashes and bases stay exact without the new fields (plan Review Focus 5)', () => {
+  it('a report without an opinion hashes as it always did; with one, the opinion and the memo are part of the hash [REQ-30, REQ-32]', () => {
+    const report = { generatedAt: 't', bundleId: 'b', markdown: '# r', includedFindingIds: ['F1'], excludedFindingIds: [] as string[] };
+    const e = engagement({ report });
+    expect(workpaperContentHash('report', e)).toBe(sha256(canonicalJson({ kind: 'report', content: { markdown: '# r', includedFindingIds: ['F1'], excludedFindingIds: [] } })));
+    const opinion = { rating: 'unsatisfactory' as const, basis: 'b', findingsFingerprint: 'x' };
+    const memo = findingMemo({ finding: finding('R1', 'draft'), row: { assessedRisk: 'Medium', riskRating: 'Medium', control: 'c' }, result: { conclusion: 'Ineffective', exceptionRate: 0.25, severity: 'systemic' }, libraryRecommendation: 'x', modelMoves: [], producedAt: 't' });
+    const withOpinion = { ...e, report: { ...report, opinion }, memos: { report: memo } };
+    const base = workpaperContentHash('report', withOpinion);
+    expect(base).not.toBe(workpaperContentHash('report', e));
+    expect(workpaperContentHash('report', { ...withOpinion, report: { ...withOpinion.report, opinion: { ...opinion, rating: 'needs_improvement' as const } } })).not.toBe(base);
+    expect(workpaperContentHash('report', { ...withOpinion, memos: { report: { ...memo, producedAt: 'later' } } })).not.toBe(base);
+  });
   it('rcm and test_plans hash as today without a memo, and findings and the report basis as today without the new fields', () => {
     const r1 = row('R1');
     const e = engagement({ rcm: [r1], testPlans: { R1: plan(r1) }, findings: [finding('R1', 'approved')] });

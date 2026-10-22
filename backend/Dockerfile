@@ -17,6 +17,8 @@ COPY migrations ./migrations
 COPY packs ./packs
 COPY validation ./validation
 COPY tests ./tests
+# The judgment eval cases (and the opt-in agent traces) the HTTP eval run reads.
+COPY eval ./eval
 USER node
 EXPOSE 3002 3003
 # Liveness only: readiness (/readyz) also checks the database and file storage. The agent worker

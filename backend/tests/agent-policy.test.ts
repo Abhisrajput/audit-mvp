@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LLM_POLICY_VERSION, LlmPolicy, POLICY_SYSTEM, policyPrompt } from '../src/agents/policy/llm';
 import { RULES_VERSION } from '../src/agents/policy/rules';
+import type { JudgmentMemo } from '../src/engine/types';
 import type { Menu, QaReport } from '../src/agents/types';
 import { chooseDecision } from '../src/agents/worker';
 import { DATA_RULES } from '../src/engine/llm/prompt';
@@ -11,7 +12,7 @@ const report: QaReport = {
   issues: [{ criterion: 'scope.citations', severity: 'advisory', detail: 'FD-HACCP-03 is in scope without a regulatory citation' }],
 };
 const menu: Menu = {
-  stage: 'scope', qa: report, qaThreshold: 70,
+  stage: 'scope', qa: report, qaThreshold: 70, memo: null,
   actions: [
     { type: 'open_gate', subjectKey: 'scope' },
     { type: 'rework', specialist: 'scope', subjectKey: 'scope', instruction: 'scope.citations: FD-HACCP-03 is in scope without a regulatory citation' },
@@ -74,10 +75,31 @@ describe('the LLM policy [REQ-26]', () => {
     expect(POLICY_SYSTEM).toContain(DATA_RULES);
   });
 
+  it('never shows the model whose signature a rework carries [REQ-26]', () => {
+    const signed: Menu = { ...menu, actions: [{ type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: satisfactory', directiveBy: 'SIG-1' }, menu.actions[3]] };
+    const prompt = policyPrompt(signed);
+    expect(prompt).not.toContain('SIG-1');
+    expect(prompt).not.toContain('"directiveBy"');
+    expect(prompt).not.toContain('opinion: satisfactory');
+  });
+
   it('is not asked at all when the menu has one entry', async () => {
     const fake = new FakeProvider(() => ({ choice: 0, rationale: 'x' }));
     const only: Menu = { ...menu, actions: [menu.actions[0]] };
     expect(await chooseDecision(new LlmPolicy(), only, testModels(fake))).toMatchObject({ policy: 'forced', policyVersion: LLM_POLICY_VERSION });
     expect(fake.requests).toHaveLength(0);
+  });
+});
+
+describe('the judgment memo in the policy prompt [REQ-26]', () => {
+  it('shows the model the subject\'s memo as data after the QA report, truncated, and keeps the system prompt free of it', () => {
+    const memo: JudgmentMemo = { subjectKey: 'scope', calls: [{ question: 'q', decision: 'd', rationale: 'r'.repeat(400), basis: ['b'], standard: ['IIA-13.2'], source: 'rules' }], forTheReviewer: ['check x', 'y'.repeat(400)], producedAt: 't' };
+    const prompt = policyPrompt({ ...menu, memo });
+    expect(prompt.indexOf('<data source="qa-report">')).toBeLessThan(prompt.indexOf('<data source="memo:scope">'));
+    expect(prompt).toContain('check x');
+    expect(prompt).not.toContain('r'.repeat(301));
+    expect(prompt).not.toContain('y'.repeat(301));
+    expect(POLICY_SYSTEM).not.toContain('memo');
+    expect(policyPrompt(menu)).not.toContain('memo:');
   });
 });

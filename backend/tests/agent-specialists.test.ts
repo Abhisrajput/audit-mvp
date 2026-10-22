@@ -25,7 +25,7 @@ async function withRun(llm: FakeProvider | null, budget: Budget = defaultAgentCo
   const apply = async (action: Action) =>
     applyDecision({
       db: svc.db.kysely, port: agentPort(svc), run, starter: auditor, engagement: await svc.engagement(e.id),
-      gates: await listGates(svc.db.kysely, e.id), menu: { stage: 'scope', actions: [action], qa: null, qaThreshold: 70 }, models,
+      gates: await listGates(svc.db.kysely, e.id), menu: { stage: 'scope', actions: [action], qa: null, qaThreshold: 70, memo: null }, models,
     }, { action, rationale: 'test', policy: 'rules', policyVersion: RULES_VERSION });
   return { svc, e, run, apply, db: svc.db.kysely };
 }

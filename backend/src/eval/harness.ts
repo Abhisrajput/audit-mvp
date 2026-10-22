@@ -1,4 +1,5 @@
 import { runAgentTraces } from './agent-traces';
+import { runJudgmentCases } from './judgment';
 import { createMemoryDb } from '../db/pglite';
 import type { LlmProvider } from '../engine/llm/provider';
 import type { PackRegistry } from '../engine/packs';
@@ -15,7 +16,7 @@ import { AuditService, ENGINE_VERSION } from '../service';
 export interface EvalCaseResult {
   id: string;
   packId: string;
-  kind: EvalCase['kind'] | 'agent-trace' | 'agent-trace-llm';
+  kind: EvalCase['kind'] | 'agent-trace' | 'agent-trace-llm' | 'judgment';
   description: string;
   passed: boolean;
   /** Reported for information only, and left out of the totals: a model-driven agent run (--agent-llm). */
@@ -137,6 +138,8 @@ export async function runEval(
     for (const pack of packs) {
       for (const c of pack.evalCases) cases.push(await runCase(registry, svc, pack, c));
     }
+    // The judgment rules' draft cases (no pack, no model): always run.
+    cases.push(...runJudgmentCases());
     // The agent's golden traces (agent spec §8), offline, each on its own in-process database.
     if (opts.agentTraces) cases.push(...(await runAgentTraces(registry, { update: opts.updateTraces, packIds, llm: opts.agentLlm ? llm : null })));
     return {

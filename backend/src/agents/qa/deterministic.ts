@@ -6,6 +6,7 @@ import { areaRisk, isTouched, RANK } from '../../judgment/risk-assessment';
 import { factorsFor } from '../../judgment/context';
 import { causeSupported, ratingOf } from '../../judgment/finding';
 import { statementCoversAll } from '../../judgment/coverage';
+import { OPINIONS, opinionOf } from '../../judgment/opinion';
 import { rowOfKey, subjectInfo } from '../subjects';
 import type { QaIssue, QaReport } from '../types';
 
@@ -101,9 +102,18 @@ function reportIssues(e: Engagement): QaIssue[] {
   const report = e.report;
   if (!report) return [blocking('report.missing', 'No report has been generated')];
   const missing = e.findings.filter((f) => f.status === 'approved' && !report.includedFindingIds.includes(f.id));
+  const opinion = report.opinion;
+  const rule = opinionOf(e.findings);
+  // A response recorded for an approved finding must appear in the report; the owner's name is the marker.
+  const unreported = e.findings.filter((f) => f.status === 'approved' && e.responses?.[f.id] && !report.markdown.includes(e.responses[f.id].owner));
   return [
     ...missing.map((f) => blocking('report.coverage', `Approved finding ${f.id} is not in the report`)),
     ...(report.excludedFindingIds.length ? [advisory('report.excluded', `${report.excludedFindingIds.length} finding(s) are listed as excluded`)] : []),
+    // An opinion better than the rule needs a signature behind it (a CAE's directive); none is blocking (spec §8C).
+    ...(opinion && !opinion.setBy && OPINIONS.indexOf(opinion.rating) < OPINIONS.indexOf(rule)
+      ? [blocking('report.opinion-rule', `The opinion ${opinion.rating} is better than the rule's ${rule} and no signature set it`)] : []),
+    ...(opinion?.setBy ? [advisory('report.opinion-set-by-cae', `The opinion ${opinion.rating} was set by signature ${opinion.setBy}; the rule gives ${rule}`)] : []),
+    ...unreported.map((f) => advisory('report.responses', `The response from ${e.responses[f.id].owner} to ${f.id} is not in the report; regenerate it`)),
   ];
 }
 

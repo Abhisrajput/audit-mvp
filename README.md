@@ -269,6 +269,8 @@ The auditor records the engagement context on the Scope tab: process or system c
 
 Sampling follows the assessed risk, not the library rating: the sample size comes from the assessed risk and the control's frequency, and each control's test plan picks a selection method (annual and quarterly controls are tested in full, a judgemental sample is used where an incident or prior finding touches the area, otherwise random) and carries a one-sentence rationale, which the signer reads in the memo. The plan also recommends a tolerance, and a person may set one per control on the Test plans tab (`PUT /api/engagements/:id/tolerances/:controlId`, trailed as `human:set-tolerance`); a test accepts exceptions only within it, the agent never sets one, and it is stored outside the signed workpapers. Because the test-plans QA review is keyed by the test-plans hash, which excludes tolerances, a tolerance set after that review does not re-run it. A person can set it only until the control has a recorded test (`TOLERANCE_LOCKED`, HTTP 409). Every test result carries a severity (none, isolated, systemic or pervasive); a model may only worsen it. A finding is rated from likelihood and impact by a fixed matrix, with a root cause (marked confirmed only when the record supports it) and a recommendation tailored to the cause. People edit the likelihood and impact of a finding, never the rating itself: sending `rating` in the body is a 400, and the rating is recomputed. Management responses sit outside the signed finding: `POST` and `GET /api/engagements/:id/findings/:fid/responses`, trailed as `human:management-response`. A response is refused before the finding is approved (`FINDING_NOT_APPROVED`, HTTP 409) and once the report gate is approved (`RESPONSE_LOCKED`, HTTP 409). Recording one reopens the report gate without touching the finding's signature, and `verify` checks the tolerances and responses against the trail.
 
+The report carries an overall opinion on the engagement. The rule reads approved findings only: any High gives `unsatisfactory`, otherwise any Medium gives `needs improvement`, otherwise `satisfactory`. Its basis is a fixed paragraph (counts by rating, areas covered and excluded, rows tested). With Claude, the model may worsen the opinion by one step, and only with a written rationale; it can never improve it. The Chief Audit Executive sets the opinion by rejecting the report gate with `opinion: satisfactory`, `opinion: needs_improvement` or `opinion: unsatisfactory` in the comment, in either direction; the redraft takes it, quotes the comment as its basis and names the rejection's signature. A directive in QA text or in a person's module run is ignored, because only a signed rejection carries one. A management response recorded afterwards keeps a CAE-set opinion while the approved findings are unchanged. The report lists each finding with its latest management response, the tolerances in force and the coverage statement, and ends with a methodology line naming the `iia` pack and how many clause summaries a reviewer has verified. The steering model reads each subject's judgment memo as data when it chooses the next action; a memo cannot add an action or open a gate.
+
 ## Content packs and the knowledge graph
 
 A pack is an OKF Markdown bundle under `backend/packs/<id>/`: `pack.md`, `clauses/`,
@@ -336,13 +338,15 @@ Agreed management actions are tracked, validated and closed on time.
 ```bash
 cd backend
 npm test              # needs Docker: tests run against a real Postgres (Testcontainers)
-npm run eval          # 25/25 eval cases (offline), on a throwaway in-process database;
+npm run eval          # 41/41 eval cases (offline), on a throwaway in-process database;
                       # needs ALLOW_UNVERIFIED_CITATIONS=true until the packs are verified (the report header records it)
 npm run packs:compile # compile the OKF bundles into the knowledge graph (a release step)
 npm run traceability  # requirements traceability matrix -> validation-output/traceability.md
 npm run verify        # check the trail chain, signatures, gates, agent steps and stored documents in the configured database (exit 1 on any problem)
 npm run typecheck
 ```
+
+The eval also runs the `judgment` cases in `backend/eval/judgment/cases.json`: the risk-assessment step-ups, the rating matrix and the engagement opinion, checked against the rules with no model call. They are drafts, so they gate a release of the rules but are not an expert benchmark.
 
 ## Not in the MVP (next steps)
 

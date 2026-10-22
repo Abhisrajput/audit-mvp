@@ -79,6 +79,9 @@ export function workpaperContentHash(kind: WorkpaperKind, e: Engagement): string
     kind === 'scope' ? (e.coverage == null && !e.memos?.scope ? e.scope : { items: e.scope, coverage: e.coverage, memo: e.memos?.scope })
     : kind === 'rcm' ? (!e.memos?.rcm ? e.rcm : { rows: e.rcm, memo: e.memos.rcm })
     : kind === 'test_plans' ? (!e.memos?.test_plans ? e.testPlans ?? {} : { plans: e.testPlans ?? {}, memo: e.memos.test_plans })
-    : e.report ? { markdown: e.report.markdown, includedFindingIds: e.report.includedFindingIds, excludedFindingIds: e.report.excludedFindingIds } : null;
+    : !e.report ? null
+    // A report written before the opinion existed hashes as it always did; with an opinion, the opinion and the report memo are content too (spec §8C).
+    : !e.report.opinion ? { markdown: e.report.markdown, includedFindingIds: e.report.includedFindingIds, excludedFindingIds: e.report.excludedFindingIds }
+    : { markdown: e.report.markdown, includedFindingIds: e.report.includedFindingIds, excludedFindingIds: e.report.excludedFindingIds, opinion: e.report.opinion, memo: e.memos?.report };
   return sha256(canonicalJson({ kind, content }));
 }

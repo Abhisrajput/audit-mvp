@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { canonicalJson } from '../engine/trail';
-import type { Engagement } from '../engine/types';
+import type { Engagement, JudgmentMemo } from '../engine/types';
 import type { AgentModels } from './llm/models';
 
 export type RunStatus = 'running' | 'runnable' | 'waiting' | 'needs_human' | 'completed' | 'cancelled' | 'failed';
@@ -69,7 +69,9 @@ const Rows = z.array(z.string()).optional();
 export const ActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('delegate'), specialist: SpecialistSchema, subjectKey: z.string(), rows: Rows }),
   z.object({ type: z.literal('request_qa'), subjectKey: z.string(), mode: z.enum(['review', 'challenge']) }),
-  z.object({ type: z.literal('rework'), specialist: SpecialistSchema, subjectKey: z.string(), instruction: z.string().max(2000), rows: Rows }),
+  // directiveBy: the signature of the report-gate rejection whose comment is the instruction (spec §5.6, ruling 1). Only
+  // the graph sets it, from the gate record; a QA self-rework never has one, so QA or model text cannot set an opinion.
+  z.object({ type: z.literal('rework'), specialist: SpecialistSchema, subjectKey: z.string(), instruction: z.string().max(2000), rows: Rows, directiveBy: z.string().optional() }),
   z.object({ type: z.literal('open_gate'), subjectKey: z.string() }),
   z.object({ type: z.literal('wait'), reason: z.string() }),
   z.object({ type: z.literal('escalate'), reason: z.string() }),
@@ -138,6 +140,8 @@ export interface Menu {
   actions: Action[];
   qa: QaReport | null;
   qaThreshold: number;
+  /** The judgment memo on the subject this menu is about, shown to the model as data. Never stored. */
+  memo: JudgmentMemo | null;
 }
 
 export interface Policy {

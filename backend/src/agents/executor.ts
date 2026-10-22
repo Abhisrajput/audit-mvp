@@ -75,6 +75,8 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
       // The specialist's model calls are the run's, charged through its meter; without models it runs on its rules.
       const llm = ctx.models?.forModules() ?? null;
       const instruction = a.type === 'rework' ? a.instruction : undefined;
+      // The rejection's signature, when the graph put one on the rework: the service checks it before the module sees it.
+      const instructionBy = a.type === 'rework' ? a.directiveBy : undefined;
       let bundle: TrailBundle;
       let withoutModel: boolean;
       if (a.specialist === 'test-plan') {
@@ -84,7 +86,7 @@ export async function applyDecision(ctx: ExecutorContext, decision: Decision): P
         ({ bundle } = await port.saveTestPlans(e.id, draft.plans, acting, { expectedVersion: e.version! }, draft.memo));
         withoutModel = draft.withoutModel;
       } else {
-        ({ bundle } = await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows, instruction, llm }));
+        ({ bundle } = await port.runModule(e.id, a.specialist, acting, { expectedVersion: e.version!, rows: a.rows, instruction, instructionBy, llm }));
         withoutModel = !!llm && bundle.qaActions.some((q) => q.gate === 'model-availability');
       }
       const used = ctx.models?.take();

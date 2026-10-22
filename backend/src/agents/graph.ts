@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from '../engine/trail';
 import type { Engagement } from '../engine/types';
-import { findingKey, rowBasis, subjectInfo } from './subjects';
+import { parseOpinionDirective } from '../judgment/opinion';
+import { findingKey, menuMemo, rowBasis, subjectInfo } from './subjects';
 import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type GraphInput, type Menu, type QaReport, type Specialist, type Stage } from './types';
 
 // The engagement graph (spec §4): a pure function from the engagement, its gates and this run's QA and redraft
@@ -11,7 +12,7 @@ import { MAX_REJECTIONS, MAX_SELF_REWORKS, type Action, type GateRecord, type Gr
 
 const FAILED = new Set(['Ineffective', 'Design deficient']);
 
-type Step = { passed: true } | { passed: false; actions: Action[]; qa: QaReport | null };
+type Step = { passed: true } | { passed: false; actions: Action[]; qa: QaReport | null; subjectKey?: string };
 const act = (actions: Action[], qa: QaReport | null = null): Step => ({ passed: false, actions, qa });
 
 function findLast<T>(xs: readonly T[], match: (x: T) => boolean): T | undefined {
@@ -50,9 +51,12 @@ interface StepOptions {
   blockedReason?: string;
 }
 
-function rework(o: StepOptions, subjectKey: string, instruction: string): Action {
+function rework(o: StepOptions, subjectKey: string, instruction: string, directiveBy?: string): Action {
   if (!o.canRework) return { type: 'wait', reason: o.blockedReason ?? `${subjectKey} cannot be redrafted now` };
-  return { type: 'rework', specialist: o.specialist, subjectKey, instruction: instruction.slice(0, 2000), ...(o.rows ? { rows: o.rows } : {}) };
+  return {
+    type: 'rework', specialist: o.specialist, subjectKey, instruction: instruction.slice(0, 2000),
+    ...(o.rows ? { rows: o.rows } : {}), ...(directiveBy ? { directiveBy } : {}),
+  };
 }
 
 /** A fresh draft from the current basis, unless the subject may not be redrafted now (a reviewed finding). */
@@ -61,10 +65,21 @@ function rebuild(input: GraphInput, o: StepOptions, key: string): Action {
   return delegate(input, o.specialist, key, o.rows);
 }
 
+/** Whether a rejection comment names an opinion the parser can read. */
+const isDirective = (comment: string) => {
+  const d = parseOpinionDirective(comment);
+  return d !== null && 'opinion' in d;
+};
+
 const summarise = (r: QaReport) => r.issues.map((i) => `${i.criterion}: ${i.detail}`).join('; ');
 
 /** One subject: produce it, review it, gate it, and react to the gate. `passed` once its gate is approved and current. */
 function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
+  const step = subjectStepOf(input, key, o);
+  return step.passed ? step : { ...step, subjectKey: key };
+}
+
+function subjectStepOf(input: GraphInput, key: string, o: StepOptions): Step {
   const s = subjectInfo(input.engagement, key);
   if (!s || !s.present) return act([delegate(input, o.specialist, key, o.rows)]);
   const g = latestGate(input.gates, key);
@@ -75,6 +90,17 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
     if (g.subjectHash === s.hash && g.basisHash === s.basis) return { passed: true };
     // What it was built from changed: rebuild it once, then review the rebuilt version. (Edited by hand: review it.)
     if (g.basisHash !== s.basis && !mine.some((r) => r.basis === s.basis)) return act([rebuild(input, o, key)]);
+  }
+  // A rejection of the content as it stands is redrafted from the current basis before any basis rebuild, so a
+  // directive on a rejected report gate is never lost to a plain rebuild (spec §5.6).
+  if (g?.state === 'rejected' && g.subjectHash === s.hash) {
+    // A report rejection naming an opinion steers the opinion rather than failing the draft: it does not count toward the rail.
+    const rejections = input.gates.filter((x) => x.subjectKey === key && x.state === 'rejected' && !(key === 'report' && isDirective(x.comment))).length;
+    if (rejections >= MAX_REJECTIONS) return act([{ type: 'escalate', reason: `gate_rejected_twice: ${key}` }]);
+    if (mine.some((r) => r.kind === 'rework')) return act([{ type: 'escalate', reason: `rework produced no change: ${key}; edit it by hand, then resume` }]);
+    // A report rejection carries its signature, the only authority for an opinion the comment names (spec §5.6, ruling 1).
+    const directiveBy = s.gateKind === 'report' ? g.signatureId ?? undefined : undefined;
+    return act([rework(o, key, g.comment.trim() || `Address the reasons the ${label} gate was rejected`, directiveBy)]);
   }
   // The newest gate was superseded because the basis moved while the content stayed: rebuild once rather than re-gate stale content. This also fires for a subject drafted in an earlier run and for the report after a management response (rebuilt once; the markdown is the same until 8C).
   const overtaken = findLast(input.gates, (x) => x.subjectKey === key);
@@ -88,12 +114,6 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
   }
   if (g?.state === 'open') {
     return act([{ type: 'wait', reason: `awaiting ${s.gateKind} gate signature${s.gateKind === 'finding' ? ` (${s.subjectId})` : ''}` }]);
-  }
-  if (g?.state === 'rejected' && g.subjectHash === s.hash) {
-    const rejections = input.gates.filter((x) => x.subjectKey === key && x.state === 'rejected').length;
-    if (rejections >= MAX_REJECTIONS) return act([{ type: 'escalate', reason: `gate_rejected_twice: ${key}` }]);
-    if (mine.some((r) => r.kind === 'rework')) return act([{ type: 'escalate', reason: `rework produced no change: ${key}; edit it by hand, then resume` }]);
-    return act([rework(o, key, g.comment.trim() || `Address the reasons the ${label} gate was rejected`)]);
   }
 
   // No gate yet, the last one was superseded, or a person edited it after a rejection or approval: QA, then a gate.
@@ -125,8 +145,8 @@ function subjectStep(input: GraphInput, key: string, o: StepOptions): Step {
 /** The actions the supervisor may take next. Every reachable state offers at least one. */
 export function allowedActions(input: GraphInput): Menu {
   const e = input.engagement;
-  const menu = (stage: Stage, step: Exclude<Step, { passed: true }>): Menu => ({ stage, actions: step.actions, qa: step.qa, qaThreshold: input.qaThreshold });
-  const only = (stage: Stage, action: Action): Menu => ({ stage, actions: [action], qa: null, qaThreshold: input.qaThreshold });
+  const menu = (stage: Stage, step: Exclude<Step, { passed: true }>): Menu => ({ stage, actions: step.actions, qa: step.qa, qaThreshold: input.qaThreshold, memo: menuMemo(e, step.subjectKey) });
+  const only = (stage: Stage, action: Action): Menu => ({ stage, actions: [action], qa: null, qaThreshold: input.qaThreshold, memo: null });
 
   const workpapers: [Stage, string, Specialist][] = [['scope', 'scope', 'scope'], ['rcm', 'rcm', 'rcm'], ['test_plans', 'test_plans', 'test-plan']];
   for (const [stage, key, specialist] of workpapers) {

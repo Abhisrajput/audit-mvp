@@ -167,6 +167,63 @@ describe('the engagement graph', () => {
     expect(menu(e, { gates: [...gates, gate(e, 'report', 'approved')], qa: reviews }).actions).toEqual([{ type: 'complete' }]);
   });
 
+  it('carries a rejected report gate\'s signature on the redraft; a QA self-rework never carries one [REQ-32, REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    e.report = { generatedAt: 't', bundleId: 'RUN-9', markdown: '# Report', includedFindingIds: ['F-A'], excludedFindingIds: [] };
+    const rejected = gate(e, 'report', 'rejected', { comment: 'opinion: satisfactory', signatureId: 'SIG-CAE' });
+    expect(menu(e, { gates: [...gates, rejected], qa: reviews }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: satisfactory', directiveBy: 'SIG-CAE' },
+    ]);
+    // QA text that names an opinion reaches the redraft as an instruction, but with no signature.
+    const qaSays = qa(e, 'report', [{ criterion: 'report.x', severity: 'advisory', detail: 'opinion: satisfactory' }]);
+    const offered = menu(e, { gates, qa: [...reviews, qaSays] }).actions.find((a) => a.type === 'rework')!;
+    expect(offered).toMatchObject({ type: 'rework', instruction: 'report.x: opinion: satisfactory' });
+    expect(offered).not.toHaveProperty('directiveBy');
+  });
+
+  it('does not count a report rejection that carries an opinion directive toward the two-rejections rail [REQ-32, REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    e.report = { generatedAt: 't', bundleId: 'RUN-9', markdown: '# Report', includedFindingIds: ['F-A'], excludedFindingIds: [] };
+    const directive = (comment: string, signatureId: string) => gate(e, 'report', 'rejected', { comment, signatureId });
+    const plain = (comment: string) => gate(e, 'report', 'rejected', { comment, signatureId: 'SIG-PLAIN' });
+    // Two directives: the CAE is steering the opinion, not failing the draft.
+    expect(menu(e, { gates: [...gates, directive('opinion: unsatisfactory', 'SIG-1'), directive('opinion: needs_improvement', 'SIG-2')], qa: reviews }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: needs_improvement', directiveBy: 'SIG-2' },
+    ]);
+    // One plain rejection, then a directive: "Reject again to set it" works.
+    expect(menu(e, { gates: [...gates, plain('Tighten the summary'), directive('opinion: needs improvement', 'SIG-3')], qa: reviews }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: needs improvement', directiveBy: 'SIG-3' },
+    ]);
+    // Two plain rejections (an unreadable directive counts as plain) still escalate.
+    expect(menu(e, { gates: [...gates, plain('Tighten the summary'), plain('opinion: great')], qa: reviews }).actions).toEqual([
+      { type: 'escalate', reason: 'gate_rejected_twice: report' },
+    ]);
+  });
+
+  it('honours the directive on a rejected report gate even when the basis moved before the redraft [REQ-32, REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'approved')];
+    e.report = { generatedAt: 't', bundleId: 'RUN-9', markdown: '# Report', includedFindingIds: ['F-A'], excludedFindingIds: [] };
+    const built: RedraftRecord = { subjectKey: 'report', kind: 'delegate', basis: subjectInfo(e, 'report')!.basis, sinceGateId: null };
+    const rejected = gate(e, 'report', 'rejected', { comment: 'opinion: unsatisfactory', signatureId: 'SIG-CAE' });
+    // A management response recorded after the rejection moves the report's basis; its content is unchanged.
+    e.responses = {
+      'R-1': { id: 'R-1', findingId: 'F-A', response: 'agree', owner: 'Ops', dueDate: null, actionPlan: 'Fix it', recordedBy: 'u', recordedAt: 't', trailBundleId: 'B-1' },
+    };
+    expect(subjectInfo(e, 'report')!.basis).not.toBe(built.basis);
+    expect(menu(e, { gates: [...gates, rejected], qa: reviews, redrafts: [built] }).actions).toEqual([
+      { type: 'rework', specialist: 'report', subjectKey: 'report', instruction: 'opinion: unsatisfactory', directiveBy: 'SIG-CAE' },
+    ]);
+  });
+
   it('escalates an approved finding whose test results changed after its gate [REQ-26]', () => {
     const { e, gates, qa: reviews } = planned();
     e.testInputs = { A: input() };
@@ -208,5 +265,32 @@ describe('the engagement graph', () => {
     const challenged: QaReport = { ...review, mode: 'challenge' };
     expect(types(menu(e, { qa: [review, challenged] }))).toEqual(['open_gate', 'rework', 'escalate']);
     expect(menu(e, { qa: [qa(e, 'scope', [], 90)] }).actions).toEqual([{ type: 'open_gate', subjectKey: 'scope' }]);
+  });
+});
+
+describe('the memo on the menu', () => {
+  const memo = (subjectKey: string) => ({ subjectKey, calls: [], forTheReviewer: ['look here'], producedAt: 't' });
+
+  it('puts the current subject\'s memo on the menu and nothing on a forced menu [REQ-26]', () => {
+    const e = engagement({ scope: [scopeItem('A')], rcm: [row('A')], memos: { scope: memo('scope') } });
+    expect(menu(e).memo?.subjectKey).toBe('scope');
+    // Waiting for field work is a forced menu: no memo.
+    const f = engagement({ scope: [scopeItem('A')], rcm: [row('A')], memos: { scope: memo('scope') } });
+    f.testPlans = { A: plan(f.rcm[0]) };
+    const waiting = menu(f, { gates: [gate(f, 'scope', 'approved'), gate(f, 'rcm', 'approved')], qa: [qa(f, 'test_plans')] });
+    expect(waiting.stage).toBe('awaiting_tests');
+    expect(waiting.memo).toBeNull();
+    // A subject with no memo of its own shows none.
+    expect(menu(engagement({ scope: [scopeItem('A')] })).memo).toBeNull();
+  });
+
+  it('takes a finding\'s memo from the finding [REQ-26]', () => {
+    const { e, gates, qa: reviews } = planned();
+    e.testInputs = { A: input() };
+    e.testResults = { A: result('A') };
+    e.findings = [finding('A', 'draft', { memo: memo(findingKey('A')) })];
+    const m = menu(e, { gates, qa: reviews });
+    expect(m.stage).toBe('findings');
+    expect(m.memo?.subjectKey).toBe(findingKey('A'));
   });
 });

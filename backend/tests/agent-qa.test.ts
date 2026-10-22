@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { RULES_VERSION, RulesPolicy, rulesChoice } from '../src/agents/policy/rules';
 import { reviewSubject } from '../src/agents/qa/deterministic';
-import { subjectContent } from '../src/agents/qa/rubric';
+import { RUBRICS, subjectContent } from '../src/agents/qa/rubric';
+import type { ReportOpinion } from '../src/engine/types';
 import { draftTestPlans } from '../src/agents/specialists/test-plan';
 import { findingKey, rcmRowHash, subjectInfo } from '../src/agents/subjects';
 import type { Action, Menu, QaIssue, QaReport } from '../src/agents/types';
@@ -83,7 +84,7 @@ describe('the rules policy', () => {
   const redo: Action = { type: 'rework', specialist: 'scope', subjectKey: 'scope', instruction: 'fix it' };
   const escalate: Action = { type: 'escalate', reason: 'QA found issues' };
   const qa = (score: number, list: QaIssue[]): QaReport => ({ subjectKey: 'scope', subjectHash: 'h', mode: 'review', reviewer: 't', score, issues: list });
-  const menu = (actions: Action[], report: QaReport | null): Menu => ({ stage: 'scope', actions, qa: report, qaThreshold: 70 });
+  const menu = (actions: Action[], report: QaReport | null): Menu => ({ stage: 'scope', actions, qa: report, qaThreshold: 70, memo: null });
   const block: QaIssue = { criterion: 'x', severity: 'blocking', detail: 'd' };
   const note: QaIssue = { criterion: 'y', severity: 'advisory', detail: 'd' };
 
@@ -174,5 +175,36 @@ describe('the finding judgment checks (spec §5.5) [REQ-32]', () => {
     const checks = { registry, policy: LENIENT.citationPolicy };
     expect(issues(reviewSubject(e, findingKey('FD-HACCP-03'), checks))).toContainEqual(['advisory', 'finding.recommendation-verbatim']);
     expect(issues(reviewSubject(e, findingKey('FD-HACCP-03')))).not.toContainEqual(['advisory', 'finding.recommendation-verbatim']);
+  });
+});
+
+describe('the report opinion and responses in the offline QA review', () => {
+  it('blocks a report whose opinion is better than the rule and nobody set it, notes a CAE-set opinion with the rule beside it, and is silent on a report without an opinion [REQ-30, REQ-32]', () => {
+    const approved = [finding('a', 'approved', { id: 'F1', rating: 'High' })];
+    const report = (opinion?: ReportOpinion) => ({ generatedAt: 't', bundleId: 'b', markdown: '# r', includedFindingIds: ['F1'], excludedFindingIds: [], ...(opinion ? { opinion } : {}) });
+    const e = engagement({ findings: approved, report: report() });
+    expect(reviewSubject(e, 'report').issues.map((i) => i.criterion)).not.toContain('report.opinion-rule');
+    const better = engagement({ findings: approved, report: report({ rating: 'satisfactory', basis: 'b', findingsFingerprint: 'x' }) });
+    expect(reviewSubject(better, 'report').issues).toContainEqual(expect.objectContaining({ criterion: 'report.opinion-rule', severity: 'blocking' }));
+    const cae = engagement({ findings: approved, report: report({ rating: 'satisfactory', basis: 'b', setBy: 'SIG-1', findingsFingerprint: 'x' }) });
+    const r = reviewSubject(cae, 'report');
+    expect(r.issues.map((i) => i.criterion)).not.toContain('report.opinion-rule');
+    expect(r.issues).toContainEqual(expect.objectContaining({ criterion: 'report.opinion-set-by-cae', severity: 'advisory', detail: expect.stringContaining('unsatisfactory') }));
+  });
+
+  it('notes an approved finding whose response is missing from the report markdown, and nothing when no response exists', () => {
+    const approved = [finding('a', 'approved', { id: 'F1', rating: 'Low' })];
+    const response = { id: 'R1', findingId: 'F1', response: 'agree' as const, owner: 'Plant manager', dueDate: null, actionPlan: 'Fix', recordedBy: 'auditor', recordedAt: 't', trailBundleId: 'HUM-1' };
+    const silent = engagement({ findings: approved, report: { generatedAt: 't', bundleId: 'b', markdown: '# r', includedFindingIds: ['F1'], excludedFindingIds: [] } });
+    expect(reviewSubject(silent, 'report').issues.map((i) => i.criterion)).not.toContain('report.responses');
+    const stale = engagement({ findings: approved, responses: { F1: response }, report: { generatedAt: 't', bundleId: 'b', markdown: '# r', includedFindingIds: ['F1'], excludedFindingIds: [] } });
+    expect(reviewSubject(stale, 'report').issues).toContainEqual(expect.objectContaining({ criterion: 'report.responses', severity: 'advisory' }));
+    const fresh = { ...stale, report: { ...stale.report!, markdown: '# r\n- **Management response:** Agree — owner Plant manager' } };
+    expect(reviewSubject(fresh, 'report').issues.map((i) => i.criterion)).not.toContain('report.responses');
+  });
+
+  it('the report rubric asks whether the opinion follows from the findings, citing IIA 14.5', () => {
+    expect(RUBRICS.report).toContainEqual({ id: 'report.opinion-basis', question: expect.any(String), standard: 'IIA-14.5' });
+    expect(subjectContent(engagement({ report: null }), 'report')).toEqual({ markdown: null, opinion: null, memo: null });
   });
 });
