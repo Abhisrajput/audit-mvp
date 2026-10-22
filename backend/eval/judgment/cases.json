@@ -1,0 +1,219 @@
+[
+  {
+    "id": "judgment-ra-no-context",
+    "status": "draft",
+    "check": "risk-assessment",
+    "description": "With no factors the assessed risk is the library rating.",
+    "input": {
+      "processArea": "Procurement",
+      "riskRating": "Medium",
+      "context": {
+        "factors": [],
+        "background": ""
+      }
+    },
+    "expected": {
+      "assessedRisk": "Medium"
+    }
+  },
+  {
+    "id": "judgment-ra-incident-on-area",
+    "status": "draft",
+    "check": "risk-assessment",
+    "description": "An incident on the control's area steps a Medium control up one step to High.",
+    "input": {
+      "processArea": "Procurement",
+      "riskRating": "Medium",
+      "context": {
+        "factors": [
+          {
+            "kind": "incident",
+            "processAreas": [
+              "Procurement"
+            ],
+            "description": "A duplicate payment was released in March"
+          }
+        ],
+        "background": ""
+      }
+    },
+    "expected": {
+      "assessedRisk": "High"
+    }
+  },
+  {
+    "id": "judgment-ra-two-kinds-capped",
+    "status": "draft",
+    "check": "risk-assessment",
+    "description": "Two factor kinds on the area would be two steps; a Low control is raised to High and no further.",
+    "input": {
+      "processArea": "Procurement",
+      "riskRating": "Low",
+      "context": {
+        "factors": [
+          {
+            "kind": "incident",
+            "processAreas": [
+              "Procurement"
+            ],
+            "description": "A duplicate payment"
+          },
+          {
+            "kind": "change",
+            "processAreas": [
+              "Procurement"
+            ],
+            "description": "A new approval workflow"
+          }
+        ],
+        "background": ""
+      }
+    },
+    "expected": {
+      "assessedRisk": "High"
+    }
+  },
+  {
+    "id": "judgment-ra-other-area",
+    "status": "draft",
+    "check": "risk-assessment",
+    "description": "A factor on another process area leaves the library rating unchanged.",
+    "input": {
+      "processArea": "Payroll",
+      "riskRating": "Medium",
+      "context": {
+        "factors": [
+          {
+            "kind": "incident",
+            "processAreas": [
+              "Procurement"
+            ],
+            "description": "A duplicate payment"
+          }
+        ],
+        "background": ""
+      }
+    },
+    "expected": {
+      "assessedRisk": "Medium"
+    }
+  },
+  {
+    "id": "judgment-ra-whole-entity",
+    "status": "draft",
+    "check": "risk-assessment",
+    "description": "A factor naming no process areas applies to the whole entity, so it touches every area.",
+    "input": {
+      "processArea": "Payroll",
+      "riskRating": "Low",
+      "context": {
+        "factors": [
+          {
+            "kind": "regulatory",
+            "processAreas": [],
+            "description": "A new reporting regulation applies to the entity"
+          }
+        ],
+        "background": ""
+      }
+    },
+    "expected": {
+      "assessedRisk": "Medium"
+    }
+  },
+  {
+    "id": "judgment-rating-rare-minor",
+    "status": "draft",
+    "check": "rating",
+    "description": "The low corner of the rating matrix: rare and minor is Low.",
+    "input": {
+      "likelihood": "rare",
+      "impact": "minor"
+    },
+    "expected": {
+      "rating": "Low"
+    }
+  },
+  {
+    "id": "judgment-rating-likely-major",
+    "status": "draft",
+    "check": "rating",
+    "description": "The high corner of the rating matrix: likely and major is High.",
+    "input": {
+      "likelihood": "likely",
+      "impact": "major"
+    },
+    "expected": {
+      "rating": "High"
+    }
+  },
+  {
+    "id": "judgment-rating-rare-major",
+    "status": "draft",
+    "check": "rating",
+    "description": "The rare-major corner of the rating matrix is Medium, not High.",
+    "input": {
+      "likelihood": "rare",
+      "impact": "major"
+    },
+    "expected": {
+      "rating": "Medium"
+    }
+  },
+  {
+    "id": "judgment-rating-possible-moderate",
+    "status": "draft",
+    "check": "rating",
+    "description": "The centre of the rating matrix: possible and moderate is Medium.",
+    "input": {
+      "likelihood": "possible",
+      "impact": "moderate"
+    },
+    "expected": {
+      "rating": "Medium"
+    }
+  },
+  {
+    "id": "judgment-opinion-none",
+    "status": "draft",
+    "check": "opinion",
+    "description": "With no approved findings the opinion is satisfactory.",
+    "input": {
+      "ratings": []
+    },
+    "expected": {
+      "opinion": "satisfactory"
+    }
+  },
+  {
+    "id": "judgment-opinion-medium",
+    "status": "draft",
+    "check": "opinion",
+    "description": "A Medium among approved findings, with no High, gives needs improvement.",
+    "input": {
+      "ratings": [
+        "Low",
+        "Medium"
+      ]
+    },
+    "expected": {
+      "opinion": "needs_improvement"
+    }
+  },
+  {
+    "id": "judgment-opinion-high",
+    "status": "draft",
+    "check": "opinion",
+    "description": "Any approved High gives unsatisfactory, whatever else is there.",
+    "input": {
+      "ratings": [
+        "Low",
+        "Medium",
+        "High"
+      ]
+    },
+    "expected": {
+      "opinion": "unsatisfactory"
+    }
+  }
+]
