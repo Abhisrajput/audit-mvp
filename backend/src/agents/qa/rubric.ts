@@ -42,6 +42,7 @@ export const RUBRICS: Readonly<Record<RubricKind, readonly RubricCriterion[]>> =
     { id: 'report.accuracy', question: 'Does the report state the approved findings without changing their substance?' },
     { id: 'report.completeness', question: 'Does it cover the scope, the approach and every approved finding?' },
     { id: 'report.tone', question: 'Is it factual, with no speculation about intent?' },
+    { id: 'report.opinion-basis', question: 'Does the overall opinion follow from the approved findings and the rule, and does its basis say why?', standard: IIA.conclusions },
   ],
 };
 
@@ -77,7 +78,7 @@ export function subjectContent(e: Engagement, subjectKey: string): unknown {
     case 'test_plans':
       return e.rcm.map((r) => ({ row: { id: r.id, control: r.control, frequency: r.frequency, sampleSize: r.sampleSize }, plan: e.testPlans[r.id] ?? null, tolerance: e.tolerances[r.controlId] ?? null, recommendedToleranceRate: e.testPlans[r.id]?.recommendedToleranceRate ?? null }));
     case 'report':
-      return e.report?.markdown ?? null;
+      return { markdown: e.report?.markdown ?? null, opinion: e.report?.opinion ?? null, memo: e.memos?.report ?? null };
   }
   const rowId = rowOfKey(subjectKey);
   const f = rowId ? e.findings.find((x) => x.rowId === rowId) : undefined;
