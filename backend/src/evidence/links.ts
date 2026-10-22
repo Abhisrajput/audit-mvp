@@ -43,12 +43,12 @@ export async function documentUsage(db: Executor, documentId: string): Promise<{
   };
 }
 
-/** Every document id cited by any test record or live finding. */
+/** Every document id cited by any test record or any finding version, superseded ones included (retention must not release a document a signed version cites). */
 export async function linkedDocumentIds(db: Executor): Promise<Set<string>> {
   const rows = await sql<{ id: string }>`
     SELECT e->>'documentId' AS id FROM engagement_work w, jsonb_each(w.test_inputs) kv, jsonb_array_elements(CASE WHEN jsonb_typeof(kv.value->'evidence') = 'array' THEN kv.value->'evidence' ELSE '[]'::jsonb END) e
     UNION
-    SELECT e->>'documentId' FROM findings f, jsonb_array_elements(CASE WHEN jsonb_typeof(f.data->'evidence') = 'array' THEN f.data->'evidence' ELSE '[]'::jsonb END) e WHERE f.superseded_at IS NULL`.execute(db);
+    SELECT e->>'documentId' FROM findings f, jsonb_array_elements(CASE WHEN jsonb_typeof(f.data->'evidence') = 'array' THEN f.data->'evidence' ELSE '[]'::jsonb END) e`.execute(db);
   return new Set(rows.rows.map((r) => r.id));
 }
 

@@ -11,7 +11,7 @@ import { ModuleContext } from '../src/engine/module';
 import { reportModule } from '../src/engine/modules/report';
 import { testEvidenceGate } from '../src/engine/qa';
 import type { EvidenceLink } from '../src/engine/types';
-import { changedLinks, hasEvidence, linkedDocumentIds, normaliseEvidence } from '../src/evidence/links';
+import { changedLinks, documentNamesFor, documentUsage, hasEvidence, linkedDocumentIds, normaliseEvidence } from '../src/evidence/links';
 import { insertExtraction } from '../src/evidence/extraction-repo';
 import { insertDocument } from '../src/knowledge/document-repo';
 import { findingContentHash } from '../src/signing/content-hash';
@@ -189,6 +189,67 @@ describe('evidence links', () => {
     expect(results.filter((r) => !r.passed)).toEqual([]);
     expect(results).toHaveLength(2);
   }, 300_000);
+});
+
+describe('evidence links, review round 1', () => {
+  it('bounds the schema: 51 links and a 65-character id are 400, and a malformed short id passes the schema [REQ-39]', async () => {
+    const { svc, e, doc } = await setup();
+    const app = createApp(svc, { config: devAuthConfig(), oidc: null }, { blobs: new LocalBlobStore(fs.mkdtempSync(path.join(os.tmpdir(), 'lnk-'))), maxUploadBytes: 1024, presignDownloads: false });
+    const a = await signIn(app, 'auditor');
+    const body = (evidence: unknown[]) => ({ ...INPUT, evidenceRefs: [], evidence });
+    const many = Array.from({ length: 51 }, (_, i) => ({ documentId: `DOC-${i}` }));
+    expect((await a.put(`/api/engagements/${e.id}/tests/${ROW}`, body(many))).status).toBe(400);
+    expect((await a.put(`/api/engagements/${e.id}/tests/${ROW}`, body([{ documentId: 'D'.repeat(65) }]))).status).toBe(400);
+    const odd = await a.put(`/api/engagements/${e.id}/tests/${ROW}`, body([{ documentId: 'not-a-doc-id' }]));
+    expect(odd.status).toBe(400);
+    expect(odd.body.code).toBe('EVIDENCE_NOT_FOUND');
+    const f = (await svc.engagement(e.id)).findings[0];
+    expect((await a.put(`/api/engagements/${e.id}/findings/${f.id}`, { evidence: many })).status).toBe(400);
+    void doc;
+  });
+
+  it('the report prints a restricted document\'s filename for any reader, because the citing person chose the disclosure [REQ-39]', async () => {
+    const { svc, e, doc } = await setup();
+    const secret = await doc({ classification: 'restricted', filename: 'board-minutes.pdf' });
+    const f = (await svc.engagement(e.id)).findings[0];
+    await svc.editFinding(e.id, f.id, { evidence: [{ documentId: secret.id, page: 1 }] }, reviewer);
+    const live = await svc.engagement(e.id);
+    live.findings.forEach((x) => { x.status = 'approved'; });
+    const viewer = { id: 'viewer', name: 'Vera Viewer', role: 'viewer' } as never;
+    const names = await documentNamesFor(svc.db.kysely, [secret.id]);
+    const out = await reportModule.run(new ModuleContext(live, svc.registry, svc.grounding, null, viewer, {}, LENIENT.citationPolicy, names));
+    expect(out.markdown).toContain('board-minutes.pdf (p. 1)');
+  });
+
+  it('linkedDocumentIds counts a superseded finding version; usage does not [REQ-39]', async () => {
+    const { svc, db, e, doc } = await setup();
+    const d = await doc();
+    const f = (await svc.engagement(e.id)).findings[0];
+    await svc.editFinding(e.id, f.id, { evidence: [{ documentId: d.id }] }, auditor);
+    await sql`UPDATE findings SET superseded_at = now() WHERE engagement_id = ${e.id} AND id = ${f.id}`.execute(db);
+    expect((await linkedDocumentIds(db)).has(d.id)).toBe(true);
+    expect(await documentUsage(db, d.id)).toEqual({ tests: [], findings: [] });
+  });
+
+  it('a note-only change to an existing link is saved without re-validation, even after the document expired [REQ-39]', async () => {
+    const { svc, e, db, doc, record } = await setup();
+    const d = await doc();
+    await record([{ documentId: d.id, page: 1 }]);
+    await sql`UPDATE documents SET retention_expired = true WHERE id = ${d.id}`.execute(db);
+    await record([{ documentId: d.id, page: 1, note: 'see stamp' }]);
+    expect((await svc.engagement(e.id)).testInputs[ROW].evidence).toEqual([{ documentId: d.id, page: 1, note: 'see stamp' }]);
+  });
+
+  it('the test-record trail entry omits evidence when [] is sent and includes it when links are present [REQ-39]', async () => {
+    const { db, doc, record } = await setup();
+    const d = await doc();
+    await record([]);
+    const without = JSON.stringify((await readTrail(db)).at(-1));
+    expect(without).toContain('human:test-record');
+    expect(without).not.toContain('"evidence"');
+    await record([{ documentId: d.id }]);
+    expect(JSON.stringify((await readTrail(db)).at(-1))).toContain(`"evidence":[{"documentId":"${d.id}"}]`);
+  });
 });
 
 const WITH_EVIDENCE_HASH = 'f1d2b256f20cf74a6d55eeb9ccecf723fbf015750d2027fcb1cc51c3582e58d5';

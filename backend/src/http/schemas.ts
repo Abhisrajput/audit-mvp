@@ -21,7 +21,7 @@ export const NewEngagementSchema = z.object({
 });
 
 export const EvidenceLinkSchema = z.object({
-  documentId: z.string().min(1),
+  documentId: z.string().min(1).max(64),
   page: z.number().int().positive().optional(),
   note: z.string().max(200).optional(),
 }).strict();
@@ -30,7 +30,7 @@ export const TestInputSchema = z.object({
   designAdequate: z.boolean().nullable(),
   observation: z.string(),
   evidenceRefs: z.array(z.string().min(1)),
-  evidence: z.array(EvidenceLinkSchema).optional(),
+  evidence: z.array(EvidenceLinkSchema).max(50).optional(),
   sampleTested: z.number().int().min(0),
   exceptions: z.number().int().min(0),
 });
@@ -46,7 +46,7 @@ export const FindingPatchSchema = z
     effect: z.string().min(1),
     recommendation: z.string().min(1),
     evidenceRefs: z.array(z.string().min(1)),
-    evidence: z.array(EvidenceLinkSchema),
+    evidence: z.array(EvidenceLinkSchema).max(50),
   })
   .partial()
   .strict();
