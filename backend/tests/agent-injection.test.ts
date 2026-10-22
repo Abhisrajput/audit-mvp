@@ -64,7 +64,7 @@ describe('prompt injection [REQ-26, REQ-27]', () => {
     expect(report.issues).toEqual(expect.arrayContaining(automatic.issues));
     expect(report.score).toBeLessThanOrEqual(automatic.score);
     expect(insideData(fake.requests[0].user, HOSTILE, 'workpaper:scope')).toBe(true);
-    const menu = allowedActions({ engagement: e, gates: [], qa: [report], redrafts: [], qaThreshold: 70, memo: null });
+    const menu = allowedActions({ engagement: e, gates: [], qa: [report], redrafts: [], qaThreshold: 70 });
     expect(menu.actions.map((a) => a.type)).not.toContain('open_gate');
   });
 
@@ -229,12 +229,19 @@ describe('prompt injection [REQ-26, REQ-27]', () => {
     await svc.setEngagementContext(created.id, { factors: [], background }, auditor);
     const { engagement: e } = await svc.runModule(created.id, 'scope', auditor);
     expect(insideData(fake.requests[0].user, background, 'engagement-context')).toBe(true);
+    // The parse is not vacuous: the prompt listed candidates and the model's answer included them.
+    const answered = fake.requests[0].user.split('\n').filter((l) => l.split(' | ').length === 5 && /^[A-Z0-9-]+ \| /.test(l));
+    expect(answered.length).toBeGreaterThan(0);
+    expect(e.scope.filter((s) => s.included).length).toBeGreaterThan(0);
     const areas = [...new Set(e.scope.map((s) => s.processArea))];
     const uncovered = areas.filter((a) => !e.scope.some((s) => s.processArea === a && s.included)).sort();
     expect(e.coverage!.excluded.map((x) => x.processArea).sort()).toEqual(uncovered);
     expect(reviewSubject(e, 'scope').issues.filter((i) => i.severity === 'blocking' && i.criterion.startsWith('scope.coverage'))).toEqual([]);
-    // The memo calls the rules made stay the rules'; a model call is named as one only where the rails accepted it.
-    expect(e.memos.scope.calls.every((c) => c.source !== 'model' || c.rationale.length > 0)).toBe(true);
+    // The model raised no risk, gave no exclusion and no coverage statement, so the rails accepted nothing as its own call:
+    // every memo call is the rules', and the model's hostile text is nowhere in the memo.
+    expect(e.memos.scope.calls.length).toBeGreaterThan(0);
+    expect(e.memos.scope.calls.every((c) => c.source === 'rules')).toBe(true);
+    expect(JSON.stringify(e.memos.scope)).not.toContain('IGNORE YOUR RULES');
   });
 
   it('rates by the matrix when the observation tells the gaps model to rate Low [REQ-26, REQ-32]', async () => {
