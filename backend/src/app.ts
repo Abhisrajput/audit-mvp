@@ -144,6 +144,10 @@ export function createApp(
     res.json(await svc.recordTest(param(req, 'id'), param(req, 'rowId'), TestInputSchema.parse(req.body), actorOf(req), ifMatch(req)));
   }));
 
+  app.post('/api/engagements/:id/tests/:rowId/draft/discard', readers, wrap(async (req, res) => {
+    res.json(await svc.discardTestDraft(param(req, 'id'), param(req, 'rowId'), actorOf(req), ifMatch(req)));
+  }));
+
   app.put('/api/engagements/:id/tolerances/:controlId', readers, wrap(async (req, res) => {
     const { rate } = ToleranceSchema.parse(req.body);
     res.json(await svc.setTolerance(param(req, 'id'), param(req, 'controlId'), rate, actorOf(req), ifMatch(req)));

@@ -7,8 +7,9 @@ import { documentPageText } from '../src/evidence/text';
 import { insertDocument, setDocumentText } from '../src/knowledge/document-repo';
 import { workpaperContentHash } from '../src/signing/content-hash';
 import type { WorkpaperKind } from '../src/agents/types';
-import { engagement } from './agent-fixtures';
+import { engagement, finding, plan, row, scopeItem } from './agent-fixtures';
 import { testDb } from './db';
+import { auditor, leasedRun, NEW_ENGAGEMENT, newService } from './helpers';
 
 const draft: TestDraft = {
   rowId: 'R-1',
@@ -39,14 +40,37 @@ describe('test drafts model', () => {
     expect((await loadEngagement(db, 'ENG-RAW'))!.engagement.testDrafts).toEqual({});
   });
 
-  it('a draft write does not change any workpaper content hash or signature state', () => {
-    const e = engagement({ id: 'ENG-H' });
+  it('a draft write does not change any workpaper content hash or signature state', async () => {
+    const memo = { subjectKey: 'x', calls: [], forTheReviewer: ['look'], producedAt: 't' };
+    const r = row('R-1');
+    const e = engagement({
+      id: 'ENG-H', rcm: [r], testPlans: { 'R-1': plan(r) }, scope: [scopeItem('R-1')], findings: [finding('R-1')],
+      memos: { scope: { ...memo, subjectKey: 'scope' }, rcm: { ...memo, subjectKey: 'rcm' }, test_plans: { ...memo, subjectKey: 'test_plans' }, report: { ...memo, subjectKey: 'report' } },
+      report: { generatedAt: 't', bundleId: 'RUN-1', markdown: '# r', includedFindingIds: ['F-R-1'], excludedFindingIds: [], opinion: { rating: 'satisfactory', basis: 'b', findingsFingerprint: 'f' } },
+    });
     const kinds: WorkpaperKind[] = ['scope', 'rcm', 'test_plans', 'report'];
     const before = kinds.map((k) => workpaperContentHash(k, e));
+    expect(workpaperContentHash('report', { ...e, report: null })).not.toBe(before[3]);
     const findings = JSON.stringify(e.findings);
     e.testDrafts['R-1'] = draft;
     expect(kinds.map((k) => workpaperContentHash(k, e))).toEqual(before);
     expect(JSON.stringify(e.findings)).toBe(findings);
+  });
+
+  it('saving a draft adds no workpaper revision', async () => {
+    const svc = await newService();
+    const created = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    await svc.runModule(created.id, 'scope', auditor);
+    const scope = (await svc.engagement(created.id)).scope;
+    await svc.setScope(created.id, scope.map((s, i) => ({ controlId: s.controlId, included: i < 2 })), auditor);
+    await svc.runModule(created.id, 'rcm', auditor);
+    const e = await svc.engagement(created.id);
+    const revisions = async () => Number((await sql<{ n: string }>`SELECT count(*) AS n FROM workpaper_revisions`.execute(svc.db.kysely)).rows[0].n);
+    const count = await revisions();
+    const { acting } = await leasedRun(svc, created.id);
+    await svc.saveTestDraftsAsAgent(created.id, { [e.rcm[0].id]: { ...draft, rowId: e.rcm[0].id } }, acting('test-draft'), { expectedVersion: e.version! });
+    expect((await svc.engagement(created.id)).testDrafts[e.rcm[0].id]).toBeDefined();
+    expect(await revisions()).toBe(count);
   });
 
   it('documentPageText slices pages 1-based and answers null without text and 400 out of range', async () => {

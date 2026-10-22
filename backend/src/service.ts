@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { Transaction } from 'kysely';
-import { assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
+import { assertDraftsWithinRails, assertJustificationsUnchanged, assertPlanAttribution, assertWithinRails, keepScopeDecisions, mergeFindings } from './agents/rails';
 import { closeFindingGate, closeGate, getGate, hasApprovedGate, type Gate } from './agents/gate-repo';
 import { assertLease, getRun, isTerminal, wakeWaitingRuns } from './agents/run-repo';
 import type { SignableWorkpaper } from './agents/types';
@@ -28,7 +28,7 @@ import { STRICT_CITATIONS, trustActions, type CitationPolicy } from './engine/tr
 import { verifyChain } from './engine/trail';
 import { changedLinks, normaliseEvidence, tidyLinks } from './engine/evidence';
 import { documentNamesFor, resolveEvidence } from './evidence/links';
-import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestInput, TestPlan, TrailBundle, User } from './engine/types';
+import type { Engagement, Finding, FindingResponse, JudgmentMemo, QaAction, ResponseKind, Role, SignOff, TestDraft, TestInput, TestPlan, TrailBundle, User } from './engine/types';
 import { AppError } from './errors';
 import type { EngagementContextInput } from './judgment/context';
 import { recomputedCoverage } from './judgment/coverage';
@@ -371,6 +371,41 @@ export class AuditService {
     return { bundle: sealed[0], engagement };
   }
 
+  /** Saves evidence-based test drafts for an agent. A draft is a proposal beside the workpapers; it never becomes a test record by itself. */
+  async saveTestDraftsAsAgent(engagementId: string, drafts: Record<string, TestDraft>, acting: AgentActing, opts: AgentWriteOptions) {
+    this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
+    const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
+      await assertLease(trx, acting.runId, acting.leaseOwner);
+      const before = structuredClone(e);
+      for (const [rowId, draft] of Object.entries(drafts)) {
+        if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
+        e.testDrafts = { ...e.testDrafts, [rowId]: draft };
+      }
+      assertDraftsWithinRails(before, e);
+      emit(this.agentBundle(e, {
+        moduleId: 'agent:test-drafts', agent: acting.agent, runId: acting.runId, onBehalfOf: acting.startedBy.id,
+        inputs: { rows: Object.keys(drafts) },
+        output: { drafts: Object.entries(drafts).map(([rowId, d]) => ({ rowId, proposal: Boolean(d.proposal), quotes: d.evidence.length, blocking: d.qa.blocking })) },
+      }));
+      return e;
+    });
+    return { bundle: sealed[0], engagement };
+  }
+
+  /** A person throws away the agent's proposal for a row. The row keeps a person-edited marker, so the agent does not redraft it. */
+  async discardTestDraft(engagementId: string, rowId: string, actor: User, opts: MutationOptions = {}): Promise<Engagement> {
+    this.require(actor, PREPARER_ROLES, 'discard a draft');
+    const { result } = await this.mutate(engagementId, opts, (e, emit) => {
+      const draft = e.testDrafts[rowId];
+      if (!draft) throw new AppError(404, `There is no draft for ${rowId}`);
+      const { proposal: _dropped, ...rest } = draft;
+      e.testDrafts = { ...e.testDrafts, [rowId]: { ...rest, personEdited: true } };
+      emit(this.humanBundle(e, 'human:draft-discard', actor, { rowId }, { rowId, personEdited: true }));
+      return e;
+    });
+    return result;
+  }
+
   /** A person edits one row's test plan, including the decision not to test it (an empty reason clears that decision). */
   async editTestPlan(engagementId: string, rowId: string, patch: TestPlanPatch, actor: User, opts: MutationOptions = {}): Promise<TestPlan> {
     this.require(actor, PREPARER_ROLES, 'edit test plans');
@@ -431,20 +466,24 @@ export class AuditService {
     return result;
   }
 
-  async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'>, actor: User, opts: MutationOptions = {}) {
+  async recordTest(engagementId: string, rowId: string, input: Omit<TestInput, 'updatedBy' | 'updatedAt'> & { fromDraft?: { runId: string; at: string } }, actor: User, opts: MutationOptions = {}) {
     this.require(actor, PREPARER_ROLES, 'record test work');
     if (input.exceptions > input.sampleTested) throw new AppError(400, 'Exceptions cannot exceed the sample tested');
     const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       if (!e.rcm.some((r) => r.id === rowId)) throw new AppError(404, `RCM row ${rowId} not found`);
       // Only links that are new to this record are checked, so a record whose document has since expired can be saved again.
-      const { evidence, ...rest } = input;
+      const { evidence, fromDraft, ...rest } = input;
       const links = normaliseEvidence(evidence && tidyLinks(evidence));
       if (links) await resolveEvidence(trx, changedLinks(e.testInputs[rowId]?.evidence, links), { engagementId, actor });
       const clean = { ...rest, ...(links ? { evidence: links } : {}) };
       const record: TestInput = { ...clean, updatedBy: actor.id, updatedAt: new Date().toISOString() };
+      // The record names the draft it came from only when that is the draft on file; a stale name is ignored.
+      const drafted = e.testDrafts[rowId]?.draftedBy;
+      const accepted = Boolean(fromDraft && drafted && fromDraft.runId === drafted.runId && fromDraft.at === drafted.at);
       e.testInputs[rowId] = record;
       delete e.testResults[rowId];
-      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean }, record));
+      if (accepted) delete e.testDrafts[rowId];
+      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean, ...(accepted ? { fromDraft: { runId: fromDraft!.runId, at: fromDraft!.at } } : {}) }, record));
       return e;
     });
     return result;

@@ -8,16 +8,18 @@ export interface AgentPort {
   engagement: AuditService['engagement'];
   runModule: AuditService['runModuleAsAgent'];
   saveTestPlans: AuditService['saveTestPlansAsAgent'];
+  saveTestDrafts: AuditService['saveTestDraftsAsAgent'];
   agentBundle: AuditService['agentBundle'];
 }
 
-export const AGENT_PORT_METHODS = ['agentBundle', 'engagement', 'runModule', 'saveTestPlans'] as const;
+export const AGENT_PORT_METHODS = ['agentBundle', 'engagement', 'runModule', 'saveTestDrafts', 'saveTestPlans'] as const;
 
 export function agentPort(svc: AuditService): AgentPort {
   const port: AgentPort = {
     engagement: (id) => svc.engagement(id),
     runModule: (...args) => svc.runModuleAsAgent(...args),
     saveTestPlans: (...args) => svc.saveTestPlansAsAgent(...args),
+    saveTestDrafts: (...args) => svc.saveTestDraftsAsAgent(...args),
     agentBundle: (...args) => svc.agentBundle(...args),
   };
   return Object.freeze(port);

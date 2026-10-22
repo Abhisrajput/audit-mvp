@@ -144,6 +144,7 @@ describe('the agent path into the service', () => {
   it('gives the agent runtime no way to sign, record tests or edit anything by hand [REQ-27]', async () => {
     const port = agentPort(await newService());
     expect(Object.keys(port).sort()).toEqual([...AGENT_PORT_METHODS].sort());
+    expect([...AGENT_PORT_METHODS]).toEqual(['agentBundle', 'engagement', 'runModule', 'saveTestDrafts', 'saveTestPlans']);
     for (const name of ['signOff', 'signGate', 'recordTest', 'editFinding', 'editTestPlan', 'setScope', 'db']) expect(name in port).toBe(false);
   });
 
