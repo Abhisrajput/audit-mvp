@@ -129,4 +129,21 @@ describe('tolerance set by a person (spec §3.3, §5.4) [REQ-33]', () => {
     expect((await svc.engagement(e.id)).testResults[control]).toMatchObject({ conclusion: 'Ineffective', severity: 'systemic' });
     expect(bundle.qaActions).toContainEqual(expect.objectContaining({ gate: 'judgment-bounds', outcome: 'fail', target: control }));
   });
+
+  it('stores and trails a tolerance at the three decimals the column keeps, so the trail, the row and the engagement agree (final review I2)', async () => {
+    const control = 'FD-HACCP-03';
+    const svc = await newService();
+    await ensureDevUsers(svc.db.kysely);
+    const e = await svc.createEngagement(NEW_ENGAGEMENT, auditor);
+    await svc.runModule(e.id, 'scope', auditor);
+    await svc.setScope(e.id, [{ controlId: control, included: true }], auditor);
+    await svc.runModule(e.id, 'rcm', auditor);
+    const rounded = Math.round(0.0505 * 1000) / 1000;
+    const after = await svc.setTolerance(e.id, control, 0.0505, auditor);
+    const row = await svc.db.kysely.selectFrom('test_tolerances').select('rate').where('control_id', '=', control).executeTakeFirstOrThrow();
+    const bundle = (await svc.trailFor(e.id)).find((b) => b.moduleId === 'human:set-tolerance')!;
+    expect(after.tolerances[control].rate).toBe(rounded);
+    expect(Number(row.rate)).toBe(rounded);
+    expect((bundle.inputs as { rate: number }).rate).toBe(rounded);
+  });
 });

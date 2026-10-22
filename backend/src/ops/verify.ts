@@ -196,21 +196,36 @@ async function checkRecords(db: Kysely<DB>, trail: TrailBundle[]) {
   const bundles = new Map(trail.map((b) => [b.id, b]));
   const names = (b: TrailBundle | undefined, engagementId: string, moduleId: string, key: string, value: string) =>
     !!b && b.moduleId === moduleId && b.engagementId === engagementId && (b.inputs as Record<string, unknown> | null)?.[key] === value;
-  const tolerances = await db.selectFrom('test_tolerances').select(['id', 'engagement_id', 'control_id', 'trail_bundle_id']).orderBy('recorded_at').orderBy('id').execute();
+  const tolerances = await db.selectFrom('test_tolerances').select(['id', 'engagement_id', 'control_id', 'rate', 'trail_bundle_id']).orderBy('recorded_at').orderBy('id').execute();
   for (const t of tolerances) {
-    if (!names(bundles.get(t.trail_bundle_id), t.engagement_id, 'human:set-tolerance', 'controlId', t.control_id)) {
+    const bundle = bundles.get(t.trail_bundle_id);
+    if (!names(bundle, t.engagement_id, 'human:set-tolerance', 'controlId', t.control_id)) {
       problems.push(`Tolerance ${t.id} (control ${t.control_id}): its trail entry ${t.trail_bundle_id} is missing or is not a human:set-tolerance entry for this control`);
+    } else if (Number((bundle!.inputs as { rate?: unknown }).rate) !== Number(t.rate)) {
+      problems.push(`Tolerance ${t.id} (control ${t.control_id}): its trail entry ${t.trail_bundle_id} records a different rate`);
     }
   }
-  const responses = await db.selectFrom('finding_responses').select(['id', 'engagement_id', 'finding_id', 'trail_bundle_id']).orderBy('recorded_at').orderBy('id').execute();
+  const responses = await db.selectFrom('finding_responses').select(['id', 'engagement_id', 'finding_id', 'response', 'owner', 'due_date', 'action_plan', 'trail_bundle_id']).orderBy('recorded_at').orderBy('id').execute();
   const approved = new Set(
     (await db.selectFrom('signatures').select(['engagement_id', 'finding_id']).where('meaning', '=', 'Approved').execute()).map((r) => `${r.engagement_id}|${r.finding_id}`),
   );
   for (const r of responses) {
-    if (!names(bundles.get(r.trail_bundle_id), r.engagement_id, 'human:management-response', 'findingId', r.finding_id)) {
+    const bundle = bundles.get(r.trail_bundle_id);
+    if (!names(bundle, r.engagement_id, 'human:management-response', 'findingId', r.finding_id)) {
       problems.push(`Response ${r.id} (finding ${r.finding_id}): its trail entry ${r.trail_bundle_id} is missing or is not a human:management-response entry for this finding`);
+    } else {
+      const inputs = bundle!.inputs as Record<string, unknown>;
+      if (inputs.response !== r.response || inputs.owner !== r.owner || (inputs.dueDate ?? null) !== (r.due_date ?? null) || (inputs.actionPlan ?? '') !== r.action_plan) {
+        problems.push(`Response ${r.id} (finding ${r.finding_id}): its trail entry ${r.trail_bundle_id} records different content`);
+      }
     }
     if (!approved.has(`${r.engagement_id}|${r.finding_id}`)) problems.push(`Response ${r.id} is recorded for finding ${r.finding_id}, which was never approved`);
+  }
+  // Each record needs an entry of its own: two rows citing one entry cannot both be what that entry sealed.
+  const cited = new Map<string, number>();
+  for (const row of [...tolerances, ...responses].filter((x) => bundles.has(x.trail_bundle_id))) cited.set(row.trail_bundle_id, (cited.get(row.trail_bundle_id) ?? 0) + 1);
+  for (const [bundle, n] of cited) {
+    if (n > 1) problems.push(`Trail entry ${bundle} is cited by ${n} records; each record needs its own entry`);
   }
   return { checked: tolerances.length + responses.length, problems };
 }

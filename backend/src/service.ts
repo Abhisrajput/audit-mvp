@@ -423,9 +423,11 @@ export class AuditService {
   }
 
   /** A person sets the tolerance for a control (spec §3.3). It is locked once the control has a recorded test. */
-  async setTolerance(engagementId: string, controlId: string, rate: number, actor: User, opts: MutationOptions = {}): Promise<Engagement> {
+  async setTolerance(engagementId: string, controlId: string, requested: number, actor: User, opts: MutationOptions = {}): Promise<Engagement> {
     this.require(actor, PREPARER_ROLES, 'set a tolerance');
-    if (!Number.isFinite(rate) || rate < 0 || rate > TOLERANCE_MAX) throw new AppError(400, `A tolerance must be between 0 and ${TOLERANCE_MAX}`);
+    if (!Number.isFinite(requested) || requested < 0 || requested > TOLERANCE_MAX) throw new AppError(400, `A tolerance must be between 0 and ${TOLERANCE_MAX}`);
+    // The column keeps three decimals; round here so the trail, the row, the engagement and the testing run all see one value.
+    const rate = Math.round(requested * 1000) / 1000;
     const { result } = await this.mutate(engagementId, opts, async (e, emit, trx) => {
       const rows = e.rcm.filter((r) => r.controlId === controlId);
       if (!rows.length) throw new AppError(404, `No RCM row for control ${controlId}`);
