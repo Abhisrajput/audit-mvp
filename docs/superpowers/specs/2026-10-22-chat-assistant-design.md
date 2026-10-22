@@ -240,9 +240,15 @@ Decisions made by the builder, for the user to check while reading:
 
 - Tests for the HTTP routes were written after the code (no RED run). Accepted because they assert server behaviour (status codes, trail actor, 409/429/503) and the task review judged them, rather than discarding the work.
 - The `set_tolerance` describe shows the rate as a percentage with one decimal; `find_documents` with a query looks each chunk hit's document up to show its kind; a viewer's `find_documents` test uses the audit manager for the all-classifications case because an auditor cannot read restricted documents.
-- The offline signing check matches `sign`, `approve` and `reject` as word prefixes, so a phrase like "find supplier approval records" is answered as a signing request. One eval case was reworded; tightening the pattern is parked for a later pass.
+- The offline signing check first matched `sign`, `approve` and `reject` as word prefixes, so "find supplier approval records" was answered as a signing request. The final review tightened it to the whole-word verbs, and that find phrase is an offline eval case again.
 - The confirm request sends exactly `{ name, args, expectedVersion }` (the server body is strict), found in the visual check. The proposal card's done/cancelled state lives on the turn so a drawer remount cannot re-expose Confirm. Search snippets are shown as plain text with the highlighter's tags stripped.
 - A write on the current engagement reloads the engagement at once; the run panel catches up through its own polling within seconds.
+- The eval takes the assistant's configured model and timeout (`ASSISTANT_MODEL`, `ASSISTANT_MODEL_TIMEOUT_MS`), every row's detail names the planner outcome, and a model row passes only when the model answered (outcome `command` or `reply`); a fallback or refusal fails it. A null or non-object case is one failed row.
+- The prompt carries the open engagement in a `context` data block, and the system text names the `message` block as the request being answered, with everything else as reference material.
+- Confirm pre-checks `expectedVersion` against the engagement for every engagement write, so a command whose service does not check the version is still stopped with `VERSION_CONFLICT` (HTTP 409); the services keep their own checks.
+- `create_engagement`'s argument schema is `.strict()` although the form route's schema is not, so an unknown key sent through the assistant is rejected where the form would ignore it.
+- A turn that names an engagement that does not exist answers 200 with "I could not find <id>." and no command or proposal, instead of failing with 404. `context.engagementId` and `shown[].id` are capped at 200 characters.
+- The retry prompt after a refused answer carries the refusal text cut to 200 characters inside a data block, and a valid command with an empty `say` is captioned with the command's description.
 
 ## 13. Risks
 

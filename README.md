@@ -275,7 +275,7 @@ The report carries an overall opinion on the engagement. The rule reads approved
 
 ## Assistant
 
-The assistant is a chat drawer on the engagement pages. It turns a sentence into one of a fixed set of commands over the same services the forms use, run under the person's own role: finding documents and standards, listing engagements, findings and packs, opening an engagement, creating an engagement, starting an agent run, and recording the engagement context, a control's tolerance or a management response. The model only names a command; the arguments are checked by the same schema as the route's.
+The assistant is a chat drawer that opens from every audit page, not only the engagement pages. It turns a sentence into one of a fixed set of commands over the same services the forms use, run under the person's own role: finding documents and standards, listing engagements, findings and packs, opening an engagement, creating an engagement, starting an agent run, and recording the engagement context, a control's tolerance or a management response. The model only names a command; the arguments are checked by the same schema as the route's.
 
 Examples, each of which is an `assistant` eval case:
 
@@ -283,7 +283,7 @@ Examples, each of which is an `assistant` eval case:
 - "start an audit of supplier approval at Plant 2 for the first half of 2026" is answered by asking for the fields still missing, such as the entity, site and packs, not by guessing them.
 - "record that management agrees with the cover-roster finding, owner the plant manager, due 15 December" comes back as a card with the response, owner and date.
 
-These three are the eval's model cases: they run only when a model provider is configured, while the offline eval runs the twelve rule cases.
+These are three of the eval's six model cases: they run only when a model provider is configured, while the offline eval runs the thirteen rule cases.
 
 Reads run at once. A write comes back as a card that shows exactly what will be saved, and nothing happens until the person presses Confirm; if the engagement changed in the meantime the existing version conflict (HTTP 409) stops it. The assistant never signs: signing stays on the gate card and the finding dialog, and it answers a request to approve or reject by saying so.
 
