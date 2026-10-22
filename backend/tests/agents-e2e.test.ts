@@ -1,4 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { loadEvidenceConfig } from '../src/evidence/config';
+import { LocalBlobStore } from '../src/storage/local-blob-store';
 import { defaultAgentConfig } from '../src/agents/config';
 import { AgentWorker } from '../src/agents/worker';
 import { createApp } from '../src/app';
@@ -14,10 +19,13 @@ import { devAuthConfig, devSign, devSignGate, signIn } from './http';
 type GateView = { id: string; kind: string; state: string; attempt: number };
 
 /** A pharma engagement with an agent run started by the auditor, behind the real HTTP stack and an in-process worker. */
-async function setup() {
+async function setup(withStorage = false) {
   const svc = await newService();
   await ensureDevUsers(svc.db.kysely);
-  const app = createApp(svc, { config: devAuthConfig(), oidc: null }, undefined, { agents: defaultAgentConfig() });
+  const storage = withStorage
+    ? { blobs: new LocalBlobStore(fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-ev-'))), maxUploadBytes: 1024 * 1024, presignDownloads: false, evidence: loadEvidenceConfig({}, { maxBytes: 1024 * 1024 }) }
+    : undefined;
+  const app = createApp(svc, { config: devAuthConfig(), oidc: null }, storage, { agents: defaultAgentConfig() });
   const worker = new AgentWorker(svc, defaultAgentConfig(), { id: 'w-e2e' });
   const auditor = await signIn(app, 'auditor');
   const manager = await signIn(app, 'reviewer');
@@ -125,5 +133,44 @@ describe('an agent run, end to end (offline)', () => {
     const steps = (await auditor.get(`/api/runs/${run.id}?limit=500`).expect(200)).body.steps as { kind: string; decision: { action?: { subjectKey?: string } } }[];
     expect(steps.filter((s) => s.kind === 'delegate' && s.decision.action?.subjectKey === 'rcm')).toHaveLength(2);
     expect(await openGate('rcm')).toMatchObject({ attempt: 1 });
+  });
+  it('an offline run on an engagement with an uploaded evidence document drafts the untested rows, then waits for the person; accepting a draft lets the run continue [REQ-41]', async () => {
+    const { svc, worker, auditor, manager, cae, id, run, state, openGate } = await setup(true);
+    await auditor.agent.post(`/api/engagements/${id}/evidence`).set('x-csrf-token', auditor.csrf).field('kind', 'evidence').field('classification', 'internal')
+      .attach('file', fs.readFileSync(path.join(__dirname, 'fixtures', 'evidence', 'sample.pdf')), { filename: 'sample.pdf', contentType: 'application/pdf' }).expect(201);
+    await worker.drain();
+    await devSignGate(manager, 'reviewer', (await openGate('scope')).id, 'approve');
+    await worker.drain();
+    await devSignGate(manager, 'reviewer', (await openGate('rcm')).id, 'approve');
+    await worker.drain();
+
+    const e = await svc.engagement(id);
+    const rowIds = e.rcm.map((r) => r.id);
+    expect(await state()).toMatchObject({ status: 'waiting', statusReason: `awaiting test results for ${rowIds.length} control(s)` });
+    expect(Object.keys(e.testDrafts).sort()).toEqual([...rowIds].sort());
+    for (const d of Object.values(e.testDrafts)) {
+      expect(d.draftedBy.model).toBe('rules');
+      expect(d.proposal).toBeUndefined();
+    }
+    const evidenceSteps = async () => (await listSteps(svc.db.kysely, run.id)).filter((s) => s.kind === 'delegate' && s.agent === 'specialist:evidence');
+    expect(await evidenceSteps()).toHaveLength(1);
+
+    // The auditor accepts one draft and records the others plainly.
+    const [first, ...others] = rowIds;
+    const d = e.testDrafts[first];
+    const body = { designAdequate: true, observation: 'All items reviewed', evidenceRefs: ['EV-1'], sampleTested: 20, exceptions: 0 };
+    await auditor.put(`/api/engagements/${id}/tests/${first}`, { ...body, fromDraft: { runId: d.draftedBy.runId, at: d.draftedBy.at } }).expect(200);
+    for (const r of others) await auditor.put(`/api/engagements/${id}/tests/${r}`, body).expect(200);
+    await worker.drain();
+    await devSignGate(cae, 'approver', (await openGate('report')).id, 'approve');
+    await worker.drain();
+    expect(await state()).toMatchObject({ status: 'completed' });
+    expect(await evidenceSteps()).toHaveLength(1);
+
+    const records = (await readTrail(svc.db.kysely, id)).filter((b) => b.moduleId === 'human:test-record');
+    expect(records).toHaveLength(rowIds.length);
+    const accepted = records.filter((b) => 'fromDraft' in (b.inputs as object));
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].inputs).toMatchObject({ rowId: first, fromDraft: { runId: d.draftedBy.runId, at: d.draftedBy.at } });
   });
 });

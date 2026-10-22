@@ -136,7 +136,7 @@ describe('the executor', () => {
     await apply({ type: 'request_qa', subjectKey: 'scope', mode: 'review' });
     await apply({ type: 'open_gate', subjectKey: 'scope' }, (await steps()).at(-1)!.decision as QaReport);
     const now = await svc.engagement(e.id);
-    const input = await loadGraphInput(svc.db.kysely, run, now, await listGates(svc.db.kysely, e.id), 70);
+    const input = await loadGraphInput(svc.db.kysely, run, now, await listGates(svc.db.kysely, e.id), 70, auditor);
     expect(input.qa).toHaveLength(1);
     expect(input.redrafts).toEqual([{ subjectKey: 'scope', kind: 'delegate', basis: rootBasis(e), sinceGateId: null }]);
     expect(await reconcileGates(svc.db.kysely, now)).toBe(0);

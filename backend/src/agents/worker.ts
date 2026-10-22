@@ -167,7 +167,7 @@ export class AgentWorker {
         return locked;
       });
       const gates = await listGates(db, e.id);
-      const menu = allowedActions(await loadGraphInput(db, run, e, gates, this.cfg.qaThreshold));
+      const menu = allowedActions(await loadGraphInput(db, run, e, gates, this.cfg.qaThreshold, starter));
       const deciding = Date.now();
       const decision = await chooseDecision(this.policy, menu, models);
       const decidedMs = elapsedMs(deciding);

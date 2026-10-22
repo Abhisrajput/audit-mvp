@@ -41,8 +41,8 @@ export function redraftBasis(e: Engagement, subjectKey: string, rows?: string[],
   return sha256(canonicalJson({ subjectKey, rows: (rows ?? []).map((id) => [id, rowBasis(e, id)]) }));
 }
 
-function delegate(input: GraphInput, specialist: Specialist, subjectKey: string, rows?: string[]): Action {
-  const basis = redraftBasis(input.engagement, subjectKey, rows);
+function delegate(input: GraphInput, specialist: Specialist, subjectKey: string, rows?: string[], evidenceDocIds?: readonly string[]): Action {
+  const basis = redraftBasis(input.engagement, subjectKey, rows, evidenceDocIds);
   const since = latestGateId(input.gates, subjectKey);
   const repeated = input.redrafts.some((r) => r.kind === 'delegate' && r.subjectKey === subjectKey && r.basis === basis && r.sinceGateId === since);
   if (repeated) return { type: 'escalate', reason: `The ${specialist} specialist already ran for ${subjectKey} and it is still not ready; check it by hand, then resume` };
@@ -162,7 +162,16 @@ export function allowedActions(input: GraphInput): Menu {
 
   // Field work is done by people: wait until every row has a recorded test, or a person's reason for not testing it.
   const awaiting = e.rcm.filter((r) => !e.testInputs[r.id] && !e.testPlans[r.id]?.notTestedJustification?.trim());
-  if (awaiting.length) return only('awaiting_tests', { type: 'wait', reason: `awaiting test results for ${awaiting.length} control(s)` });
+  if (awaiting.length) {
+    const wait: Action = { type: 'wait', reason: `awaiting test results for ${awaiting.length} control(s)` };
+    // Evidence drafting is offered once per run, ahead of waiting; a repeat is omitted rather than escalated.
+    const rowIds = rowsToDraft(e).map((r) => r.id);
+    const offered = input.redrafts.some((r) => r.kind === 'delegate' && r.subjectKey === 'evidence');
+    if (input.evidence.documentIds.length && rowIds.length && !offered) {
+      return { ...only('awaiting_tests', wait), actions: [delegate(input, 'evidence', 'evidence', rowIds, input.evidence.documentIds), wait] };
+    }
+    return only('awaiting_tests', wait);
+  }
   if (untestedRows(e).length) return only('testing', delegate(input, 'testing', 'testing'));
 
   // A failed row needs a finding; a finding on a row that no longer fails must go, unless it is approved (locked).

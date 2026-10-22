@@ -64,7 +64,7 @@ describe('prompt injection [REQ-26, REQ-27]', () => {
     expect(report.issues).toEqual(expect.arrayContaining(automatic.issues));
     expect(report.score).toBeLessThanOrEqual(automatic.score);
     expect(insideData(fake.requests[0].user, HOSTILE, 'workpaper:scope')).toBe(true);
-    const menu = allowedActions({ engagement: e, gates: [], qa: [report], redrafts: [], qaThreshold: 70 });
+    const menu = allowedActions({ engagement: e, gates: [], qa: [report], redrafts: [], qaThreshold: 70, evidence: { documentIds: [] } });
     expect(menu.actions.map((a) => a.type)).not.toContain('open_gate');
   });
 

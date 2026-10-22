@@ -132,6 +132,8 @@ export interface GraphInput {
   qa: QaReport[];
   redrafts: RedraftRecord[];
   qaThreshold: number;
+  /** The engagement's evidence documents with text that the run's starter may read, sorted. */
+  evidence: { documentIds: readonly string[] };
 }
 
 /** The legal next actions, and the QA report they were derived from (if any). */

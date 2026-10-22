@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allowedActions } from '../src/agents/graph';
+import { allowedActions, redraftBasis } from '../src/agents/graph';
 import { findingKey, subjectInfo } from '../src/agents/subjects';
 import type { Action, GateRecord, GateState, GraphInput, Menu, QaIssue, QaReport, RedraftRecord } from '../src/agents/types';
 import type { Engagement } from '../src/engine/types';
@@ -23,7 +23,7 @@ const blocking: QaIssue = { criterion: 'x', severity: 'blocking', detail: 'broke
 const advisory: QaIssue = { criterion: 'y', severity: 'advisory', detail: 'odd' };
 
 function menu(e: Engagement, over: Partial<GraphInput> = {}): Menu {
-  const m = allowedActions({ engagement: e, gates: [], qa: [], redrafts: [], qaThreshold: 70, ...over });
+  const m = allowedActions({ engagement: e, gates: [], qa: [], redrafts: [], qaThreshold: 70, evidence: { documentIds: [] }, ...over });
   // Every state the graph can be asked about offers at least one action.
   expect(m.actions.length).toBeGreaterThan(0);
   return m;
@@ -251,7 +251,7 @@ describe('the engagement graph', () => {
 
   it('is a pure function of its input', () => {
     const { e, gates, qa: reviews } = planned();
-    const given: GraphInput = { engagement: e, gates, qa: reviews, redrafts: [], qaThreshold: 70 };
+    const given: GraphInput = { engagement: e, gates, qa: reviews, redrafts: [], qaThreshold: 70, evidence: { documentIds: [] } };
     const copy = structuredClone(given);
     const a: Action[] = allowedActions(given).actions;
     expect(allowedActions(given).actions).toEqual(a);
@@ -292,5 +292,34 @@ describe('the memo on the menu', () => {
     const m = menu(e, { gates, qa: reviews });
     expect(m.stage).toBe('findings');
     expect(m.memo?.subjectKey).toBe(findingKey('A'));
+  });
+});
+
+describe('evidence drafting in the graph [REQ-41]', () => {
+  const docs = { evidence: { documentIds: ['DOC-1', 'DOC-2'] } };
+  const wait = { type: 'wait', reason: 'awaiting test results for 1 control(s)' };
+
+  it('offers evidence drafting before waiting when evidence with text and untested planned rows exist', () => {
+    const { e, gates, qa: reviews } = planned();
+    const m = menu(e, { gates, qa: reviews, ...docs });
+    expect(m.stage).toBe('awaiting_tests');
+    expect(m.actions).toEqual([{ type: 'delegate', specialist: 'evidence', subjectKey: 'evidence', rows: ['A'] }, wait]);
+  });
+
+  it('evidence without text does not change the awaiting_tests menu', () => {
+    const { e, gates, qa: reviews } = planned();
+    expect(menu(e, { gates, qa: reviews }).actions).toEqual([wait]);
+    // Text but no untested planned row to draft: no action either.
+    e.testDrafts = { A: { rowId: 'A', evidence: [], couldNotVerify: [], confidence: 'low', qa: { blocking: [], advisory: [] }, draftedBy: { runId: 'R', at: 't', model: 'rules' }, personEdited: true } };
+    expect(menu(e, { gates, qa: reviews, ...docs }).actions).toEqual([wait]);
+  });
+
+  it('offers evidence drafting once per run: after a delegate record the menu is wait only', () => {
+    const { e, gates, qa: reviews } = planned();
+    const basis = redraftBasis(e, 'evidence', ['A'], docs.evidence.documentIds);
+    const redrafts: RedraftRecord[] = [{ subjectKey: 'evidence', kind: 'delegate', basis, sinceGateId: null }];
+    expect(menu(e, { gates, qa: reviews, redrafts, ...docs }).actions).toEqual([wait]);
+    // Even from a different basis (a document arrived since): still once per run.
+    expect(menu(e, { gates, qa: reviews, redrafts, evidence: { documentIds: ['DOC-1', 'DOC-3'] } }).actions).toEqual([wait]);
   });
 });

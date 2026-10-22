@@ -1,6 +1,8 @@
 import type { Executor } from '../db/trail-repo';
-import type { Engagement } from '../engine/types';
+import type { Engagement, User } from '../engine/types';
 import { listGates, supersedeGate, type Gate } from './gate-repo';
+
+import { evidenceDocumentIds } from './specialists/evidence';
 import { listSteps, type AgentRun } from './run-repo';
 import { findingKey, subjectInfo } from './subjects';
 import type { Action, GraphInput, QaReport, RedraftRecord } from './types';
@@ -34,7 +36,7 @@ export async function reconcileGates(db: Executor, e: Engagement): Promise<numbe
 }
 
 /** The graph's input for one iteration: the engagement, its gates, and this run's QA reports and redrafts. */
-export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement, gates: Gate[], qaThreshold: number): Promise<GraphInput> {
+export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement, gates: Gate[], qaThreshold: number, starter: User): Promise<GraphInput> {
   const steps = await listSteps(db, run.id);
   const qa = steps.filter((s) => s.kind === 'qa').map((s) => s.decision as QaReport);
   const redrafts: RedraftRecord[] = steps
@@ -46,5 +48,6 @@ export async function loadGraphInput(db: Executor, run: AgentRun, e: Engagement,
       const findings = Object.entries(d.rowBases ?? {}).map(([rowId, basis]): RedraftRecord => ({ subjectKey: findingKey(rowId), kind: d.action.type, basis, sinceGateId: null }));
       return [own, ...findings];
     });
-  return { engagement: e, gates, qa, redrafts, qaThreshold };
+  const documentIds = [...await evidenceDocumentIds(db, e.id, starter)].sort();
+  return { engagement: e, gates, qa, redrafts, qaThreshold, evidence: { documentIds } };
 }
