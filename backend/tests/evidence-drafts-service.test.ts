@@ -5,6 +5,7 @@ import { readTrail } from '../src/db/trail-repo';
 import type { TestDraft } from '../src/engine/types';
 import { insertDocument } from '../src/knowledge/document-repo';
 import type { AuditService } from '../src/service';
+import { devAuthConfig, signIn } from './http';
 import { auditor, leasedRun, NEW_ENGAGEMENT, newService, viewer } from './helpers';
 
 const A = 'FD-HACCP-03';
@@ -125,5 +126,39 @@ describe('test drafts: agent write, accept and discard', () => {
     const entry = (await readTrail(svc.db.kysely, e.id)).filter((b) => b.moduleId === 'human:draft-discard').at(-1)!;
     expect(entry.inputs).toEqual({ rowId: rows[0] });
     expect(await failure(save({ [rows[0]]: draftFor(rows[0]) }))).toMatchObject({ code: 'AGENT_FORBIDDEN' });
+  });
+
+  it('refuses a draft filed under another row, and an empty write changes nothing [REQ-41]', async () => {
+    const { svc, e, rows, save } = await setup();
+    expect(await failure(save({ [rows[0]]: draftFor(rows[1]) }))).toMatchObject({ status: 400 });
+    const v = (await svc.engagement(e.id)).version;
+    const trail = (await readTrail(svc.db.kysely, e.id)).length;
+    await save({});
+    expect((await svc.engagement(e.id)).version).toBe(v);
+    expect((await readTrail(svc.db.kysely, e.id)).length).toBe(trail);
+  });
+
+  it('a stale expectedVersion is a 409 VERSION_CONFLICT on save and on discard', async () => {
+    const { svc, e, rows, port, acting } = await setup();
+    await expect(port.saveTestDrafts(e.id, { [rows[0]]: draftFor(rows[0]) }, acting('test-draft'), { expectedVersion: 1 })).rejects.toMatchObject({ status: 409, code: 'VERSION_CONFLICT' });
+    await port.saveTestDrafts(e.id, { [rows[0]]: draftFor(rows[0]) }, acting('test-draft'), { expectedVersion: (await svc.engagement(e.id)).version! });
+    await expect(svc.discardTestDraft(e.id, rows[0], auditor, { expectedVersion: 1 })).rejects.toMatchObject({ status: 409, code: 'VERSION_CONFLICT' });
+  });
+
+  it('POST draft/discard: 404 without a draft, 403 for a viewer, 409 stale, 200 on success', async () => {
+    const { svc, e, rows, save } = await setup();
+    const { createApp } = await import('../src/app');
+    const http = createApp(svc, { config: devAuthConfig(), oidc: null });
+    const a = await signIn(http, 'auditor');
+    const v = await signIn(http, 'viewer');
+    const url = `/api/engagements/${e.id}/tests/${rows[0]}/draft/discard`;
+    await a.post(url).expect(404);
+    await save({ [rows[0]]: draftFor(rows[0]) });
+    await v.post(url).expect(403);
+    await a.agent.post(url).set('x-csrf-token', a.csrf).set('If-Match', '"1"').send({}).expect(409);
+    const ok = await a.post(url).expect(200);
+    const d = ok.body.testDrafts[rows[0]];
+    expect(d.personEdited).toBe(true);
+    expect('proposal' in d).toBe(false);
   });
 });

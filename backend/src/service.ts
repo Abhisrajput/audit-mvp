@@ -374,6 +374,8 @@ export class AuditService {
   /** Saves evidence-based test drafts for an agent. A draft is a proposal beside the workpapers; it never becomes a test record by itself. */
   async saveTestDraftsAsAgent(engagementId: string, drafts: Record<string, TestDraft>, acting: AgentActing, opts: AgentWriteOptions) {
     this.require(acting.startedBy, PREPARER_ROLES, 'prepare audit work');
+    for (const [rowId, draft] of Object.entries(drafts)) if (draft.rowId !== rowId) throw new AppError(400, `The draft under ${rowId} is for ${draft.rowId}`);
+    if (!Object.keys(drafts).length) return { bundle: undefined, engagement: await this.engagement(engagementId) };
     const { result: engagement, sealed } = await this.mutate(engagementId, { expectedVersion: opts.expectedVersion }, async (e, emit, trx) => {
       await assertLease(trx, acting.runId, acting.leaseOwner);
       const before = structuredClone(e);
@@ -479,11 +481,11 @@ export class AuditService {
       const record: TestInput = { ...clean, updatedBy: actor.id, updatedAt: new Date().toISOString() };
       // The record names the draft it came from only when that is the draft on file; a stale name is ignored.
       const drafted = e.testDrafts[rowId]?.draftedBy;
-      const accepted = Boolean(fromDraft && drafted && fromDraft.runId === drafted.runId && fromDraft.at === drafted.at);
+      const accepted = fromDraft && drafted && fromDraft.runId === drafted.runId && fromDraft.at === drafted.at ? { runId: fromDraft.runId, at: fromDraft.at } : null;
       e.testInputs[rowId] = record;
       delete e.testResults[rowId];
       if (accepted) delete e.testDrafts[rowId];
-      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean, ...(accepted ? { fromDraft: { runId: fromDraft!.runId, at: fromDraft!.at } } : {}) }, record));
+      emit(this.humanBundle(e, 'human:test-record', actor, { rowId, ...clean, ...(accepted ? { fromDraft: accepted } : {}) }, record));
       return e;
     });
     return result;

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { assertDraftsWithinRails, assertWithinRails, keepScopeDecisions } from '../src/agents/rails';
-import type { Engagement, SignOff } from '../src/engine/types';
-import type { TestDraft } from '../src/engine/types';
+import type { Engagement, SignOff, TestDraft } from '../src/engine/types';
 import { engagement, finding, input, row, scopeItem } from './agent-fixtures';
 
 const signOff: SignOff = { userId: 'reviewer', userName: 'R', role: 'reviewer', meaning: 'Reviewed', comment: '', at: 't' };
@@ -71,6 +70,15 @@ describe('assertWithinRails: drafts', () => {
     const agentOwned = engagement({ testDrafts: { R2: draft('R2') } });
     expect(() => assertDraftsWithinRails(agentOwned, engagement())).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
     expect(() => assertDraftsWithinRails(agentOwned, redraft)).not.toThrow();
+  });
+});
+
+describe('assertDraftsWithinRails: person-edited', () => {
+  it('refuses an agent marking a new draft personEdited, and passes an untouched personEdited draft [REQ-41]', () => {
+    const marked = engagement({ testDrafts: { R2: draft('R2', { personEdited: true }) } });
+    expect(() => assertDraftsWithinRails(engagement(), marked)).toThrow(expect.objectContaining({ code: 'AGENT_FORBIDDEN' }));
+    const a = engagement({ rcm: [row('R2')], testDrafts: { R2: draft('R2', { personEdited: true }) } });
+    expect(() => assertWithinRails(a, structuredClone(a))).not.toThrow();
   });
 });
 
