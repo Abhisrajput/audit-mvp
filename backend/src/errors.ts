@@ -8,6 +8,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'VERSION_CONFLICT'
+  | 'ASSISTANT_DISABLED'
   | 'FINDING_BLOCKED'
   | 'FINDING_LOCKED'
   | 'CONTEXT_LOCKED'

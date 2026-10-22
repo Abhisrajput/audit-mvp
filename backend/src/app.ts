@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { adminRoutes } from './auth/admin-routes';
 import { defaultAgentConfig, type AgentConfig } from './agents/config';
 import { agentRoutes } from './agents/routes';
+import { defaultAssistantConfig, type AssistantConfig } from './assistant/config';
+import { assistantRoutes, ASSISTANT_COMMAND_PATH, ASSISTANT_TURN_PATH } from './assistant/routes';
 import { actorOf, requireRole, requireUser, sessionMiddleware } from './auth/http';
 import { PREPARER_ROLES, READ_ROLES } from './auth/roles';
 import { authRoutes, type AuthDeps } from './auth/routes';
@@ -39,6 +41,8 @@ export interface OpsOptions {
   probeTimeoutMs?: number;
   /** Agent orchestration settings (AGENT_*); defaults when absent. */
   agents?: AgentConfig;
+  /** Chat assistant settings (ASSISTANT_*); defaults when absent. */
+  assistant?: AssistantConfig;
 }
 
 export function createApp(
@@ -60,6 +64,8 @@ export function createApp(
   app.use('/auth/sign', limits.signing);
   app.post('/api/engagements/:id/findings/:fid/sign-intents', limits.signing);
   app.post('/api/gates/:gateId/sign-intents', limits.signing);
+  app.post(ASSISTANT_TURN_PATH, limits.assistant);
+  app.post(ASSISTANT_COMMAND_PATH, limits.assistant);
   // Same-origin only: the UI is served behind the same host (nginx or the Vite proxy), so no CORS.
   app.use(cookieParser());
   // The upload route reads the raw body (any file, JSON included) and registration has its own, larger JSON limit,
@@ -82,7 +88,9 @@ export function createApp(
   app.use(adminRoutes(svc.db, auth.config));
   app.use(signing.router);
   app.use(documentRoutes(svc, storage));
-  app.use(agentRoutes(svc, ops.agents ?? defaultAgentConfig()));
+  const agentCfg = ops.agents ?? defaultAgentConfig();
+  app.use(agentRoutes(svc, agentCfg));
+  app.use(assistantRoutes(svc, { agents: agentCfg, assistant: ops.assistant ?? defaultAssistantConfig() }));
 
   app.get('/api/modules', readers, (_req, res) => res.json(svc.modules()));
 

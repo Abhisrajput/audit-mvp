@@ -22,9 +22,10 @@ export function securityHeaders(): RequestHandler {
 export interface RateLimits {
   authPerMinute: number;
   signingPerMinute: number;
+  assistantPerMinute: number;
 }
 
-export const DEFAULT_RATE_LIMITS: RateLimits = { authPerMinute: 60, signingPerMinute: 20 };
+export const DEFAULT_RATE_LIMITS: RateLimits = { authPerMinute: 60, signingPerMinute: 20, assistantPerMinute: 30 };
 
 /**
  * Per-client limits, keyed by the client address Express derives under `trust proxy` (TRUST_PROXY).
@@ -44,5 +45,5 @@ export function rateLimiters(limits: RateLimits) {
         res.status(429).json({ error: 'Too many requests; wait a minute and try again', code: 'RATE_LIMITED', requestId: req.requestId });
       },
     });
-  return { auth: make(limits.authPerMinute), signing: make(limits.signingPerMinute) };
+  return { auth: make(limits.authPerMinute), signing: make(limits.signingPerMinute), assistant: make(limits.assistantPerMinute) };
 }
